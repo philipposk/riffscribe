@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #08090c;
+  --color-panel: #101319;
+  --color-line: #232833;
+  --color-accent: #f0b429;
+  --color-accent-2: #34d399;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-ink);
+  color: #e8ebf2;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  background-image:
+    radial-gradient(60rem 40rem at 12% -10%, rgba(240, 180, 41, 0.10), transparent 60%),
+    radial-gradient(50rem 36rem at 92% 0%, rgba(52, 211, 153, 0.10), transparent 62%);
+  background-attachment: fixed;
+}
+
+.panel {
+  border: 1px solid var(--color-line);
+  background: color-mix(in oklab, var(--color-panel) 92%, transparent);
+  border-radius: 1rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--color-line);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--color-accent);
+  border-color: transparent;
+  color: #16130a;
+  font-weight: 650;
+}
+.btn-primary:hover:not(:disabled) {
+  background: #ffc844;
+}
+
+input[type="range"] {
+  accent-color: var(--color-accent);
+}
+
+select,
+input[type="number"],
+input[type="text"] {
+  background: #0b0e13;
+  border: 1px solid var(--color-line);
+  border-radius: 0.55rem;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.875rem;
+}
+
+.step-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 999px;
+  background: rgba(240, 180, 41, 0.14);
+  color: var(--color-accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+/* alphaTab renders black-on-white sheet music; keep it readable in dark mode */
+.at-wrap svg {
+  max-width: none;
+}
+
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .at-wrap {
+    background: #fff !important;
+    padding: 0 !important;
+  }
+}
