@@ -27,6 +27,10 @@ export default function ScoreView({ tex, zoom }: Props) {
           // render on the main thread — our scores are small, and this avoids
           // depending on how the bundler emits alphaTab's worker
           useWorkers: false,
+          // paint the whole score at once. Lazy loading only fills in the
+          // systems currently on screen, which leaves Print/PDF with blank
+          // staves for everything below the fold.
+          enableLazyLoading: false,
         },
         display: { scale: zoom, layoutMode: "page", staveProfile: "default" },
         player: { enablePlayer: false, enableCursor: false, enableUserInteraction: true },
