@@ -3,7 +3,7 @@
 Give it a song. Get sheet music, guitar tab, a backing track without the vocals, a
 slow-down player that keeps the pitch, and a way to record yourself over the top.
 
-Live at **https://riff.6x7.gr**
+Live at **https://riffscribe.6x7.gr**
 
 Everything runs inside the browser tab. No upload, no account, no server-side
 inference, no per-minute pricing — the audio never leaves the machine.

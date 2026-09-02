@@ -6,11 +6,11 @@ const description =
   "Drop in any song and get sheet music, guitar tab and MIDI. Mute the vocals, slow it down without changing the pitch, and record yourself over the top. All of it runs in your browser — nothing is uploaded.";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://riff.6x7.gr"),
+  metadataBase: new URL("https://riffscribe.6x7.gr"),
   title,
   description,
   applicationName: "Riffscribe",
-  openGraph: { title, description, url: "https://riff.6x7.gr", siteName: "Riffscribe", type: "website" },
+  openGraph: { title, description, url: "https://riffscribe.6x7.gr", siteName: "Riffscribe", type: "website" },
   twitter: { card: "summary_large_image", title, description },
   icons: { icon: "/icon.svg" },
 };
