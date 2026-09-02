@@ -176,7 +176,8 @@ export default function Studio() {
     }
     setMix((prev) => {
       const next = { ...prev };
-      for (const t of tracks) if (!next[t.id]) next[t.id] = { gain: t.id === "click" ? 0 : 1, muted: t.id === "click" };
+      // the click starts muted but at a usable level, so un-muting it is not silence
+      for (const t of tracks) if (!next[t.id]) next[t.id] = { gain: t.id === "click" ? 0.7 : 1, muted: t.id === "click" };
       return next;
     });
   }, [audio, stems, stemMode, overdub, trackList, clickTrack]);
@@ -628,7 +629,7 @@ export default function Studio() {
               <label className="text-sm">
                 <span className="mb-1 block text-white/60">Tempo (BPM)</span>
                 <input
-                  type="number" min={30} max={300} className="w-full" value={settings.bpm}
+                  type="number" min={30} max={300} step={0.1} className="w-full" value={settings.bpm}
                   onChange={(e) => patch({ bpm: Number(e.target.value) || 120 })}
                 />
               </label>
