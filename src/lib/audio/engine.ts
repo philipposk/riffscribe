@@ -40,8 +40,12 @@ interface Voice {
 
 export class PracticeEngine {
   ctx: AudioContext | null = null;
+  private tracks: EngineTrack[] = [];
   private voices: Voice[] = [];
+  private gains: Record<string, number> = {};
+  private building: Promise<boolean> | null = null;
   private duration = 0;
+  private sampleRate = 44100;
   private rate = 1;
   private semitones = 0;
   private loop: [number, number] | null = null;
@@ -50,10 +54,6 @@ export class PracticeEngine {
   private generation = 0;
   onTime?: (t: number) => void;
   onStateChange?: (s: EngineState) => void;
-
-  get sampleRate() {
-    return this.ctx?.sampleRate ?? 44100;
-  }
 
   state(): EngineState {
     return {
@@ -66,54 +66,92 @@ export class PracticeEngine {
     };
   }
 
+  /**
+   * Take the audio, but do not touch Web Audio yet.
+   *
+   * The graph is deliberately built later, on the first Play (see ensureGraph).
+   * A Signalsmith Stretch node constructed on a context whose clock has not
+   * started — which is every context created before the visitor clicks anything
+   * — is wedged for good: it reports a negative position and never emits a
+   * sample. Nothing about resuming afterwards revives it.
+   */
   async load(tracks: EngineTrack[], sampleRate: number) {
     await this.dispose();
-    if (!tracks.length) return;
-    const generation = ++this.generation;
-
-    const ctx = new AudioContext({ sampleRate, latencyHint: "playback" });
-    this.ctx = ctx;
-    const SignalsmithStretch = await loadStretch();
-
-    const len = Math.max(...tracks.map((t) => t.left.length));
-    this.duration = len / sampleRate;
-
-    const pad = (ch: Float32Array) => {
-      if (ch.length === len) return ch;
-      const p = new Float32Array(len);
-      p.set(ch.subarray(0, Math.min(ch.length, len)));
-      return p;
-    };
-
-    for (const track of tracks) {
-      const node = await SignalsmithStretch(ctx, {
-        numberOfInputs: 0,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      });
-      if (generation !== this.generation) return; // a newer load() overtook us
-      await node.addBuffers([pad(track.left), pad(track.right)]);
-      const gain = ctx.createGain();
-      gain.gain.value = 1;
-      node.connect(gain);
-      gain.connect(ctx.destination);
-      this.voices.push({ id: track.id, node, gain });
-    }
-
-    // one node drives the clock; the rest follow the same schedule
-    await this.voices[0].node.setUpdateInterval(0.03, (t: number) => {
-      if (this.playing && !this.loop && t >= this.duration - 0.03) {
-        this.lastTime = this.duration;
-        this.onTime?.(this.duration);
-        void this.pause();
-        return;
-      }
-      this.lastTime = Math.min(t, this.duration);
-      this.onTime?.(this.lastTime);
-    });
-
-    await this.all((n) => n.schedule({ active: false, input: 0, rate: this.rate, semitones: this.semitones }));
+    this.tracks = tracks;
+    this.sampleRate = sampleRate;
+    this.duration = tracks.length
+      ? Math.max(...tracks.map((t) => t.left.length)) / sampleRate
+      : 0;
     this.emit();
+  }
+
+  private async ensureGraph(): Promise<boolean> {
+    if (this.voices.length) return true;
+    if (!this.tracks.length) return false;
+    if (this.building) return this.building;
+
+    const generation = ++this.generation;
+    this.building = (async () => {
+      const ctx = new AudioContext({ sampleRate: this.sampleRate, latencyHint: "playback" });
+      // Must be running *before* the worklet nodes are created.
+      if (ctx.state !== "running") await ctx.resume().catch(() => {});
+      const t0 = ctx.currentTime;
+      for (let i = 0; i < 60 && ctx.currentTime <= t0; i++) {
+        await new Promise((r) => setTimeout(r, 16));
+      }
+      if (ctx.state !== "running") {
+        await ctx.close().catch(() => {});
+        return false;
+      }
+
+      const SignalsmithStretch = await loadStretch();
+      const len = Math.max(...this.tracks.map((t) => t.left.length));
+      const pad = (ch: Float32Array) => {
+        if (ch.length === len) return ch;
+        const p = new Float32Array(len);
+        p.set(ch.subarray(0, Math.min(ch.length, len)));
+        return p;
+      };
+
+      const voices: Voice[] = [];
+      for (const track of this.tracks) {
+        const node = await SignalsmithStretch(ctx, {
+          numberOfInputs: 0,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+        });
+        if (generation !== this.generation) {
+          await ctx.close().catch(() => {});
+          return false;
+        }
+        await node.addBuffers([pad(track.left), pad(track.right)]);
+        const gain = ctx.createGain();
+        gain.gain.value = this.gains[track.id] ?? 1;
+        node.connect(gain);
+        gain.connect(ctx.destination);
+        voices.push({ id: track.id, node, gain });
+      }
+
+      this.ctx = ctx;
+      this.voices = voices;
+
+      // one node drives the clock; the rest follow the same schedule
+      await voices[0].node.setUpdateInterval(0.03, (t: number) => {
+        if (this.playing && !this.loop && t >= this.duration - 0.03) {
+          this.lastTime = this.duration;
+          this.onTime?.(this.duration);
+          void this.pause();
+          return;
+        }
+        this.lastTime = Math.max(0, Math.min(t, this.duration));
+        this.onTime?.(this.lastTime);
+      });
+      return true;
+    })();
+
+    const ok = await this.building;
+    this.building = null;
+    return ok;
   }
 
   private all(fn: (n: StretchNode) => Promise<unknown>) {
@@ -128,9 +166,12 @@ export class PracticeEngine {
     return (this.ctx?.currentTime ?? 0) + 0.06;
   }
 
+  private live() {
+    return this.voices.length > 0 && this.ctx?.state === "running";
+  }
+
   async play(from?: number) {
-    if (!this.voices.length || !this.ctx) return;
-    if (this.ctx.state === "suspended") await this.ctx.resume();
+    if (!(await this.ensureGraph())) return;
     const input = from ?? this.lastTime;
     const output = this.when();
     await this.all((n) =>
@@ -149,7 +190,7 @@ export class PracticeEngine {
   }
 
   async pause() {
-    if (!this.voices.length) return;
+    if (!this.live()) { this.playing = false; this.emit(); return; }
     const output = this.when();
     await this.all((n) => n.schedule({ output, active: false }));
     this.playing = false;
@@ -162,7 +203,8 @@ export class PracticeEngine {
 
   async seek(t: number) {
     this.lastTime = Math.max(0, Math.min(this.duration, t));
-    if (!this.voices.length) return;
+    this.onTime?.(this.lastTime);
+    if (!this.live()) { this.emit(); return; }
     const output = this.when();
     await this.all((n) =>
       n.schedule({
@@ -175,44 +217,51 @@ export class PracticeEngine {
         loopEnd: this.loop?.[1] ?? 0,
       })
     );
-    this.onTime?.(this.lastTime);
     this.emit();
   }
 
   async setRate(rate: number) {
     this.rate = Math.max(0.15, Math.min(2.5, rate));
-    const output = this.when();
-    await this.all((n) => n.schedule({ output, rate: this.rate }));
+    if (this.live()) {
+      const output = this.when();
+      await this.all((n) => n.schedule({ output, rate: this.rate }));
+    }
     this.emit();
   }
 
   async setSemitones(semitones: number) {
     this.semitones = Math.max(-12, Math.min(12, semitones));
-    const output = this.when();
-    await this.all((n) => n.schedule({ output, semitones: this.semitones }));
+    if (this.live()) {
+      const output = this.when();
+      await this.all((n) => n.schedule({ output, semitones: this.semitones }));
+    }
     this.emit();
   }
 
   async setLoop(loop: [number, number] | null) {
     this.loop = loop && loop[1] - loop[0] > 0.05 ? loop : null;
-    const output = this.when();
-    await this.all((n) =>
-      n.schedule({ output, loopStart: this.loop?.[0] ?? 0, loopEnd: this.loop?.[1] ?? 0 })
-    );
+    if (this.live()) {
+      const output = this.when();
+      await this.all((n) =>
+        n.schedule({ output, loopStart: this.loop?.[0] ?? 0, loopEnd: this.loop?.[1] ?? 0 })
+      );
+    }
     this.emit();
   }
 
+  /** Faders work before the graph exists — the value is applied when it is built. */
   setGain(id: string, value: number) {
+    this.gains[id] = value;
     const v = this.voices.find((x) => x.id === id);
     if (v && this.ctx) v.gain.gain.setTargetAtTime(value, this.ctx.currentTime, 0.02);
   }
 
   hasTrack(id: string) {
-    return this.voices.some((v) => v.id === id);
+    return this.tracks.some((t) => t.id === id);
   }
 
   trackIds() {
-    return this.voices.map((v) => v.id);
+    return this.tracks.map((t) => t.id);
   }
 
   async dispose() {
@@ -227,6 +276,8 @@ export class PracticeEngine {
       v.gain.disconnect();
     }
     this.voices = [];
+    this.tracks = [];
+    this.building = null;
     if (this.ctx) await this.ctx.close().catch(() => {});
     this.ctx = null;
     this.playing = false;
