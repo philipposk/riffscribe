@@ -477,12 +477,12 @@ export default function Studio() {
       </header>
 
       {error && (
-        <p className="no-print mb-5 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <p className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-red-500/40 bg-red-950/90 px-4 py-3 text-sm text-red-200 backdrop-blur">
           {error}
         </p>
       )}
       {busy && (
-        <div className="no-print mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10 px-4 py-3 text-sm">
+        <div className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[#1a1608]/95 px-4 py-3 text-sm shadow-lg backdrop-blur">
           <p className="flex items-center gap-2 text-[var(--color-accent)]">
             <Loader2 className="animate-spin" size={16} /> {busy.label}
             {cancelSplitRef.current && (
@@ -535,10 +535,12 @@ export default function Studio() {
             </h2>
             <div className="mb-4 flex flex-wrap gap-2">
               <button className="btn" onClick={runInstant} disabled={!!busy}>
-                <Scissors size={15} /> Instant vocal removal
+                {busy?.label.startsWith("Pulling") ? <Loader2 className="animate-spin" size={15} /> : <Scissors size={15} />}
+                Instant vocal removal
               </button>
               <button className="btn btn-primary" onClick={runDemucs} disabled={!!busy}>
-                <Wand2 size={15} /> AI split into 4 stems
+                {busy && /model|Separating/i.test(busy.label) ? <Loader2 className="animate-spin" size={15} /> : <Wand2 size={15} />}
+                {busy && /model|Separating/i.test(busy.label) ? "Separating…" : "AI split into 4 stems"}
               </button>
             </div>
             <p className="mb-4 text-xs text-white/45">
@@ -694,7 +696,10 @@ export default function Studio() {
 
             <div className="no-print mb-4 flex flex-wrap gap-2">
               <button className="btn btn-primary" onClick={runTranscribe} disabled={!!busy}>
-                <FileMusic size={15} /> Transcribe
+                {busy?.label.startsWith("Listening") ? <Loader2 className="animate-spin" size={15} /> : <FileMusic size={15} />}
+                {busy?.label.startsWith("Listening")
+                  ? `Transcribing… ${Math.round((busy.value ?? 0) * 100)}%`
+                  : "Transcribe"}
               </button>
               <button className="btn" onClick={exportMidi} disabled={!notes}>
                 <Download size={15} /> MIDI
