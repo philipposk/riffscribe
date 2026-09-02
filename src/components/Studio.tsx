@@ -67,7 +67,9 @@ export default function Studio() {
 
   const [mix, setMix] = useState<Record<string, { gain: number; muted: boolean }>>({});
   const [soloed, setSoloed] = useState<string | null>(null);
-  const [transport, setTransport] = useState({ playing: false, time: 0, duration: 0, rate: 1, semitones: 0 });
+  const [transport, setTransport] = useState<{
+    playing: boolean; time: number; duration: number; rate: number; semitones: number; rendering: number | null;
+  }>({ playing: false, time: 0, duration: 0, rate: 1, semitones: 0, rendering: null });
   const [loop, setLoop] = useState<[number, number] | null>(null);
 
   const [recArmed, setRecArmed] = useState(false);
@@ -88,7 +90,7 @@ export default function Studio() {
     if (!e) return;
     e.onTime = (t) => setTransport((s) => ({ ...s, time: t }));
     e.onStateChange = (s) =>
-      setTransport({ playing: s.playing, time: s.time, duration: s.duration, rate: s.rate, semitones: s.semitones });
+      setTransport({ playing: s.playing, time: s.time, duration: s.duration, rate: s.rate, semitones: s.semitones, rendering: s.rendering });
     return () => { void e.dispose(); };
   }, []);
 
@@ -584,6 +586,7 @@ export default function Studio() {
               duration={transport.duration}
               rate={transport.rate}
               semitones={transport.semitones}
+              rendering={transport.rendering}
               loop={loop}
               onToggle={() => void engineRef.current?.toggle()}
               onSeek={(t) => void engineRef.current?.seek(t)}
