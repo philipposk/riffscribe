@@ -78,6 +78,7 @@ export default function Studio() {
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
   const recStartRef = useRef(0);
+  const cancelSplitRef = useRef<(() => void) | null>(null);
 
   if (!engineRef.current && typeof window !== "undefined") engineRef.current = new PracticeEngine();
   if (!recorderRef.current && typeof window !== "undefined") recorderRef.current = new MicRecorder();
@@ -136,6 +137,18 @@ export default function Studio() {
     return out;
   }, [stems, stemMode, audio, overdub]);
 
+  const clickTrack = useMemo(() => {
+    if (!audio) return null;
+    const [left, right] = makeClickTrack(
+      audio.left.length / DEMUCS_SAMPLE_RATE,
+      DEMUCS_SAMPLE_RATE,
+      settings.bpm,
+      settings.offsetSeconds,
+      settings.timeSignature[0]
+    );
+    return { left, right };
+  }, [audio, settings.bpm, settings.offsetSeconds, settings.timeSignature]);
+
   const rebuildEngine = useCallback(async () => {
     const engine = engineRef.current;
     if (!engine || !audio) return;
@@ -151,11 +164,7 @@ export default function Studio() {
       push("original", audio.left, audio.right);
     }
 
-    const durationSeconds = audio.left.length / DEMUCS_SAMPLE_RATE;
-    const [cl, cr] = makeClickTrack(
-      durationSeconds, DEMUCS_SAMPLE_RATE, settings.bpm, settings.offsetSeconds, settings.timeSignature[0]
-    );
-    push("click", cl, cr);
+    if (clickTrack) push("click", clickTrack.left, clickTrack.right);
     if (overdub) push("overdub", overdub.left, overdub.right);
 
     try {
@@ -170,7 +179,7 @@ export default function Studio() {
       for (const t of tracks) if (!next[t.id]) next[t.id] = { gain: t.id === "click" ? 0 : 1, muted: t.id === "click" };
       return next;
     });
-  }, [audio, stems, stemMode, overdub, trackList, settings.bpm, settings.offsetSeconds, settings.timeSignature]);
+  }, [audio, stems, stemMode, overdub, trackList, clickTrack]);
 
   // rebuilding tears down the audio graph, so coalesce bursts (e.g. typing a BPM)
   useEffect(() => {
@@ -220,15 +229,17 @@ export default function Studio() {
     setError(null);
     setBusy({ label: "Loading the separation model…" });
     try {
-      const { promise } = separateWithDemucs(
+      const { promise, cancel } = separateWithDemucs(
         Float32Array.from(audio.left),
         Float32Array.from(audio.right),
         (p) => {
           if (p.phase === "download") setBusy({ label: `Downloading model (one time, ~180 MB) ${p.message ?? ""}`, value: p.value });
+          else if (p.phase === "prepare") setBusy({ label: "Preparing the model — this takes a moment…" });
           else if (p.phase === "separate") setBusy({ label: `Separating stems ${p.message ?? ""}`, value: p.value });
           else if (p.message) setLog(p.message);
         }
       );
+      cancelSplitRef.current = cancel;
       const result = await promise;
       setStems(result);
       setStemMode("ai");
@@ -237,8 +248,16 @@ export default function Studio() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "stem separation failed");
     } finally {
+      cancelSplitRef.current = null;
       setBusy(null);
     }
+  }
+
+  function cancelSplit() {
+    cancelSplitRef.current?.();
+    cancelSplitRef.current = null;
+    setBusy(null);
+    setLog("Separation cancelled. The part of the model already downloaded is kept.");
   }
 
   /** Cut the song down to the looped section — separation is slow, so this helps. */
@@ -392,22 +411,39 @@ export default function Studio() {
 
   function exportAudio(kind: "backing" | "mix") {
     if (!audio) return;
+    const length = audio.left.length;
     let left: Float32Array, right: Float32Array;
+
     if (kind === "backing" && stems) {
+      // everything except the vocals, at full level, whatever the faders say
       const keys = stemMode === "instant" ? ["other"] : ["drums", "bass", "other"];
-      ({ left, right } = mixStems(stems, keys));
+      ({ left, right } = mixStems(stems, keys, { length }));
     } else {
       const parts: Record<string, { left: Float32Array; right: Float32Array }> = stems
         ? { ...stems }
         : { original: audio };
       if (overdub) parts.overdub = overdub;
-      const audible = Object.keys(parts).filter((k) => {
-        const m = mix[k];
-        if (!m) return k === "original" || k === "overdub";
-        return !m.muted && (soloed === null || soloed === k);
-      });
-      ({ left, right } = mixStems(parts, audible));
+      if (clickTrack) parts.click = clickTrack;
+
+      const gains: Record<string, number> = {};
+      const audible = trackList
+        .map((t) => t.id)
+        .filter((id) => {
+          if (!parts[id]) return false;
+          const m = mix[id] ?? { gain: 1, muted: false };
+          if (m.muted || (soloed !== null && soloed !== id)) return false;
+          gains[id] = m.gain;
+          return true;
+        });
+
+      if (!audible.length) {
+        setError("Everything is muted or soloed out — nothing to export.");
+        return;
+      }
+      ({ left, right } = mixStems(parts, audible, { length, gains }));
     }
+
+    setError(null);
     downloadBlob(encodeWav([left, right], DEMUCS_SAMPLE_RATE), `${baseName}-${kind}.wav`);
   }
 
@@ -446,6 +482,11 @@ export default function Studio() {
         <div className="no-print mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10 px-4 py-3 text-sm">
           <p className="flex items-center gap-2 text-[var(--color-accent)]">
             <Loader2 className="animate-spin" size={16} /> {busy.label}
+            {cancelSplitRef.current && (
+              <button className="btn ml-auto py-1 text-xs" onClick={cancelSplit}>
+                Cancel
+              </button>
+            )}
           </p>
           {busy.value != null && (
             <div className="mt-2 h-1.5 w-full overflow-hidden rounded bg-white/10">

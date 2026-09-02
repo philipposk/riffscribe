@@ -9,7 +9,7 @@ export const MODEL_URL =
   "https://huggingface.co/timcsy/demucs-web-onnx/resolve/main/htdemucs_embedded.onnx";
 
 export interface SeparateProgress {
-  phase: "download" | "separate" | "log";
+  phase: "download" | "prepare" | "separate" | "log";
   /** 0..1 where known. */
   value?: number;
   message?: string;
@@ -33,6 +33,9 @@ export function separateWithDemucs(
       switch (m.type) {
         case "download":
           onProgress({ phase: "download", value: m.total ? m.loaded / m.total : undefined, message: `${(m.loaded / 1e6).toFixed(0)} MB` });
+          break;
+        case "preparing":
+          onProgress({ phase: "prepare" });
           break;
         case "progress":
           onProgress({ phase: "separate", value: m.progress, message: `chunk ${m.segment}/${m.segments}` });
@@ -109,18 +112,27 @@ export function separateInstantAsync(
 
 export function mixStems(
   stems: Partial<Record<string, { left: Float32Array; right: Float32Array }>>,
-  include: string[]
+  include: string[],
+  opts: {
+    /** Render this many samples, so a mix with nothing in it is still a valid file. */
+    length?: number;
+    /** Per-track fader positions, so an export matches what you hear. */
+    gains?: Record<string, number>;
+  } = {}
 ): { left: Float32Array; right: Float32Array } {
   const first = include.map((k) => stems[k]).find(Boolean);
-  const n = first ? first.left.length : 0;
+  const n = opts.length ?? (first ? first.left.length : 0);
   const left = new Float32Array(n);
   const right = new Float32Array(n);
   for (const key of include) {
     const s = stems[key];
     if (!s) continue;
-    for (let i = 0; i < n; i++) {
-      left[i] += s.left[i] ?? 0;
-      right[i] += s.right[i] ?? 0;
+    const g = opts.gains?.[key] ?? 1;
+    if (g === 0) continue;
+    const len = Math.min(n, s.left.length);
+    for (let i = 0; i < len; i++) {
+      left[i] += s.left[i] * g;
+      right[i] += (s.right[i] ?? s.left[i]) * g;
     }
   }
   return { left, right };

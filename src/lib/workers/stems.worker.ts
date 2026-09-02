@@ -18,6 +18,7 @@ type Out =
   | { type: "download"; loaded: number; total: number }
   | { type: "progress"; progress: number; segment: number; segments: number }
   | { type: "log"; phase: string; message: string }
+  | { type: "preparing" }
   | { type: "ready" }
   | { type: "error"; message: string }
   | {
@@ -88,6 +89,7 @@ async function getProcessor(modelUrl: string) {
     onLog: (phase, message) => post({ type: "log", phase, message }),
   });
   const buffer = await fetchModel(modelUrl);
+  post({ type: "preparing" });
   await p.loadModel(buffer);
   processor = p;
   loadedFor = modelUrl;
