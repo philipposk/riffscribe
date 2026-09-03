@@ -124,10 +124,13 @@ Checked against the live deployment, not just locally:
   vocals / drums / bass / everything-else, and that last stem is every harmony
   instrument at once. "Split into voices" *arranges* one line across players.
   The UI says so; keep it saying so.
-- **Link loading needs a helper on the user's own machine.** YouTube blocks
-  datacentre ranges hard and there is no yt-dlp flag around it; Tor exits are on
-  the same blocklists, so Tor is worse than a plain VPS. The link box is hidden
-  unless a health check finds the helper running.
+- **Link loading currently needs a helper outside the browser.** The page cannot
+  fetch YouTube audio itself (cross-origin, signed media URLs). `local/fetch-server.mjs`
+  runs it on the user's machine and the link box is hidden unless a health check
+  finds it. A server-side version is viable: YouTube blocks datacentre ranges,
+  but Tor gets through — measured 2026-09-04, 10/10 exits resolved formats and a
+  full download ran at ~600 KiB/s (yt-dlp 2026.08.19; needs `deno` for the JS
+  challenge). Treat that as revocable, not permanent.
 
 ## Assistant
 

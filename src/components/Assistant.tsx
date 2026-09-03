@@ -42,12 +42,14 @@ const INSTRUMENT_IDS = [
 export default function Assistant({ actions }: { actions: AssistantActions }) {
   const latest = useRef(actions);
   latest.current = actions;
-  const started = useRef(false);
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
+    // React runs effects twice in development. Loading the widget is async, so the
+    // first pass is always torn down before its import resolves — that pass bails
+    // out and the second one mounts for real. A "have I started?" ref would block
+    // that second pass, and the assistant would never appear while developing.
     let disposed = false;
+    let teardown: (() => void) | null = null;
 
     (async () => {
       let mod: typeof import("@page-assistant/widget");
@@ -260,6 +262,7 @@ export default function Assistant({ actions }: { actions: AssistantActions }) {
       PageAssistant.init({
         serverUrl: "/api/pa",
         appName: "Riffscribe",
+        launcherIcon: "sparkle",
         persona:
           "A patient studio hand for a musician learning a part by ear. Practical and brief. You press the same buttons the player would.",
         knowledge:
@@ -276,10 +279,13 @@ export default function Assistant({ actions }: { actions: AssistantActions }) {
           "Mute the vocals and export the backing track",
         ],
       });
+      teardown = () => PageAssistant.destroy();
     })();
 
     return () => {
       disposed = true;
+      teardown?.();
+      teardown = null;
     };
   }, []);
 

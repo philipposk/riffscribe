@@ -71,13 +71,18 @@ npm run fetch-server     # needs: brew install yt-dlp ffmpeg
 While it is running, the studio shows a "paste a link" box; otherwise the box is
 hidden and you use the file picker.
 
-It has to run on your own machine, and that is not squeamishness. A web page
-cannot pull audio off YouTube — it is cross-origin and the media URLs are
-signed. A shared server doing it gets its address blocked quickly, because
-YouTube blocks datacentre ranges hard; Tor exit nodes are on those blocklists
-too, so routing through Tor makes it worse, not better. Only a residential
-address — yours — is reliable. It also means the audio never touches anyone
-else's computer.
+A web page cannot pull audio off YouTube by itself — it is cross-origin and the
+media URLs are signed — so the fetching has to happen outside the browser. The
+helper is the simplest place to put it, and it means the audio never touches
+anyone else's computer.
+
+A shared server can do the same job. YouTube blocks datacentre address ranges
+hard, but routing through **Tor** currently gets past that: measured 2026-09-04,
+ten separate Tor exits all resolved formats and a full audio download ran at
+~600 KiB/s. That is a policy, not a guarantee — the exit list is public and
+YouTube can block it whenever it likes — so anything built on it needs a
+fallback. Bulk media over Tor also spends volunteer-donated relay bandwidth,
+which is fine for a few songs and not fine for an open public service.
 
 Downloading from YouTube is against their terms of service whoever does it.
 Fine for your own practice material; not something to put on a public front

@@ -18,6 +18,8 @@ export interface UIHandlers {
     onArchiveChat?: (id: string) => void;
 }
 export interface UIOptions {
+    /** The mark on the launcher button: a name from LAUNCHER_ICONS, raw SVG, or a character. */
+    launcherIcon?: string;
     chatStore?: ChatHistoryStore;
     theme?: ThemeMode;
     sidebarOpen?: boolean;
@@ -103,3 +105,8 @@ export declare class WidgetUI {
     /** Tear down all DOM + listeners this UI created (for destroy()). */
     destroy(): void;
 }
+export declare const LAUNCHER_ICONS: Record<string, string>;
+/** Resolve whatever the host asked for into markup for the launcher.
+ *  A name picks one of the above; raw SVG passes through; anything else
+ *  short (an emoji, a letter) is rendered as a character. */
+export declare function resolveLauncherIcon(icon: string | undefined): string;

@@ -119,6 +119,7 @@ class PageAssistantController {
             onDeleteChat: (id) => this.deleteChat(id),
             onArchiveChat: (id) => this.archiveChat(id),
         }, {
+            launcherIcon: cfg.launcherIcon,
             chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
             theme: assistantSettings.theme,
             sidebarOpen: assistantSettings.sidebarOpen,
