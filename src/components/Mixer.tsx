@@ -1,6 +1,6 @@
 "use client";
 /** One fader per track. Mute the vocals here to turn any song into a backing track. */
-import { Volume2, VolumeX } from "lucide-react";
+import { Download, Volume2, VolumeX } from "lucide-react";
 
 export interface MixTrack {
   id: string;
@@ -15,9 +15,11 @@ interface Props {
   soloed: string | null;
   onChange: (id: string, patch: Partial<MixTrack>) => void;
   onSolo: (id: string | null) => void;
+  /** Download this track on its own. */
+  onDownload: (id: string) => void;
 }
 
-export default function Mixer({ tracks, soloed, onChange, onSolo }: Props) {
+export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: Props) {
   return (
     <div className="grid gap-2">
       {tracks.map((t) => {
@@ -56,6 +58,13 @@ export default function Mixer({ tracks, soloed, onChange, onSolo }: Props) {
               onClick={() => onSolo(soloed === t.id ? null : t.id)}
             >
               solo
+            </button>
+            <button
+              className="text-white/45 hover:text-white"
+              onClick={() => onDownload(t.id)}
+              title={`Download ${t.label} on its own`}
+            >
+              <Download size={15} />
             </button>
           </div>
         );

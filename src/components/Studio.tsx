@@ -78,6 +78,7 @@ export default function Studio() {
   const [recording, setRecording] = useState(false);
   const [overdub, setOverdub] = useState<{ left: Float32Array; right: Float32Array } | null>(null);
   const [nudgeMs, setNudgeMs] = useState(0);
+  const [loopOnlyExport, setLoopOnlyExport] = useState(false);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -440,43 +441,76 @@ export default function Studio() {
     downloadBlob(new Blob([tex], { type: "text/plain" }), `${baseName}.alphatex`);
   }
 
+  /** Every track that currently exists, keyed the same way as the mixer. */
+  function allParts(): Record<string, { left: Float32Array; right: Float32Array }> {
+    const parts: Record<string, { left: Float32Array; right: Float32Array }> = stems
+      ? { ...stems }
+      : audio
+        ? { original: audio }
+        : {};
+    if (overdub) parts.overdub = overdub;
+    if (guideTrack) parts.guide = guideTrack;
+    if (clickTrack) parts.click = clickTrack;
+    return parts;
+  }
+
+  /** Whole song, or just the looped section when the user asked for that. */
+  function exportWindow() {
+    const total = audio ? audio.left.length : 0;
+    if (!loopOnlyExport || !loop) return { from: 0, to: total, suffix: "" };
+    const from = Math.max(0, Math.floor(loop[0] * DEMUCS_SAMPLE_RATE));
+    const to = Math.min(total, Math.floor(loop[1] * DEMUCS_SAMPLE_RATE));
+    return { from, to, suffix: `-${Math.round(loop[0])}s-${Math.round(loop[1])}s` };
+  }
+
+  function writeWav(
+    channels: { left: Float32Array; right: Float32Array },
+    name: string
+  ) {
+    const { from, to, suffix } = exportWindow();
+    const left = from || to < channels.left.length ? channels.left.slice(from, to) : channels.left;
+    const right = from || to < channels.right.length ? channels.right.slice(from, to) : channels.right;
+    downloadBlob(encodeWav([left, right], DEMUCS_SAMPLE_RATE), `${baseName}-${name}${suffix}.wav`);
+  }
+
   function exportAudio(kind: "backing" | "mix") {
     if (!audio) return;
     const length = audio.left.length;
-    let left: Float32Array, right: Float32Array;
 
     if (kind === "backing" && stems) {
       // everything except the vocals, at full level, whatever the faders say
       const keys = stemMode === "instant" ? ["other"] : ["drums", "bass", "other"];
-      ({ left, right } = mixStems(stems, keys, { length }));
-    } else {
-      const parts: Record<string, { left: Float32Array; right: Float32Array }> = stems
-        ? { ...stems }
-        : { original: audio };
-      if (overdub) parts.overdub = overdub;
-      if (guideTrack) parts.guide = guideTrack;
-      if (clickTrack) parts.click = clickTrack;
-
-      const gains: Record<string, number> = {};
-      const audible = trackList
-        .map((t) => t.id)
-        .filter((id) => {
-          if (!parts[id]) return false;
-          const m = mix[id] ?? { gain: 1, muted: false };
-          if (m.muted || (soloed !== null && soloed !== id)) return false;
-          gains[id] = m.gain;
-          return true;
-        });
-
-      if (!audible.length) {
-        setError("Everything is muted or soloed out — nothing to export.");
-        return;
-      }
-      ({ left, right } = mixStems(parts, audible, { length, gains }));
+      setError(null);
+      writeWav(mixStems(stems, keys, { length }), "backing");
+      return;
     }
 
+    const parts = allParts();
+    const gains: Record<string, number> = {};
+    const audible = trackList
+      .map((t) => t.id)
+      .filter((id) => {
+        if (!parts[id]) return false;
+        const m = mix[id] ?? { gain: 1, muted: false };
+        if (m.muted || (soloed !== null && soloed !== id)) return false;
+        gains[id] = m.gain;
+        return true;
+      });
+
+    if (!audible.length) {
+      setError("Everything is muted or soloed out — nothing to export.");
+      return;
+    }
     setError(null);
-    downloadBlob(encodeWav([left, right], DEMUCS_SAMPLE_RATE), `${baseName}-${kind}.wav`);
+    writeWav(mixStems(parts, audible, { length, gains }), "mix");
+  }
+
+  /** One track on its own — the stem, your part, your take, the click. */
+  function exportTrack(id: string) {
+    const part = allParts()[id];
+    if (!part) return;
+    setError(null);
+    writeWav(part, id);
   }
 
   /* -------------------------------------------------------------------- UI */
@@ -580,16 +614,28 @@ export default function Studio() {
               tracks={mixTracks}
               soloed={soloed}
               onSolo={setSoloed}
+              onDownload={exportTrack}
               onChange={(id, p) => setMix((m) => ({ ...m, [id]: { ...(m[id] ?? { gain: 1, muted: false }), ...p } }))}
             />
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <button className="btn" onClick={() => exportAudio("backing")} disabled={!stems}>
                 <Download size={15} /> Backing track .wav
               </button>
               <button className="btn" onClick={() => exportAudio("mix")}>
                 <Download size={15} /> Current mix .wav
               </button>
+              <label className={`flex items-center gap-2 text-xs ${loop ? "text-white/60" : "text-white/25"}`}>
+                <input
+                  type="checkbox" checked={loopOnlyExport} disabled={!loop}
+                  onChange={(e) => setLoopOnlyExport(e.target.checked)}
+                />
+                Only the looped section
+              </label>
             </div>
+            <p className="mt-2 text-xs text-white/35">
+              The arrow on each row downloads that track on its own — the isolated vocal, the drums,
+              your part, your take.
+            </p>
           </section>
 
           {/* 3 — practise */}
