@@ -22,8 +22,12 @@ const FEATURES = [
     body: "Turn on follow-the-music and the score scrolls itself, highlighting the beat being played, so you can keep both hands on the instrument. The part is played back in your instrument's voice too — mute it once you can hold the line yourself.",
   },
   {
+    title: "A part each, or a whole quartet",
+    body: "Write out as many parts as you like \u2014 the bass from one stem, the harmony from another \u2014 and they engrave as one score, a staff each. Any part can then be split into voices and handed to a duo, trio, quartet or quintet. That is arranging one line across players, not pulling the original musicians back out of the recording; nothing can do the latter.",
+  },
+  {
     title: "Takes your file anywhere",
-    body: "Export MIDI, MusicXML for MuseScore or Guitar Pro, alphaTex, printable PDF, and wav — the whole mix, the backing track, one stem on its own, or just the bars you looped.",
+    body: "Export MIDI, MusicXML for MuseScore or Guitar Pro, alphaTex, printable PDF, and wav \u2014 every part on its own staff, and audio as the whole mix, the backing track, one row of the mixer, or just the bars you looped.",
   },
   {
     title: "Or just ask",

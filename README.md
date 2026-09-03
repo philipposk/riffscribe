@@ -1,7 +1,9 @@
 # Riffscribe
 
-Give it a song. Get sheet music, guitar tab, a backing track without the vocals, a
-slow-down player that keeps the pitch, and a way to record yourself over the top.
+Give it a song. Get sheet music and tablature for your instrument, a backing
+track without the part you are learning, a slow-down player that keeps the
+pitch, a score that scrolls itself while you play, and a way to record yourself
+over the top.
 
 Live at **https://riffscribe.6x7.gr**
 
@@ -18,6 +20,18 @@ inference, no per-minute pricing — the audio never leaves the machine.
 | 4. Transcribe | Audio → notes → quantised rhythm → standard notation **and** tablature, with the fretting chosen by a dynamic-programming pass so the hand barely moves. The part is also played back as the instrument you picked, as its own mixer row. | [Basic Pitch](https://github.com/spotify/basic-pitch-ts) (Spotify) on TensorFlow.js, rendered by [alphaTab](https://alphatab.net) |
 | 4b. Play along | The score scrolls itself and highlights the beat being played, so you never touch the mouse while practising. | alphaTab's page geometry, driven by our own playback clock |
 | 5. Record | Overdub yourself against the backing track. Takes recorded at reduced speed are stretched back to full tempo without pitch damage, and nudged for speaker→mic latency. | MediaRecorder + offline Signalsmith Stretch |
+
+A song can hold **several parts**. Transcribe the bass from one stem and the
+harmony from another and they engrave as one score, a staff each, each with its
+own instrument, its own playback row in the mixer, and its own staff in the
+MusicXML and MIDI. Any part can also be **split into voices** and handed to a
+duo, trio, quartet or quintet.
+
+> On that last one, plainly: stem separation gives vocals, drums, bass and
+> *everything else* — and that last stem is every harmony instrument at once.
+> Nothing can reach into a stereo recording and hand back the four players of a
+> quartet. Splitting **arranges** one line across instruments; it does not
+> recover the original musicians.
 
 Exports: **MIDI**, **MusicXML** (opens in MuseScore / Guitar Pro / Dorico, with
 string+fret data), **alphaTex**, **printable PDF**, and **wav** — the full mix,
@@ -45,6 +59,29 @@ It is optional: with no `OPENROUTER_API_KEY` set the widget simply does not
 appear and everything else works as before. The proxy route is unauthenticated,
 so it is deliberately spend-limited — a fixed small model, a hard token ceiling,
 capped context and a per-IP budget.
+
+## Loading from a link
+
+There is an optional helper that fetches audio from a URL:
+
+```bash
+npm run fetch-server     # needs: brew install yt-dlp ffmpeg
+```
+
+While it is running, the studio shows a "paste a link" box; otherwise the box is
+hidden and you use the file picker.
+
+It has to run on your own machine, and that is not squeamishness. A web page
+cannot pull audio off YouTube — it is cross-origin and the media URLs are
+signed. A shared server doing it gets its address blocked quickly, because
+YouTube blocks datacentre ranges hard; Tor exit nodes are on those blocklists
+too, so routing through Tor makes it worse, not better. Only a residential
+address — yours — is reliable. It also means the audio never touches anyone
+else's computer.
+
+Downloading from YouTube is against their terms of service whoever does it.
+Fine for your own practice material; not something to put on a public front
+page.
 
 ## Run it locally
 
