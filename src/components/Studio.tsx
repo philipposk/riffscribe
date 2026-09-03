@@ -29,7 +29,7 @@ import { channelsToAudioBuffer, toModelInput, transcribeAudio } from "@/lib/tran
 import { keyToken, sheetToAlphaTex } from "@/lib/transcribe/alphatex";
 import { notesToMidi } from "@/lib/transcribe/midi";
 import { sheetToMusicXml } from "@/lib/transcribe/musicxml";
-import { quantize, type Sheet } from "@/lib/transcribe/quantize";
+import { quantize, slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { assignFrets } from "@/lib/transcribe/tab";
 import {
   DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent,
@@ -358,6 +358,12 @@ export default function Studio() {
     }
     return s;
   }, [notes, settings]);
+
+  // when each written beat sounds, so the play-along highlight can follow
+  const timeline = useMemo(
+    () => (sheet ? slotTimeline(sheet, settings.offsetSeconds) : []),
+    [sheet, settings.offsetSeconds]
+  );
 
   const tex = useMemo(() => {
     if (!sheet) return "";
@@ -806,8 +812,8 @@ export default function Studio() {
                 tex={tex}
                 zoom={zoom}
                 playAlong={playAlong}
-                // the score starts at bar 1; the recording usually does not
-                scoreTimeSeconds={transport.time - settings.offsetSeconds}
+                timeSeconds={transport.time}
+                timeline={timeline}
               />
             ) : (
               <p className="text-sm text-white/40">

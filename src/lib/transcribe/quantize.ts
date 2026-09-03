@@ -155,3 +155,21 @@ export function quantize(notes: NoteEvent[], s: TranscriptionSettings): Sheet {
 
   return { bars, bpm: s.bpm, timeSignature: s.timeSignature, unitsPerBar, division };
 }
+
+/**
+ * When each written beat sounds, in song time. Index N here is the Nth beat of
+ * the generated score, which is what the play-along highlight tracks.
+ */
+export function slotTimeline(sheet: Sheet, offsetSeconds: number) {
+  const [, beatValue] = sheet.timeSignature;
+  const unitsPerBeat = sheet.division / beatValue;
+  const secondsPerUnit = 60 / sheet.bpm / unitsPerBeat;
+  const out: { start: number; end: number }[] = [];
+  for (const bar of sheet.bars) {
+    for (const slot of bar.slots) {
+      const start = offsetSeconds + slot.startUnits * secondsPerUnit;
+      out.push({ start, end: start + slot.lengthUnits * secondsPerUnit });
+    }
+  }
+  return out;
+}
