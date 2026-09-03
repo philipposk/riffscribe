@@ -345,12 +345,11 @@ export default function Studio() {
         maxMidi: inst.range[1],
         onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
       });
-      const backend = (await transcriptionBackend()) ?? "";
       setNotes(found);
       const k = estimateKey(chromaFromNotes(found));
       setKeyName({ name: k.name, fifths: k.fifths, mode: k.mode });
       const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
-      setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • ${elapsed}s on ${backend}`);
+      setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • took ${elapsed}s`);
     } catch (e) {
       console.error("[riffscribe] transcribe:", e);
       setError((e instanceof Error && e.message) || "The transcriber failed — see the browser console for detail.");
