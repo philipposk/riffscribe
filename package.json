@@ -16,7 +16,6 @@
     "@page-assistant/widget": "file:vendor/page-assistant/widget",
     "@spotify/basic-pitch": "^1.0.1",
     "@tensorflow/tfjs": "^3.21.0",
-    "@tensorflow/tfjs-backend-wasm": "^3.21.0",
     "@tonejs/midi": "^2.0.28",
     "demucs-web": "^1.0.2",
     "lucide-react": "^1.16.0",

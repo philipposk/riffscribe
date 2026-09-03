@@ -20,9 +20,6 @@ const jobs = [
   { from: join(nm, "@coderline/alphatab/dist/soundfont"), to: join(pub, "alphatab/soundfont"), optional: true },
 ];
 
-// TensorFlow's WASM backend — the fallback when WebGL is unavailable or, as on
-// Safari, unreliable for this model.
-const TFJS_WASM_KEEP = /^tfjs-backend-wasm.*\.wasm$/;
 
 async function copyDir(from, to, optional) {
   if (!existsSync(from)) {
@@ -86,22 +83,7 @@ async function copySignalsmith() {
   console.log("[assets] vendor/SignalsmithStretch.mjs");
 }
 
-async function copyTfjsWasm() {
-  const dist = join(nm, "@tensorflow/tfjs-backend-wasm/dist");
-  if (!existsSync(dist)) return;
-  const out = join(pub, "tfjs-wasm");
-  await mkdir(out, { recursive: true });
-  let n = 0;
-  for (const f of await readdir(dist)) {
-    if (!TFJS_WASM_KEEP.test(f)) continue;
-    await cp(join(dist, f), join(out, f));
-    n++;
-  }
-  console.log(`[assets] tfjs wasm files: ${n}`);
-}
-
 for (const j of jobs) await copyDir(j.from, j.to, j.optional);
 await copyAlphaTabScripts();
 await copyOrtWasm();
 await copySignalsmith();
-await copyTfjsWasm();
