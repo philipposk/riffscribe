@@ -84,12 +84,44 @@ export function splitVoices(notes: NoteEvent[], voiceCount: number): VoiceSplit[
   return voices;
 }
 
-/** Move a line into an instrument's range by whole octaves. */
+/**
+ * Move a line into an instrument's range by whole octaves — but only if it
+ * actually needs it. A line that already sits comfortably is left alone rather
+ * than being dragged to the middle of the range.
+ */
 export function fitToRange(notes: NoteEvent[], range: [number, number]): NoteEvent[] {
   if (!notes.length) return notes;
-  const median = [...notes].sort((a, b) => a.pitchMidi - b.pitchMidi)[Math.floor(notes.length / 2)].pitchMidi;
-  const centre = (range[0] + range[1]) / 2;
-  const octaves = Math.round((centre - median) / 12);
-  if (!octaves) return notes;
-  return notes.map((n) => ({ ...n, pitchMidi: n.pitchMidi + octaves * 12 }));
+  const lo = Math.min(...notes.map((n) => n.pitchMidi));
+  const hi = Math.max(...notes.map((n) => n.pitchMidi));
+  if (lo >= range[0] && hi <= range[1]) return notes;
+
+  // try whole octaves, nearest first, and keep the one that fits best
+  let best = 0;
+  let bestOutside = Infinity;
+  for (let oct = -3; oct <= 3; oct++) {
+    const shift = oct * 12;
+    const outside = notes.reduce((acc, n) => {
+      const p = n.pitchMidi + shift;
+      return acc + (p < range[0] ? range[0] - p : p > range[1] ? p - range[1] : 0);
+    }, 0);
+    if (outside < bestOutside || (outside === bestOutside && Math.abs(oct) < Math.abs(best))) {
+      bestOutside = outside;
+      best = oct;
+    }
+  }
+  if (!best) return notes;
+  return notes.map((n) => ({ ...n, pitchMidi: n.pitchMidi + best * 12 }));
+}
+
+/**
+ * Pick which seats of an ensemble to use when a split produced fewer lines than
+ * there are players. Two voices out of a string quartet should be a violin and a
+ * cello, not two violins, so the seats are spread across the group.
+ */
+export function spreadSeats<T>(ensemble: T[], voices: number): T[] {
+  if (voices >= ensemble.length) return ensemble.slice(0, voices);
+  if (voices <= 1) return [ensemble[0]];
+  return Array.from({ length: voices }, (_, i) =>
+    ensemble[Math.round((i * (ensemble.length - 1)) / (voices - 1))]
+  );
 }

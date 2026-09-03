@@ -33,7 +33,7 @@ import { partsToMidi } from "@/lib/transcribe/midi";
 import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
 import { quantize, slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { assignFrets } from "@/lib/transcribe/tab";
-import { fitToRange, splitVoices } from "@/lib/transcribe/voices";
+import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
   DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type Part,
   type TranscriptionSettings,
@@ -429,12 +429,15 @@ export default function Studio() {
   function arrangeForEnsemble(id: string, size: number) {
     const part = parts.find((p) => p.id === id);
     if (!part) return;
-    const chosen = ENSEMBLES[size] ?? ENSEMBLES[4];
-    const voices = splitVoices(part.notes, chosen.length);
+    const ensemble = ENSEMBLES[size] ?? ENSEMBLES[4];
+    const voices = splitVoices(part.notes, ensemble.length).filter((v) => v.notes.length);
+    // fewer lines than players: spread them across the group rather than
+    // stacking everyone on the top seats
+    const chosen = spreadSeats(ensemble, voices.length);
     const made: Part[] = [];
     voices.forEach((v, i) => {
       if (!v.notes.length) return;
-      const instrument = chosen[i];
+      const instrument = chosen[i] ?? ensemble[ensemble.length - 1];
       made.push({
         id: `${instrument}-${part.source}-voice${i}-${partSeq.current++}`,
         source: part.source,
