@@ -33,9 +33,13 @@ async function ensureBackend(): Promise<string> {
     const tf = await import("@tensorflow/tfjs");
     const wasm = await import("@tensorflow/tfjs-backend-wasm");
     wasm.setWasmPaths("/tfjs-wasm/");
-    // Single-threaded on purpose. The threaded build loads and then deadlocks
-    // before the first batch — the run sits at 0% forever. One thread is slower
-    // but it finishes, and the work happens in a worker so the page stays live.
+    // Single-threaded on purpose. The page is cross-origin isolated (the stem
+    // splitter needs it), which makes TensorFlow reach for its threaded WASM
+    // build — and that build loads and then deadlocks before the first batch,
+    // leaving the run at 0% forever. Turning the flag off makes it pick the
+    // plain SIMD binary, which finishes. setThreadsCount alone is not enough:
+    // it does not change which binary gets chosen.
+    tf.env().set("WASM_HAS_MULTITHREAD_SUPPORT", false);
     try {
       wasm.setThreadsCount(1);
     } catch {
