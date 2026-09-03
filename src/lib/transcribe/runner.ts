@@ -1,47 +1,88 @@
 /**
- * Starts the transcription worker.
+ * Runs note detection, in a worker when the browser lets us.
+ *
+ * Detection pegs a core for as long as the song is long, so on the page it
+ * freezes every control while it works. A worker fixes that — but TensorFlow's
+ * browser bundle does not load in every worker environment, so a failure there
+ * falls back to running inline rather than leaving the user with nothing.
  *
  * Kept apart from basicPitch.ts on purpose: the worker imports that module, so
- * if the code that spawns the worker lived there too the two would import each
- * other and the bundler would sit there forever trying to resolve the cycle.
+ * spawning the worker from inside it would make the two import each other and
+ * the bundler would sit forever resolving the cycle.
  */
 import type { NoteEvent } from "../types";
 import { transcribeAudio, transcriptionBackend, type TranscribeOptions } from "./basicPitch";
 
-export function transcribeInWorker(
-  mono22k: Float32Array,
-  opts: TranscribeOptions
-): { promise: Promise<{ notes: NoteEvent[]; backend: string }>; cancel: () => void } {
-  let worker: Worker;
+export interface TranscribeRun {
+  promise: Promise<{ notes: NoteEvent[]; backend: string }>;
+  cancel: () => void;
+}
+
+async function inline(mono22k: Float32Array, opts: TranscribeOptions) {
+  const notes = await transcribeAudio(mono22k, opts);
+  return { notes, backend: (await transcriptionBackend()) ?? "" };
+}
+
+export function transcribeInWorker(mono22k: Float32Array, opts: TranscribeOptions): TranscribeRun {
+  let created: Worker;
   try {
-    worker = new Worker(new URL("../workers/transcribe.worker.ts", import.meta.url), {
+    created = new Worker(new URL("../workers/transcribe.worker.ts", import.meta.url), {
       type: "module",
     });
   } catch {
-    // no worker available — run it inline rather than failing outright
-    const promise = transcribeAudio(mono22k, opts).then(async (notes) => ({
-      notes,
-      backend: (await transcriptionBackend()) ?? "",
-    }));
-    return { promise, cancel: () => {} };
+    return { promise: inline(mono22k, opts), cancel: () => {} };
   }
+  const worker = created;
+  let alive = true;
+  const kill = () => {
+    if (!alive) return;
+    alive = false;
+    worker.terminate();
+  };
 
+  let cancelled = false;
   const promise = new Promise<{ notes: NoteEvent[]; backend: string }>((resolve, reject) => {
-    worker.onerror = (e) => reject(new Error(e.message || "transcription worker crashed"));
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      kill();
+      fn();
+    };
+
+    // The worker may fail at import time in browsers where TensorFlow's bundle
+    // does not load there. The audio was NOT transferred, so we can just run it
+    // here instead — slower and it blocks the page, but it finishes.
+    const fallBack = () => {
+      if (cancelled) return;
+      inline(mono22k, opts).then(
+        (r) => resolve(r),
+        (e) => reject(e)
+      );
+    };
+
+    worker.onerror = (e) => {
+      e.preventDefault?.();
+      finish(fallBack);
+    };
+    worker.onmessageerror = () => finish(fallBack);
     worker.onmessage = (e) => {
       const m = e.data;
       if (m.type === "progress") opts.onProgress?.(m.value);
-      else if (m.type === "done") {
-        resolve({ notes: m.notes as NoteEvent[], backend: m.backend as string });
-        worker.terminate();
-      } else if (m.type === "error") {
-        reject(new Error(m.message));
-        worker.terminate();
-      }
+      else if (m.type === "done") finish(() => resolve({ notes: m.notes as NoteEvent[], backend: m.backend as string }));
+      else if (m.type === "error") finish(() => reject(new Error(m.message)));
     };
+
     const { onProgress: _ignored, ...options } = opts;
-    worker.postMessage({ type: "transcribe", mono22k, options }, [mono22k.buffer]);
+    // deliberately not transferred — the fallback needs the samples
+    worker.postMessage({ type: "transcribe", mono22k, options });
   });
 
-  return { promise, cancel: () => worker.terminate() };
+  return {
+    promise,
+    cancel: () => {
+      cancelled = true;
+      kill();
+    },
+  };
 }
