@@ -26,8 +26,9 @@ import {
 } from "@/lib/audio/stems";
 import { synthesizeGuide } from "@/lib/audio/guide";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
-import { channelsToAudioBuffer, toModelInput } from "@/lib/transcribe/basicPitch";
-import { transcribeInWorker } from "@/lib/transcribe/runner";
+import {
+  channelsToAudioBuffer, toModelInput, transcribeAudio, transcriptionBackend,
+} from "@/lib/transcribe/basicPitch";
 import { keyToken, sheetToAlphaTex } from "@/lib/transcribe/alphatex";
 import { notesToMidi } from "@/lib/transcribe/midi";
 import { sheetToMusicXml } from "@/lib/transcribe/musicxml";
@@ -87,7 +88,6 @@ export default function Studio() {
   const recorderRef = useRef<MicRecorder | null>(null);
   const recStartRef = useRef(0);
   const cancelSplitRef = useRef<(() => void) | null>(null);
-  const cancelTranscribeRef = useRef<(() => void) | null>(null);
 
   if (!engineRef.current && typeof window !== "undefined") engineRef.current = new PracticeEngine();
   if (!recorderRef.current && typeof window !== "undefined") recorderRef.current = new MicRecorder();
@@ -291,12 +291,9 @@ export default function Studio() {
 
   function cancelJob() {
     cancelSplitRef.current?.();
-    cancelTranscribeRef.current?.();
-    const wasSplit = !!cancelSplitRef.current;
     cancelSplitRef.current = null;
-    cancelTranscribeRef.current = null;
     setBusy(null);
-    setLog(wasSplit ? "Separation cancelled. Whatever downloaded is kept." : "Transcription cancelled.");
+    setLog("Separation cancelled. Whatever downloaded is kept.");
   }
 
   /** Cut the song down to the looped section — separation is slow, so this helps. */
@@ -337,7 +334,12 @@ export default function Studio() {
     try {
       const buffer = channelsToAudioBuffer([src.left, src.right], DEMUCS_SAMPLE_RATE);
       const mono22 = await toModelInput(buffer);
-      const { promise, cancel } = transcribeInWorker(mono22, {
+      // This runs on the page rather than in a worker. It was tried in one, but
+      // the worker bundle ends up with a second copy of TensorFlow, and tensors
+      // made by one copy are then written through the other's backend, which
+      // fails with "Unknown dtype undefined". Basic Pitch awaits between
+      // batches, so the progress bar still moves while it works.
+      const found = await transcribeAudio(mono22, {
         onsetThreshold: settings.onsetThreshold,
         frameThreshold: settings.frameThreshold,
         minNoteLength: settings.minNoteLength,
@@ -345,8 +347,7 @@ export default function Studio() {
         maxMidi: inst.range[1],
         onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
       });
-      cancelTranscribeRef.current = cancel;
-      const { notes: found, backend } = await promise;
+      const backend = (await transcriptionBackend()) ?? "";
       setNotes(found);
       const k = estimateKey(chromaFromNotes(found));
       setKeyName({ name: k.name, fifths: k.fifths, mode: k.mode });
@@ -356,7 +357,6 @@ export default function Studio() {
       console.error("[riffscribe] transcribe:", e);
       setError((e instanceof Error && e.message) || "The transcriber failed — see the browser console for detail.");
     } finally {
-      cancelTranscribeRef.current = null;
       setBusy(null);
     }
   }
@@ -703,7 +703,7 @@ export default function Studio() {
         <div className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[#1a1608]/95 px-4 py-3 text-sm shadow-lg backdrop-blur">
           <p className="flex items-center gap-2 text-[var(--color-accent)]">
             <Loader2 className="animate-spin" size={16} /> {busy.label}
-            {(cancelSplitRef.current || cancelTranscribeRef.current) && (
+            {cancelSplitRef.current && (
               <button className="btn ml-auto py-1 text-xs" onClick={cancelJob}>
                 Cancel
               </button>
