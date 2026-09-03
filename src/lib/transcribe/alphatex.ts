@@ -51,19 +51,17 @@ export interface TexOptions {
   keySignature?: string;
   /** General MIDI program for playback. */
   midiProgram?: number;
+  /** Staff name; defaults to the instrument's label. */
+  trackName?: string;
 }
 
-export function sheetToAlphaTex(sheet: Sheet, o: TexOptions): string {
+/** One `\track` block — the staff header plus its bars. */
+function trackBlock(sheet: Sheet, o: TexOptions, withMeta: boolean): string[] {
   const inst = o.instrument;
   const stringed = !!inst.tuning?.length;
   const lines: string[] = [];
 
-  lines.push(`\\title "${escapeTex(o.title || "Riffscribe transcription")}"`);
-  if (o.artist) lines.push(`\\subtitle "${escapeTex(o.artist)}"`);
-  lines.push(`\\tempo ${Math.round(sheet.bpm)}`);
-  lines.push(".");
-
-  lines.push(`\\track "${escapeTex(inst.label)}"`);
+  lines.push(`\\track "${escapeTex(o.trackName || inst.label)}"`);
   lines.push(`\\instrument ${o.midiProgram ?? inst.gm}`);
   if (stringed) {
     lines.push(`\\staff{score tabs}`);
@@ -77,7 +75,7 @@ export function sheetToAlphaTex(sheet: Sheet, o: TexOptions): string {
 
   const bars = sheet.bars.map((bar, i) => {
     const head: string[] = [];
-    if (i === 0) {
+    if (i === 0 && withMeta) {
       head.push(`\\ts ${sheet.timeSignature[0]} ${sheet.timeSignature[1]}`);
       if (o.keySignature) head.push(`\\ks ${o.keySignature}`);
     }
@@ -87,7 +85,38 @@ export function sheetToAlphaTex(sheet: Sheet, o: TexOptions): string {
   });
 
   lines.push(bars.join(" |\n"));
+  return lines;
+}
+
+export interface ScoreOptions {
+  title?: string;
+  artist?: string;
+  bpm: number;
+}
+
+/** A score with one staff per part, so an ensemble reads as one piece. */
+export function sheetsToAlphaTex(
+  parts: { sheet: Sheet; options: TexOptions }[],
+  meta: ScoreOptions
+): string {
+  if (!parts.length) return "";
+  const lines: string[] = [
+    `\\title "${escapeTex(meta.title || "Riffscribe transcription")}"`,
+  ];
+  if (meta.artist) lines.push(`\\subtitle "${escapeTex(meta.artist)}"`);
+  lines.push(`\\tempo ${Math.round(meta.bpm)}`);
+  lines.push(".");
+  for (const p of parts) lines.push(...trackBlock(p.sheet, p.options, true));
   return lines.join("\n");
+}
+
+/** Convenience for a single part. */
+export function sheetToAlphaTex(sheet: Sheet, o: TexOptions): string {
+  return sheetsToAlphaTex([{ sheet, options: o }], {
+    title: o.title,
+    artist: o.artist,
+    bpm: sheet.bpm,
+  });
 }
 
 // Real key-signature spellings, indexed by circle-of-fifths position -7..+7.

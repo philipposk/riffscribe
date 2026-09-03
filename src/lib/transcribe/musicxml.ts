@@ -43,9 +43,11 @@ export interface MusicXmlOptions {
   instrument: Instrument;
   fifths?: number;
   capo?: number;
+  /** Staff name; defaults to the instrument's label. */
+  partName?: string;
 }
 
-export function sheetToMusicXml(sheet: Sheet, o: MusicXmlOptions): string {
+function measuresFor(sheet: Sheet, o: MusicXmlOptions): string {
   const inst = o.instrument;
   const stringed = !!inst.tuning?.length;
   const divisionsPerWhole = Math.max(sheet.division, 16);
@@ -113,15 +115,42 @@ export function sheetToMusicXml(sheet: Sheet, o: MusicXmlOptions): string {
     })
     .join("");
 
+  return measures;
+}
+
+/** One file, one part per staff — the whole ensemble opens together. */
+export function sheetsToMusicXml(
+  parts: { sheet: Sheet; options: MusicXmlOptions }[],
+  meta: { title?: string; artist?: string } = {}
+): string {
+  const partList = parts
+    .map(
+      (p, i) =>
+        `<score-part id="P${i + 1}"><part-name>${esc(p.options.partName || p.options.instrument.label)}</part-name>` +
+        `<score-instrument id="P${i + 1}-I1"><instrument-name>${esc(p.options.instrument.label)}</instrument-name></score-instrument>` +
+        `<midi-instrument id="P${i + 1}-I1"><midi-channel>${(i % 15) + 1}</midi-channel><midi-program>${p.options.instrument.gm + 1}</midi-program></midi-instrument>` +
+        `</score-part>`
+    )
+    .join("");
+
+  const bodies = parts
+    .map((p, i) => `<part id="P${i + 1}">${measuresFor(p.sheet, p.options)}</part>`)
+    .join("");
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <score-partwise version="3.1">
-  <work><work-title>${esc(o.title || "Riffscribe transcription")}</work-title></work>
+  <work><work-title>${esc(meta.title || "Riffscribe transcription")}</work-title></work>
   <identification>
-    ${o.artist ? `<creator type="composer">${esc(o.artist)}</creator>` : ""}
+    ${meta.artist ? `<creator type="composer">${esc(meta.artist)}</creator>` : ""}
     <encoding><software>Riffscribe</software><encoding-description>Transcribed in-browser with Basic Pitch</encoding-description></encoding>
   </identification>
-  <part-list><score-part id="P1"><part-name>${esc(inst.label)}</part-name></score-part></part-list>
-  <part id="P1">${measures}</part>
+  <part-list>${partList}</part-list>
+  ${bodies}
 </score-partwise>`;
+}
+
+/** Convenience for a single part. */
+export function sheetToMusicXml(sheet: Sheet, o: MusicXmlOptions): string {
+  return sheetsToMusicXml([{ sheet, options: o }], { title: o.title, artist: o.artist });
 }

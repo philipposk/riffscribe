@@ -29,6 +29,7 @@ export interface AssistantActions {
   setTrack: (track: string, change: { level?: number; muted?: boolean; solo?: boolean }) => string;
   exportFile: (what: string) => string;
   setPlayAlong: (on: boolean) => string;
+  arrange: (size: number) => string;
   pageState: () => Record<string, unknown>;
 }
 
@@ -230,6 +231,19 @@ export default function Assistant({ actions }: { actions: AssistantActions }) {
           render: (r: { text: string }) => r.text,
         }),
         capability({
+          name: "arrange_for_ensemble",
+          description:
+            "Split the harmony part that has already been transcribed into separate voices and give each one to an instrument — a duo, trio, quartet or quintet. This arranges one line across players; it does not recover the original musicians from the recording.",
+          parameters: {
+            type: "object",
+            properties: { size: { type: "number", enum: [2, 3, 4, 5] } },
+            required: ["size"],
+          },
+          confirm: true,
+          run: async ({ size }: { size: number }) => ({ text: a().arrange(size) }),
+          render: (r: { text: string }) => r.text,
+        }),
+        capability({
           name: "set_play_along",
           description:
             "Turn the follow-the-music view on or off — the score scrolls itself and highlights the beat being played.",
@@ -258,6 +272,7 @@ export default function Assistant({ actions }: { actions: AssistantActions }) {
           "Split the stems and write the bass part out",
           "Write this for violoncello",
           "Slow it to 60% and loop the first eight bars",
+          "Split the harmony into a string quartet",
           "Mute the vocals and export the backing track",
         ],
       });

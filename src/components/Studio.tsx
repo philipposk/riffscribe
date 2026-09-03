@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Download, FileMusic, Loader2, Mic, Music2, Printer, Scissors, Square, Upload, Wand2,
+  Download, FileMusic, Loader2, Mic, Music2, Printer, Scissors, Square, Upload, Users, Wand2,
 } from "lucide-react";
 
 import Assistant, { type AssistantActions } from "./Assistant";
@@ -27,13 +27,14 @@ import {
 import { synthesizeGuide } from "@/lib/audio/guide";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
 import { channelsToAudioBuffer, toModelInput, transcribeAudio } from "@/lib/transcribe/basicPitch";
-import { keyToken, sheetToAlphaTex } from "@/lib/transcribe/alphatex";
-import { notesToMidi } from "@/lib/transcribe/midi";
-import { sheetToMusicXml } from "@/lib/transcribe/musicxml";
+import { keyToken, sheetsToAlphaTex } from "@/lib/transcribe/alphatex";
+import { partsToMidi } from "@/lib/transcribe/midi";
+import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
 import { quantize, slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { assignFrets } from "@/lib/transcribe/tab";
+import { fitToRange, splitVoices } from "@/lib/transcribe/voices";
 import {
-  DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent,
+  DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type Part,
   type TranscriptionSettings,
 } from "@/lib/types";
 
@@ -52,6 +53,14 @@ const STEM_LABEL: Record<string, { label: string; hint: string }> = {
   guide: { label: "Your part", hint: "the transcription, played back" },
 };
 
+/** Which instruments a voice split is handed to, top line first. */
+const ENSEMBLES: Record<number, InstrumentId[]> = {
+  2: ["violin", "cello"],
+  3: ["violin", "viola", "cello"],
+  4: ["violin", "violin", "viola", "cello"],
+  5: ["violin", "violin", "viola", "cello", "double-bass"],
+};
+
 export default function Studio() {
   const [file, setFile] = useState<File | null>(null);
   const [audio, setAudio] = useState<{ left: Float32Array; right: Float32Array } | null>(null);
@@ -62,9 +71,9 @@ export default function Studio() {
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string>("");
 
-  const [notes, setNotes] = useState<NoteEvent[] | null>(null);
+  const [parts, setParts] = useState<Part[]>([]);
   const [settings, setSettings] = useState<TranscriptionSettings>(DEFAULT_SETTINGS);
-  const [keyName, setKeyName] = useState<{ name: string; fifths: number; mode: "major" | "minor" } | null>(null);
+  const [ensembleSize, setEnsembleSize] = useState(4);
   const [source, setSource] = useState<Source>("mix");
   const [zoom, setZoom] = useState(1);
 
@@ -86,6 +95,7 @@ export default function Studio() {
   const recorderRef = useRef<MicRecorder | null>(null);
   const recStartRef = useRef(0);
   const cancelSplitRef = useRef<(() => void) | null>(null);
+  const partSeq = useRef(0);
 
   if (!engineRef.current && typeof window !== "undefined") engineRef.current = new PracticeEngine();
   if (!recorderRef.current && typeof window !== "undefined") recorderRef.current = new MicRecorder();
@@ -112,7 +122,7 @@ export default function Studio() {
       setWavePeaks(peaksOf(toMono(stereo.left, stereo.right), 2200));
       setStems(null);
       setStemMode("none");
-      setNotes(null);
+      setParts([]);
       setOverdub(null);
       setSource("mix");
 
@@ -129,16 +139,19 @@ export default function Studio() {
 
   /* --------------------------------------------------------------- engine  */
 
-  const guideTrack = useMemo(() => {
-    if (!audio || !notes?.length) return null;
-    const [left, right] = synthesizeGuide(notes, {
-      timbre: INSTRUMENTS[settings.instrument].timbre,
-      sampleRate: DEMUCS_SAMPLE_RATE,
-      lengthSamples: audio.left.length,
-      transposeSemitones: settings.transposeSemitones,
+  /** One synthesised line per part, so each can be heard on its own. */
+  const guideTracks = useMemo(() => {
+    if (!audio) return [] as { id: string; left: Float32Array; right: Float32Array }[];
+    return parts.map((part) => {
+      const [left, right] = synthesizeGuide(part.notes, {
+        timbre: INSTRUMENTS[part.instrument].timbre,
+        sampleRate: DEMUCS_SAMPLE_RATE,
+        lengthSamples: audio.left.length,
+        transposeSemitones: settings.transposeSemitones,
+      });
+      return { id: `guide:${part.id}`, left, right };
     });
-    return { left, right };
-  }, [audio, notes, settings.instrument, settings.transposeSemitones]);
+  }, [audio, parts, settings.transposeSemitones]);
 
   const trackList = useMemo<{ id: string; label: string; hint?: string }[]>(() => {
     const out: { id: string; label: string; hint?: string }[] = [];
@@ -150,17 +163,17 @@ export default function Studio() {
     } else if (audio) {
       out.push({ id: "original", ...STEM_LABEL.original });
     }
-    if (guideTrack) {
+    for (const part of parts) {
       out.push({
-        id: "guide",
-        label: `Your part — ${INSTRUMENTS[settings.instrument].label}`,
-        hint: "the transcription, played back",
+        id: `guide:${part.id}`,
+        label: `${INSTRUMENTS[part.instrument].label}`,
+        hint: `written from ${part.source === "mix" ? "the full mix" : part.source}`,
       });
     }
     if (audio) out.push({ id: "click", ...STEM_LABEL.click });
     if (overdub) out.push({ id: "overdub", ...STEM_LABEL.overdub });
     return out;
-  }, [stems, stemMode, audio, overdub, guideTrack, settings.instrument]);
+  }, [stems, stemMode, audio, overdub, parts]);
 
   const clickTrack = useMemo(() => {
     if (!audio) return null;
@@ -189,7 +202,7 @@ export default function Studio() {
       push("original", audio.left, audio.right);
     }
 
-    if (guideTrack) push("guide", guideTrack.left, guideTrack.right);
+    for (const g of guideTracks) push(g.id, g.left, g.right);
     if (clickTrack) push("click", clickTrack.left, clickTrack.right);
     if (overdub) push("overdub", overdub.left, overdub.right);
 
@@ -208,12 +221,12 @@ export default function Studio() {
         // the click starts muted but at a usable level, so un-muting it is not
         // silence; the guide starts audible, since hearing your part is the point
         if (t.id === "click") next[t.id] = { gain: 0.7, muted: true };
-        else if (t.id === "guide") next[t.id] = { gain: 0.85, muted: false };
+        else if (t.id.startsWith("guide:")) next[t.id] = { gain: 0.85, muted: false };
         else next[t.id] = { gain: 1, muted: false };
       }
       return next;
     });
-  }, [audio, stems, stemMode, overdub, trackList, clickTrack, guideTrack]);
+  }, [audio, stems, stemMode, overdub, trackList, clickTrack, guideTracks]);
 
   // rebuilding tears down the audio graph, so coalesce bursts (e.g. typing a BPM)
   useEffect(() => {
@@ -306,7 +319,7 @@ export default function Studio() {
     setWavePeaks(peaksOf(toMono(left, right), 2200));
     setStems(null);
     setStemMode("none");
-    setNotes(null);
+    setParts([]);
     setOverdub(null);
     setSource("mix");
     setLoop(null);
@@ -332,11 +345,6 @@ export default function Studio() {
     try {
       const buffer = channelsToAudioBuffer([src.left, src.right], DEMUCS_SAMPLE_RATE);
       const mono22 = await toModelInput(buffer);
-      // This runs on the page rather than in a worker. It was tried in one, but
-      // the worker bundle ends up with a second copy of TensorFlow, and tensors
-      // made by one copy are then written through the other's backend, which
-      // fails with "Unknown dtype undefined". Basic Pitch awaits between
-      // batches, so the progress bar still moves while it works.
       const found = await transcribeAudio(mono22, {
         onsetThreshold: settings.onsetThreshold,
         frameThreshold: settings.frameThreshold,
@@ -345,44 +353,113 @@ export default function Studio() {
         maxMidi: inst.range[1],
         onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
       });
-      setNotes(found);
       const k = estimateKey(chromaFromNotes(found));
-      setKeyName({ name: k.name, fifths: k.fifths, mode: k.mode });
+      addPart({
+        source,
+        instrument: settings.instrument,
+        notes: found,
+        fifths: k.fifths,
+        keyName: k.name,
+        keyMode: k.mode,
+      });
       const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
       setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • took ${elapsed}s`);
     } catch (e) {
-      console.error("[riffscribe] transcribe:", e);
-      setError((e instanceof Error && e.message) || "The transcriber failed — see the browser console for detail.");
+      setError(e instanceof Error ? e.message : "transcription failed");
     } finally {
       setBusy(null);
     }
   }
 
-  const sheet: Sheet | null = useMemo(() => {
-    if (!notes?.length) return null;
-    const s = quantize(notes, settings);
-    const inst = INSTRUMENTS[settings.instrument];
-    if (inst.tuning) {
-      assignFrets(s, { tuning: inst.tuning, maxFret: inst.frets ?? 22, capo: settings.capo });
-    }
-    return s;
-  }, [notes, settings]);
+  function addPart(p: Omit<Part, "id">) {
+    setParts((list) => [
+      ...list,
+      { ...p, id: `${p.instrument}-${p.source}-${list.length}-${partSeq.current++}` },
+    ]);
+  }
 
-  // when each written beat sounds, so the play-along highlight can follow
+  function removePart(id: string) {
+    setParts((list) => list.filter((p) => p.id !== id));
+  }
+
+  function setPartInstrument(id: string, instrument: InstrumentId) {
+    setParts((list) => list.map((p) => (p.id === id ? { ...p, instrument } : p)));
+  }
+
+  /**
+   * Turn one polyphonic line into an ensemble.
+   *
+   * Stem separation cannot hand you the individual players — "everything else"
+   * is every harmony instrument at once. What it can do is split that harmony
+   * into separate voices and give each one to an instrument, which is arranging
+   * rather than un-mixing. Said plainly in the UI.
+   */
+  function arrangeForEnsemble(id: string, size: number) {
+    const part = parts.find((p) => p.id === id);
+    if (!part) return;
+    const chosen = ENSEMBLES[size] ?? ENSEMBLES[4];
+    const voices = splitVoices(part.notes, chosen.length);
+    const made: Part[] = [];
+    voices.forEach((v, i) => {
+      if (!v.notes.length) return;
+      const instrument = chosen[i];
+      made.push({
+        id: `${instrument}-${part.source}-voice${i}-${partSeq.current++}`,
+        source: part.source,
+        instrument,
+        notes: fitToRange(v.notes, INSTRUMENTS[instrument].range),
+        fifths: part.fifths,
+        keyName: part.keyName,
+        keyMode: part.keyMode,
+      });
+    });
+    if (!made.length) {
+      setError("There was nothing to split into voices.");
+      return;
+    }
+    setParts((list) => [...list.filter((p) => p.id !== id), ...made]);
+    setLog(`Arranged into ${made.length} parts: ${made.map((m) => INSTRUMENTS[m.instrument].label).join(", ")}.`);
+  }
+
+  /** Every part, quantised and fretted, ready to engrave. */
+  const partSheets = useMemo(() => {
+    return parts.map((part) => {
+      const sheet = quantize(part.notes, { ...settings, instrument: part.instrument });
+      const inst = INSTRUMENTS[part.instrument];
+      if (inst.tuning) {
+        assignFrets(sheet, { tuning: inst.tuning, maxFret: inst.frets ?? 22, capo: settings.capo });
+      }
+      return { part, sheet, instrument: inst };
+    });
+  }, [parts, settings]);
+
+  const sheet: Sheet | null = partSheets[0]?.sheet ?? null;
+
+  // when each written beat sounds, so the play-along highlight can follow the
+  // top staff — the one a player is most likely reading
   const timeline = useMemo(
     () => (sheet ? slotTimeline(sheet, settings.offsetSeconds) : []),
     [sheet, settings.offsetSeconds]
   );
 
   const tex = useMemo(() => {
-    if (!sheet) return "";
-    return sheetToAlphaTex(sheet, {
-      title: file?.name.replace(/\.[^.]+$/, "") || "Riffscribe transcription",
-      instrument: INSTRUMENTS[settings.instrument],
-      capo: settings.capo,
-      keySignature: keyName ? keyToken(keyName.fifths, keyName.mode) : undefined,
-    });
-  }, [sheet, settings.instrument, settings.capo, keyName, file]);
+    if (!partSheets.length) return "";
+    return sheetsToAlphaTex(
+      partSheets.map(({ part, sheet: sh, instrument }) => ({
+        sheet: sh,
+        options: {
+          instrument,
+          capo: settings.capo,
+          keySignature: keyToken(part.fifths, part.keyMode),
+          trackName: instrument.label,
+        },
+      })),
+      {
+        title: file?.name.replace(/\.[^.]+$/, "") || "Riffscribe transcription",
+        bpm: settings.bpm,
+      }
+    );
+  }, [partSheets, settings.capo, settings.bpm, file]);
 
   /* ----------------------------------------------------------------- record */
 
@@ -436,19 +513,32 @@ export default function Studio() {
   const baseName = (file?.name.replace(/\.[^.]+$/, "") || "riffscribe").slice(0, 60);
 
   function exportMidi() {
-    if (!notes) return;
-    const bytes = notesToMidi(notes, { bpm: settings.bpm, name: baseName });
+    if (!parts.length) return;
+    const bytes = partsToMidi(
+      parts.map((p) => ({
+        notes: p.notes,
+        name: INSTRUMENTS[p.instrument].label,
+        program: INSTRUMENTS[p.instrument].gm,
+      })),
+      { bpm: settings.bpm, name: baseName }
+    );
     downloadBlob(new Blob([bytes as unknown as BlobPart], { type: "audio/midi" }), `${baseName}.mid`);
   }
 
   function exportMusicXml() {
-    if (!sheet) return;
-    const xml = sheetToMusicXml(sheet, {
-      title: baseName,
-      instrument: INSTRUMENTS[settings.instrument],
-      fifths: keyName?.fifths ?? 0,
-      capo: settings.capo,
-    });
+    if (!partSheets.length) return;
+    const xml = sheetsToMusicXml(
+      partSheets.map(({ part, sheet: sh, instrument }) => ({
+        sheet: sh,
+        options: {
+          instrument,
+          fifths: part.fifths,
+          capo: settings.capo,
+          partName: instrument.label,
+        },
+      })),
+      { title: baseName }
+    );
     downloadBlob(new Blob([xml], { type: "application/vnd.recordare.musicxml+xml" }), `${baseName}.musicxml`);
   }
 
@@ -459,15 +549,15 @@ export default function Studio() {
 
   /** Every track that currently exists, keyed the same way as the mixer. */
   function allParts(): Record<string, { left: Float32Array; right: Float32Array }> {
-    const parts: Record<string, { left: Float32Array; right: Float32Array }> = stems
+    const mixParts: Record<string, { left: Float32Array; right: Float32Array }> = stems
       ? { ...stems }
       : audio
         ? { original: audio }
         : {};
-    if (overdub) parts.overdub = overdub;
-    if (guideTrack) parts.guide = guideTrack;
-    if (clickTrack) parts.click = clickTrack;
-    return parts;
+    if (overdub) mixParts.overdub = overdub;
+    for (const g of guideTracks) mixParts[g.id] = { left: g.left, right: g.right };
+    if (clickTrack) mixParts.click = clickTrack;
+    return mixParts;
   }
 
   /** Whole song, or just the looped section when the user asked for that. */
@@ -550,20 +640,22 @@ export default function Studio() {
   const assistantActions: AssistantActions = {
     describe: () => {
       if (!audio) return "No song is loaded yet — drop a file into step 1 first.";
-      const parts: string[] = [
+      const lines: string[] = [
         `${file?.name ?? "A song"}, ${fmtTime(transport.duration)} long, at ${settings.bpm} BPM.`,
         stems
           ? stemMode === "ai"
             ? "It has been split into four stems."
             : "The centre channel has been pulled out."
           : "It has not been split into stems.",
-        notes?.length
-          ? `${notes.length} notes are written out for ${INSTRUMENTS[settings.instrument].label}${keyName ? ` in ${keyName.name}` : ""}.`
+        parts.length
+          ? `${parts.length} part${parts.length > 1 ? "s are" : " is"} written out: ${parts
+              .map((p) => `${INSTRUMENTS[p.instrument].label} (${p.notes.length} notes, ${p.keyName})`)
+              .join(", ")}.`
           : "Nothing has been transcribed yet.",
         `Playing at ${Math.round(transport.rate * 100)}%${transport.semitones ? `, transposed ${transport.semitones > 0 ? "+" : ""}${transport.semitones}` : ""}.`,
         loop ? `Looping ${fmtTime(loop[0])} to ${fmtTime(loop[1])}.` : "No loop is set.",
       ];
-      return parts.join(" ");
+      return lines.join(" ");
     },
 
     setInstrument: (id) => {
@@ -585,9 +677,7 @@ export default function Studio() {
       if (busy) return "Something else is already running.";
       if (src) setSource(src as Source);
       await runTranscribe();
-      return notes?.length
-        ? `Written out for ${INSTRUMENTS[settings.instrument].label}.`
-        : "Transcription finished.";
+      return `Written out for ${INSTRUMENTS[settings.instrument].label}.`;
     },
 
     setTempo: (bpm) => { patch({ bpm: Math.max(30, Math.min(300, bpm)) }); return `Tempo set to ${Math.round(bpm)} BPM.`; },
@@ -649,6 +739,14 @@ export default function Studio() {
       return `I can export midi, musicxml, alphatex, pdf, the backing track, the current mix, or one of: ${trackList.map((t) => t.id).join(", ")}.`;
     },
 
+    arrange: (size) => {
+      const target = parts.find((p) => p.source === "other") ?? parts[parts.length - 1];
+      if (!target) return "Transcribe a part first — there is nothing to split.";
+      setEnsembleSize(size);
+      arrangeForEnsemble(target.id, size);
+      return `Splitting ${INSTRUMENTS[target.instrument].label} into ${size} voices.`;
+    },
+
     setPlayAlong: (on) => { setPlayAlong(on); return on ? "The score will follow the music." : "The score will stay put."; },
 
     pageState: () => ({
@@ -656,10 +754,15 @@ export default function Studio() {
       fileName: file?.name ?? null,
       durationSeconds: Math.round(transport.duration),
       stems: stems ? (stemMode === "ai" ? ["vocals", "drums", "bass", "other"] : ["vocals", "other"]) : [],
-      transcribed: !!notes?.length,
-      noteCount: notes?.length ?? 0,
-      instrument: settings.instrument,
-      key: keyName?.name ?? null,
+      transcribed: parts.length > 0,
+      parts: parts.map((p) => ({
+        id: p.id,
+        instrument: p.instrument,
+        source: p.source,
+        noteCount: p.notes.length,
+        key: p.keyName,
+      })),
+      nextInstrument: settings.instrument,
       bpm: settings.bpm,
       playing: transport.playing,
       positionSeconds: Math.round(transport.time),
@@ -848,7 +951,7 @@ export default function Studio() {
                 </select>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-white/60">Write it for</span>
+                <span className="mb-1 block text-white/60">Write the next part for</span>
                 <select
                   className="w-full" value={settings.instrument}
                   onChange={(e) => patch({ instrument: e.target.value as InstrumentId })}
@@ -928,7 +1031,7 @@ export default function Studio() {
                   ? `Transcribing… ${Math.round((busy.value ?? 0) * 100)}%`
                   : "Transcribe"}
               </button>
-              <button className="btn" onClick={exportMidi} disabled={!notes}>
+              <button className="btn" onClick={exportMidi} disabled={!parts.length}>
                 <Download size={15} /> MIDI
               </button>
               <button className="btn" onClick={exportMusicXml} disabled={!sheet}>
@@ -952,6 +1055,60 @@ export default function Studio() {
               </p>
             )}
 
+            {parts.length > 0 && (
+              <div className="no-print mb-4 grid gap-2">
+                {parts.map((part) => (
+                  <div
+                    key={part.id}
+                    className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-line)] px-3 py-2"
+                  >
+                    <select
+                      className="text-sm"
+                      value={part.instrument}
+                      onChange={(e) => setPartInstrument(part.id, e.target.value as InstrumentId)}
+                    >
+                      {Object.values(INSTRUMENTS).map((i) => (
+                        <option key={i.id} value={i.id}>{i.label}</option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-white/45">
+                      {part.notes.length} notes · {part.keyName} · from{" "}
+                      {part.source === "mix" ? "the full mix" : part.source}
+                    </span>
+                    <span className="ml-auto flex items-center gap-2">
+                      <button
+                        className="btn py-1 text-xs"
+                        onClick={() => arrangeForEnsemble(part.id, ensembleSize)}
+                        title="Split this line into separate voices, one per instrument"
+                      >
+                        <Users size={14} /> Split into {ensembleSize} voices
+                      </button>
+                      <button className="btn py-1 text-xs" onClick={() => removePart(part.id)}>
+                        Remove
+                      </button>
+                    </span>
+                  </div>
+                ))}
+                <label className="flex items-center gap-2 text-xs text-white/45">
+                  Ensemble size
+                  <select
+                    className="text-xs"
+                    value={ensembleSize}
+                    onChange={(e) => setEnsembleSize(Number(e.target.value))}
+                  >
+                    <option value={2}>Duo — violin, cello</option>
+                    <option value={3}>Trio — violin, viola, cello</option>
+                    <option value={4}>Quartet — 2 violins, viola, cello</option>
+                    <option value={5}>Quintet — + double bass</option>
+                  </select>
+                  <span>
+                    Splitting arranges one line across instruments; it does not recover the original
+                    players from the recording.
+                  </span>
+                </label>
+              </div>
+            )}
+
             {tex ? (
               <ScoreView
                 tex={tex}
@@ -962,9 +1119,10 @@ export default function Studio() {
               />
             ) : (
               <p className="text-sm text-white/40">
-                Run the transcriber to see notation and tablature here. Tip: split the stems first and
-                transcribe just the bass or just the &ldquo;everything else&rdquo; stem — one instrument at a
-                time is where this model is strongest.
+                Run the transcriber to see notation and tablature here. Transcribe as many parts as you
+                like — pick a stem, choose an instrument, and each one is added as another staff on the
+                same score. One instrument at a time is where this model is strongest, so split the stems
+                first rather than transcribing the full mix.
               </p>
             )}
           </section>
@@ -998,7 +1156,7 @@ export default function Studio() {
             <p className="mt-3 text-xs text-white/45">
               Record at any speed — a take played at 60% is stretched back to full tempo without going
               chipmunk. Use headphones so the backing track does not bleed into the mic.
-              {guideTrack && " Mute \u201cYour part\u201d in the mixer first, so you are playing the line rather than doubling it."}
+              {parts.length > 0 && " Mute your own part in the mixer first, so you are playing the line rather than doubling it."}
             </p>
           </section>
         </>

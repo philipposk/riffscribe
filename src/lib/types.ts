@@ -175,3 +175,21 @@ export const DEFAULT_SETTINGS: TranscriptionSettings = {
   capo: 0,
   transposeSemitones: 0,
 };
+
+
+/**
+ * One written-out line. A song can hold several — the bass from one stem, the
+ * harmony from another, or four voices arranged out of a single stem — and they
+ * are engraved together as one score.
+ */
+export interface Part {
+  id: string;
+  /** Which stem it was heard in. */
+  source: string;
+  instrument: InstrumentId;
+  notes: NoteEvent[];
+  /** Key signature position on the circle of fifths, -7..7. */
+  fifths: number;
+  keyName: string;
+  keyMode: "major" | "minor";
+}
