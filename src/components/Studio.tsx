@@ -79,6 +79,7 @@ export default function Studio() {
   const [overdub, setOverdub] = useState<{ left: Float32Array; right: Float32Array } | null>(null);
   const [nudgeMs, setNudgeMs] = useState(0);
   const [loopOnlyExport, setLoopOnlyExport] = useState(false);
+  const [playAlong, setPlayAlong] = useState(true);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -788,10 +789,26 @@ export default function Studio() {
               <button className="btn" onClick={() => window.print()} disabled={!tex}>
                 <Printer size={15} /> Print / PDF
               </button>
+              <label className="flex items-center gap-2 text-xs text-white/60">
+                <input type="checkbox" checked={playAlong} onChange={(e) => setPlayAlong(e.target.checked)} />
+                Follow the music
+              </label>
             </div>
+            {tex && playAlong && (
+              <p className="no-print mb-3 text-xs text-white/40">
+                The score scrolls itself and highlights the beat being played, so you can leave your
+                hands on the instrument. Set a loop on the waveform above to drill one phrase.
+              </p>
+            )}
 
             {tex ? (
-              <ScoreView tex={tex} zoom={zoom} />
+              <ScoreView
+                tex={tex}
+                zoom={zoom}
+                playAlong={playAlong}
+                // the score starts at bar 1; the recording usually does not
+                scoreTimeSeconds={transport.time - settings.offsetSeconds}
+              />
             ) : (
               <p className="text-sm text-white/40">
                 Run the transcriber to see notation and tablature here. Tip: split the stems first and
