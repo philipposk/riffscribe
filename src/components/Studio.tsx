@@ -92,6 +92,7 @@ export default function Studio() {
   const [loopOnlyExport, setLoopOnlyExport] = useState(false);
   const [playAlong, setPlayAlong] = useState(true);
   const [linkUrl, setLinkUrl] = useState("");
+  const [helperUp, setHelperUp] = useState<boolean | null>(null);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -168,6 +169,19 @@ export default function Studio() {
       setBusy(null);
     }
   }, [loadFile]);
+
+  // Is the link helper running on this machine? Checked once, quietly, so the
+  // link box can say something useful instead of failing when it is pressed.
+  useEffect(() => {
+    const base = process.env.NEXT_PUBLIC_FETCH_URL || "http://127.0.0.1:7749";
+    const stop = new AbortController();
+    const timer = setTimeout(() => stop.abort(), 1500);
+    fetch(`${base}/health`, { mode: "cors", signal: stop.signal })
+      .then((r) => setHelperUp(r.ok))
+      .catch(() => setHelperUp(false))
+      .finally(() => clearTimeout(timer));
+    return () => stop.abort();
+  }, []);
 
   /* --------------------------------------------------------------- engine  */
 
@@ -876,29 +890,25 @@ export default function Studio() {
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadFile(f); }}
           />
         </label>
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <input
-            type="text"
-            className="min-w-0 flex-1"
-            placeholder="…or paste a link (YouTube, SoundCloud, a direct mp3)"
-            value={linkUrl}
-            onChange={(e) => setLinkUrl(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && linkUrl.trim()) void loadFromLink(linkUrl.trim()); }}
-          />
-          <button
-            className="btn"
-            disabled={!linkUrl.trim() || !!busy}
-            onClick={() => void loadFromLink(linkUrl.trim())}
-          >
-            <LinkIcon size={15} /> Fetch
-          </button>
-        </div>
-        <p className="mt-2 text-xs text-white/35">
-          Links go through a small helper you run yourself —{" "}
-          <code className="text-white/50">node local/fetch-server.mjs</code> — because a web page
-          cannot pull audio off YouTube, and a shared server doing it would be blocked within a day.
-          It also means the audio never touches anyone else&rsquo;s machine.
-        </p>
+        {helperUp && (
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              className="min-w-0 flex-1"
+              placeholder="…or paste a link (YouTube, SoundCloud, a direct mp3)"
+              value={linkUrl}
+              onChange={(e) => setLinkUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && linkUrl.trim()) void loadFromLink(linkUrl.trim()); }}
+            />
+            <button
+              className="btn"
+              disabled={!linkUrl.trim() || !!busy}
+              onClick={() => void loadFromLink(linkUrl.trim())}
+            >
+              <LinkIcon size={15} /> Fetch
+            </button>
+          </div>
+        )}
         {log && <p className="mt-3 text-xs text-white/45">{log}</p>}
       </section>
 
