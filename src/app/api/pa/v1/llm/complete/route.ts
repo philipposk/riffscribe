@@ -16,7 +16,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = process.env.ASSISTANT_MODEL || "google/gemini-2.0-flash-001";
+// Small, cheap and reliable at tool calling — checked against this key.
+const DEFAULT_MODEL = process.env.ASSISTANT_MODEL || "openai/gpt-oss-20b";
 
 // Spend guards. These are deliberately tight — this route is unauthenticated.
 const MAX_OUTPUT_TOKENS = 700;
