@@ -23,6 +23,7 @@ import { MicRecorder, estimateLatency, placeTake, stretchOffline } from "@/lib/a
 import {
   DEMUCS_SAMPLE_RATE, mixStems, separateInstantAsync, separateWithDemucs, type StemSet,
 } from "@/lib/audio/stems";
+import { synthesizeGuide } from "@/lib/audio/guide";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
 import { channelsToAudioBuffer, toModelInput, transcribeAudio } from "@/lib/transcribe/basicPitch";
 import { keyToken, sheetToAlphaTex } from "@/lib/transcribe/alphatex";
@@ -47,6 +48,7 @@ const STEM_LABEL: Record<string, { label: string; hint: string }> = {
   original: { label: "Song", hint: "the original mix" },
   click: { label: "Click", hint: "metronome, follows the speed" },
   overdub: { label: "Your take", hint: "what you recorded" },
+  guide: { label: "Your part", hint: "the transcription, played back" },
 };
 
 export default function Studio() {
@@ -124,6 +126,17 @@ export default function Studio() {
 
   /* --------------------------------------------------------------- engine  */
 
+  const guideTrack = useMemo(() => {
+    if (!audio || !notes?.length) return null;
+    const [left, right] = synthesizeGuide(notes, {
+      timbre: INSTRUMENTS[settings.instrument].timbre,
+      sampleRate: DEMUCS_SAMPLE_RATE,
+      lengthSamples: audio.left.length,
+      transposeSemitones: settings.transposeSemitones,
+    });
+    return { left, right };
+  }, [audio, notes, settings.instrument, settings.transposeSemitones]);
+
   const trackList = useMemo<{ id: string; label: string; hint?: string }[]>(() => {
     const out: { id: string; label: string; hint?: string }[] = [];
     if (stems && stemMode === "ai") {
@@ -134,10 +147,17 @@ export default function Studio() {
     } else if (audio) {
       out.push({ id: "original", ...STEM_LABEL.original });
     }
+    if (guideTrack) {
+      out.push({
+        id: "guide",
+        label: `Your part — ${INSTRUMENTS[settings.instrument].label}`,
+        hint: "the transcription, played back",
+      });
+    }
     if (audio) out.push({ id: "click", ...STEM_LABEL.click });
     if (overdub) out.push({ id: "overdub", ...STEM_LABEL.overdub });
     return out;
-  }, [stems, stemMode, audio, overdub]);
+  }, [stems, stemMode, audio, overdub, guideTrack, settings.instrument]);
 
   const clickTrack = useMemo(() => {
     if (!audio) return null;
@@ -166,6 +186,7 @@ export default function Studio() {
       push("original", audio.left, audio.right);
     }
 
+    if (guideTrack) push("guide", guideTrack.left, guideTrack.right);
     if (clickTrack) push("click", clickTrack.left, clickTrack.right);
     if (overdub) push("overdub", overdub.left, overdub.right);
 
@@ -179,10 +200,17 @@ export default function Studio() {
     setMix((prev) => {
       const next = { ...prev };
       // the click starts muted but at a usable level, so un-muting it is not silence
-      for (const t of tracks) if (!next[t.id]) next[t.id] = { gain: t.id === "click" ? 0.7 : 1, muted: t.id === "click" };
+      for (const t of tracks) {
+        if (next[t.id]) continue;
+        // the click starts muted but at a usable level, so un-muting it is not
+        // silence; the guide starts audible, since hearing your part is the point
+        if (t.id === "click") next[t.id] = { gain: 0.7, muted: true };
+        else if (t.id === "guide") next[t.id] = { gain: 0.85, muted: false };
+        else next[t.id] = { gain: 1, muted: false };
+      }
       return next;
     });
-  }, [audio, stems, stemMode, overdub, trackList, clickTrack]);
+  }, [audio, stems, stemMode, overdub, trackList, clickTrack, guideTrack]);
 
   // rebuilding tears down the audio graph, so coalesce bursts (e.g. typing a BPM)
   useEffect(() => {
@@ -426,6 +454,7 @@ export default function Studio() {
         ? { ...stems }
         : { original: audio };
       if (overdub) parts.overdub = overdub;
+      if (guideTrack) parts.guide = guideTrack;
       if (clickTrack) parts.click = clickTrack;
 
       const gains: Record<string, number> = {};
@@ -755,6 +784,7 @@ export default function Studio() {
             <p className="mt-3 text-xs text-white/45">
               Record at any speed — a take played at 60% is stretched back to full tempo without going
               chipmunk. Use headphones so the backing track does not bleed into the mic.
+              {guideTrack && " Mute \u201cYour part\u201d in the mixer first, so you are playing the line rather than doubling it."}
             </p>
           </section>
         </>

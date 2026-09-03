@@ -67,8 +67,12 @@ export function sheetToMusicXml(sheet: Sheet, o: MusicXmlOptions): string {
 
   const clefXml =
     inst.clef === "bass"
-      ? `<clef><sign>F</sign><line>4</line></clef>`
-      : `<clef><sign>G</sign><line>2</line>${inst.transposeOctaves ? `<clef-octave-change>-1</clef-octave-change>` : ""}</clef>`;
+      ? `<clef><sign>F</sign><line>4</line>${inst.transposeOctaves ? `<clef-octave-change>-1</clef-octave-change>` : ""}</clef>`
+      : inst.clef === "alto"
+        ? `<clef><sign>C</sign><line>3</line></clef>`
+        : inst.clef === "tenor"
+          ? `<clef><sign>C</sign><line>4</line></clef>`
+          : `<clef><sign>G</sign><line>2</line>${inst.transposeOctaves ? `<clef-octave-change>-1</clef-octave-change>` : ""}</clef>`;
 
   const measures = sheet.bars
     .map((bar, bi) => {

@@ -14,6 +14,15 @@ export function midiToScientific(midi: number) {
   return `${NOTE_NAMES[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;
 }
 
+// alphaTex clef names: C3 is the alto clef, C4 the tenor clef.
+const CLEF_TOKEN: Record<string, string> = {
+  treble: "Treble",
+  bass: "Bass",
+  alto: "C3",
+  tenor: "C4",
+  grand: "Treble",
+};
+
 function escapeTex(s: string) {
   return s.replace(/"/g, "'");
 }
@@ -44,18 +53,6 @@ export interface TexOptions {
   midiProgram?: number;
 }
 
-const GM_PROGRAM: Record<string, number> = {
-  guitar: 25,
-  "guitar-7": 25,
-  bass: 33,
-  "bass-5": 33,
-  ukulele: 24,
-  mandolin: 25,
-  banjo: 105,
-  piano: 0,
-  voice: 52,
-};
-
 export function sheetToAlphaTex(sheet: Sheet, o: TexOptions): string {
   const inst = o.instrument;
   const stringed = !!inst.tuning?.length;
@@ -67,7 +64,7 @@ export function sheetToAlphaTex(sheet: Sheet, o: TexOptions): string {
   lines.push(".");
 
   lines.push(`\\track "${escapeTex(inst.label)}"`);
-  lines.push(`\\instrument ${o.midiProgram ?? GM_PROGRAM[inst.id] ?? 25}`);
+  lines.push(`\\instrument ${o.midiProgram ?? inst.gm}`);
   if (stringed) {
     lines.push(`\\staff{score tabs}`);
     lines.push(`\\tuning (${inst.tuning!.map(midiToScientific).join(" ")})`);
@@ -75,7 +72,7 @@ export function sheetToAlphaTex(sheet: Sheet, o: TexOptions): string {
   } else {
     lines.push(`\\staff{score}`);
     lines.push(inst.id === "piano" ? `\\tuning piano` : `\\tuning voice`);
-    lines.push(`\\clef ${inst.clef === "bass" ? "Bass" : "Treble"}`);
+    lines.push(`\\clef ${CLEF_TOKEN[inst.clef]}`);
   }
 
   const bars = sheet.bars.map((bar, i) => {
