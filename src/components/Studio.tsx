@@ -11,6 +11,7 @@ import {
   Download, FileMusic, Loader2, Mic, Music2, Printer, Scissors, Square, Upload, Wand2,
 } from "lucide-react";
 
+import Assistant, { type AssistantActions } from "./Assistant";
 import Mixer, { type MixTrack } from "./Mixer";
 import ScoreView from "./ScoreView";
 import Transport from "./Transport";
@@ -25,9 +26,8 @@ import {
 } from "@/lib/audio/stems";
 import { synthesizeGuide } from "@/lib/audio/guide";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
-import {
-  channelsToAudioBuffer, toModelInput, transcribeAudio, transcriptionBackend,
-} from "@/lib/transcribe/basicPitch";
+import { channelsToAudioBuffer, toModelInput } from "@/lib/transcribe/basicPitch";
+import { transcribeInWorker } from "@/lib/transcribe/runner";
 import { keyToken, sheetToAlphaTex } from "@/lib/transcribe/alphatex";
 import { notesToMidi } from "@/lib/transcribe/midi";
 import { sheetToMusicXml } from "@/lib/transcribe/musicxml";
@@ -87,6 +87,7 @@ export default function Studio() {
   const recorderRef = useRef<MicRecorder | null>(null);
   const recStartRef = useRef(0);
   const cancelSplitRef = useRef<(() => void) | null>(null);
+  const cancelTranscribeRef = useRef<(() => void) | null>(null);
 
   if (!engineRef.current && typeof window !== "undefined") engineRef.current = new PracticeEngine();
   if (!recorderRef.current && typeof window !== "undefined") recorderRef.current = new MicRecorder();
@@ -288,11 +289,14 @@ export default function Studio() {
     }
   }
 
-  function cancelSplit() {
+  function cancelJob() {
     cancelSplitRef.current?.();
+    cancelTranscribeRef.current?.();
+    const wasSplit = !!cancelSplitRef.current;
     cancelSplitRef.current = null;
+    cancelTranscribeRef.current = null;
     setBusy(null);
-    setLog("Separation cancelled. The part of the model already downloaded is kept.");
+    setLog(wasSplit ? "Separation cancelled. Whatever downloaded is kept." : "Transcription cancelled.");
   }
 
   /** Cut the song down to the looped section — separation is slow, so this helps. */
@@ -333,7 +337,7 @@ export default function Studio() {
     try {
       const buffer = channelsToAudioBuffer([src.left, src.right], DEMUCS_SAMPLE_RATE);
       const mono22 = await toModelInput(buffer);
-      const found = await transcribeAudio(mono22, {
+      const { promise, cancel } = transcribeInWorker(mono22, {
         onsetThreshold: settings.onsetThreshold,
         frameThreshold: settings.frameThreshold,
         minNoteLength: settings.minNoteLength,
@@ -341,15 +345,17 @@ export default function Studio() {
         maxMidi: inst.range[1],
         onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
       });
+      cancelTranscribeRef.current = cancel;
+      const { notes: found, backend } = await promise;
       setNotes(found);
       const k = estimateKey(chromaFromNotes(found));
       setKeyName({ name: k.name, fifths: k.fifths, mode: k.mode });
-      const engine = (await transcriptionBackend()) ?? "";
       const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
-      setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • ${elapsed}s on ${engine}`);
+      setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • ${elapsed}s on ${backend}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "transcription failed");
     } finally {
+      cancelTranscribeRef.current = null;
       setBusy(null);
     }
   }
@@ -537,6 +543,142 @@ export default function Studio() {
 
   const patch = (p: Partial<TranscriptionSettings>) => setSettings((s) => ({ ...s, ...p }));
 
+  /* --------------------------------------------------- the page assistant */
+
+  const fmtTime = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+
+  // Rebuilt every render so the capabilities always act on current state; the
+  // assistant component keeps a ref to the latest copy.
+  const assistantActions: AssistantActions = {
+    describe: () => {
+      if (!audio) return "No song is loaded yet — drop a file into step 1 first.";
+      const parts: string[] = [
+        `${file?.name ?? "A song"}, ${fmtTime(transport.duration)} long, at ${settings.bpm} BPM.`,
+        stems
+          ? stemMode === "ai"
+            ? "It has been split into four stems."
+            : "The centre channel has been pulled out."
+          : "It has not been split into stems.",
+        notes?.length
+          ? `${notes.length} notes are written out for ${INSTRUMENTS[settings.instrument].label}${keyName ? ` in ${keyName.name}` : ""}.`
+          : "Nothing has been transcribed yet.",
+        `Playing at ${Math.round(transport.rate * 100)}%${transport.semitones ? `, transposed ${transport.semitones > 0 ? "+" : ""}${transport.semitones}` : ""}.`,
+        loop ? `Looping ${fmtTime(loop[0])} to ${fmtTime(loop[1])}.` : "No loop is set.",
+      ];
+      return parts.join(" ");
+    },
+
+    setInstrument: (id) => {
+      if (!(id in INSTRUMENTS)) return `I do not know an instrument called "${id}".`;
+      patch({ instrument: id as InstrumentId });
+      return `The part is now written for ${INSTRUMENTS[id as InstrumentId].label}.`;
+    },
+
+    splitStems: async (mode) => {
+      if (!audio) return "Load a song first.";
+      if (busy) return "Something else is already running.";
+      if (mode === "instant") { await runInstant(); return "Instant split done — vocal and backing are separate rows in the mixer."; }
+      await runDemucs();
+      return "The AI split finished — vocals, drums, bass and everything else are separate rows now.";
+    },
+
+    transcribe: async (src) => {
+      if (!audio) return "Load a song first.";
+      if (busy) return "Something else is already running.";
+      if (src) setSource(src as Source);
+      await runTranscribe();
+      return notes?.length
+        ? `Written out for ${INSTRUMENTS[settings.instrument].label}.`
+        : "Transcription finished.";
+    },
+
+    setTempo: (bpm) => { patch({ bpm: Math.max(30, Math.min(300, bpm)) }); return `Tempo set to ${Math.round(bpm)} BPM.`; },
+    setGrid: (d) => { patch({ quantizeDivision: d as 4 | 8 | 16 | 32 }); return `Notes now snap to a 1/${d} grid.`; },
+    setCapo: (fret) => { patch({ capo: Math.max(0, Math.min(9, Math.round(fret))) }); return `Capo at fret ${Math.round(fret)}.`; },
+    setWrittenTranspose: (st) => { patch({ transposeSemitones: Math.max(-12, Math.min(12, Math.round(st))) }); return `Written part transposed by ${Math.round(st)} semitones.`; },
+
+    play: async () => { await engineRef.current?.play(); return "Playing."; },
+    pause: async () => { await engineRef.current?.pause(); return "Paused."; },
+    seek: async (sec) => { await engineRef.current?.seek(sec); return `Jumped to ${fmtTime(sec)}.`; },
+
+    setSpeed: async (percent) => {
+      const rate = Math.max(0.25, Math.min(1.5, percent / 100));
+      await engineRef.current?.setRate(rate);
+      return `Speed set to ${Math.round(rate * 100)}% — the key is unchanged.`;
+    },
+    setKeyShift: async (st) => {
+      await engineRef.current?.setSemitones(st);
+      return `Everything shifted by ${Math.round(st)} semitones — the tempo is unchanged.`;
+    },
+
+    setLoop: async (from, to) => {
+      const a = Math.max(0, Math.min(from, to));
+      const b = Math.min(transport.duration, Math.max(from, to));
+      setLoop([a, b]);
+      return `Looping ${fmtTime(a)} to ${fmtTime(b)}.`;
+    },
+    clearLoop: async () => { setLoop(null); return "Loop cleared."; },
+
+    setTrack: (track, change) => {
+      const id = trackList.find((t) => t.id === track || t.label.toLowerCase().includes(track.toLowerCase()))?.id;
+      if (!id) return `There is no track called "${track}". The mixer has: ${trackList.map((t) => t.id).join(", ")}.`;
+      const done: string[] = [];
+      if (change.solo != null) { setSoloed(change.solo ? id : null); done.push(change.solo ? "soloed" : "un-soloed"); }
+      if (change.muted != null || change.level != null) {
+        setMix((m) => ({
+          ...m,
+          [id]: {
+            gain: change.level != null ? Math.max(0, Math.min(1.5, change.level / 100)) : (m[id]?.gain ?? 1),
+            muted: change.muted != null ? change.muted : (m[id]?.muted ?? false),
+          },
+        }));
+        if (change.muted != null) done.push(change.muted ? "muted" : "un-muted");
+        if (change.level != null) done.push(`set to ${Math.round(change.level)}`);
+      }
+      return `${trackList.find((t) => t.id === id)!.label} ${done.join(" and ") || "unchanged"}.`;
+    },
+
+    exportFile: (what) => {
+      const w = what.toLowerCase();
+      if (w.includes("midi")) { exportMidi(); return "MIDI downloaded."; }
+      if (w.includes("xml")) { exportMusicXml(); return "MusicXML downloaded."; }
+      if (w.includes("tex")) { exportTex(); return "alphaTex downloaded."; }
+      if (w.includes("pdf") || w.includes("print")) { window.print(); return "Opened the print dialog."; }
+      if (w.includes("backing")) { exportAudio("backing"); return "Backing track downloaded."; }
+      if (w.includes("mix")) { exportAudio("mix"); return "The current mix was downloaded."; }
+      const track = trackList.find((t) => w.includes(t.id) || w.includes(t.label.toLowerCase()));
+      if (track) { exportTrack(track.id); return `${track.label} downloaded on its own.`; }
+      return `I can export midi, musicxml, alphatex, pdf, the backing track, the current mix, or one of: ${trackList.map((t) => t.id).join(", ")}.`;
+    },
+
+    setPlayAlong: (on) => { setPlayAlong(on); return on ? "The score will follow the music." : "The score will stay put."; },
+
+    pageState: () => ({
+      songLoaded: !!audio,
+      fileName: file?.name ?? null,
+      durationSeconds: Math.round(transport.duration),
+      stems: stems ? (stemMode === "ai" ? ["vocals", "drums", "bass", "other"] : ["vocals", "other"]) : [],
+      transcribed: !!notes?.length,
+      noteCount: notes?.length ?? 0,
+      instrument: settings.instrument,
+      key: keyName?.name ?? null,
+      bpm: settings.bpm,
+      playing: transport.playing,
+      positionSeconds: Math.round(transport.time),
+      speedPercent: Math.round(transport.rate * 100),
+      transposeSemitones: transport.semitones,
+      loop: loop ? { from: Math.round(loop[0]), to: Math.round(loop[1]) } : null,
+      mixerTracks: trackList.map((t) => ({
+        id: t.id,
+        label: t.label,
+        level: Math.round((mix[t.id]?.gain ?? 1) * 100),
+        muted: mix[t.id]?.muted ?? false,
+        soloed: soloed === t.id,
+      })),
+      busy: busy?.label ?? null,
+    }),
+  };
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
       <header className="no-print mb-8 flex flex-wrap items-end justify-between gap-4">
@@ -560,8 +702,8 @@ export default function Studio() {
         <div className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[#1a1608]/95 px-4 py-3 text-sm shadow-lg backdrop-blur">
           <p className="flex items-center gap-2 text-[var(--color-accent)]">
             <Loader2 className="animate-spin" size={16} /> {busy.label}
-            {cancelSplitRef.current && (
-              <button className="btn ml-auto py-1 text-xs" onClick={cancelSplit}>
+            {(cancelSplitRef.current || cancelTranscribeRef.current) && (
+              <button className="btn ml-auto py-1 text-xs" onClick={cancelJob}>
                 Cancel
               </button>
             )}
@@ -863,6 +1005,8 @@ export default function Studio() {
           </section>
         </>
       )}
+
+      <Assistant actions={assistantActions} />
 
       <footer className="no-print pb-10 pt-4 text-center text-xs text-white/30">
         Basic Pitch (Spotify, Apache-2.0) · Demucs (Meta, MIT) · alphaTab (MPL-2.0) · Signalsmith Stretch (MIT)

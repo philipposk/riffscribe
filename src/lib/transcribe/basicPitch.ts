@@ -24,9 +24,8 @@ let backendReady: Promise<string> | null = null;
  *
  * WASM first, deliberately. WebGL looks like the fast choice, but reading this
  * model's results back off the GPU stalls — a 24-second clip crawled to 73% and
- * stopped, on Chrome as well as Safari. The WASM backend finishes reliably, and
- * with cross-origin isolation already enabled for the stem splitter it runs
- * multi-threaded across the machine's cores.
+ * stopped, on Chrome as well as Safari. Single-threaded WASM is the only
+ * combination that reliably finishes.
  */
 async function ensureBackend(): Promise<string> {
   if (backendReady) return backendReady;
@@ -34,11 +33,13 @@ async function ensureBackend(): Promise<string> {
     const tf = await import("@tensorflow/tfjs");
     const wasm = await import("@tensorflow/tfjs-backend-wasm");
     wasm.setWasmPaths("/tfjs-wasm/");
+    // Single-threaded on purpose. The threaded build loads and then deadlocks
+    // before the first batch — the run sits at 0% forever. One thread is slower
+    // but it finishes, and the work happens in a worker so the page stays live.
     try {
-      const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
-      wasm.setThreadsCount(Math.max(1, Math.min(8, cores - 1)));
+      wasm.setThreadsCount(1);
     } catch {
-      /* single-threaded is fine, just slower */
+      /* older builds decide this themselves */
     }
 
     for (const backend of ["wasm", "webgl", "cpu"]) {
@@ -153,3 +154,4 @@ export async function transcribeAudio(
     }))
     .sort((a, b) => a.startTimeSeconds - b.startTimeSeconds || a.pitchMidi - b.pitchMidi);
 }
+

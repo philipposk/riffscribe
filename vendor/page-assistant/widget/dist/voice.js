@@ -1,0 +1,494 @@
+// Browser voice I/O. Default to free built-in Web Speech APIs; optionally use the
+// backend for higher-quality ElevenLabs TTS / Whisper STT. Supports barge-in (speaking
+// stops the moment the user actually talks — real RMS voice-activity detection).
+export class VoiceError extends Error {
+    reason;
+    constructor(reason, message) {
+        super(message ?? reason);
+        this.reason = reason;
+        this.name = "VoiceError";
+    }
+}
+const SILERO_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/index.js";
+export class Voice {
+    opts;
+    speaking = false;
+    currentAudio;
+    currentUtterance;
+    activeRecognition;
+    listenAbort;
+    bargeCleanup;
+    constructor(opts = {}) {
+        this.opts = opts;
+    }
+    get isSpeaking() {
+        return this.speaking;
+    }
+    async speak(text, onWord) {
+        this.stop();
+        if (this.opts.ttsMode === "server" && this.opts.serverUrl) {
+            return this.speakServer(text);
+        }
+        return this.speakBrowser(text, onWord);
+    }
+    speakBrowser(text, onWord) {
+        return new Promise((resolve) => {
+            if (!("speechSynthesis" in window))
+                return resolve();
+            const u = new SpeechSynthesisUtterance(text);
+            this.currentUtterance = u;
+            if (this.opts.browserVoice) {
+                const v = speechSynthesis.getVoices().find((x) => x.name.includes(this.opts.browserVoice));
+                if (v)
+                    u.voice = v;
+            }
+            let settled = false;
+            const done = () => {
+                if (settled)
+                    return;
+                settled = true;
+                this.speaking = false;
+                this.currentUtterance = undefined;
+                this.stopBargeIn();
+                resolve();
+            };
+            u.onstart = () => {
+                this.speaking = true;
+                this.startBargeIn(); // stop TTS the moment the user actually speaks
+            };
+            u.onboundary = (e) => onWord?.(text.slice(e.charIndex, e.charIndex + 12));
+            u.onend = done;
+            u.onerror = done; // cancel() fires error in some browsers, end in others
+            // Safety: some browsers drop events entirely (e.g. tab backgrounded) — never hang.
+            setTimeout(done, Math.max(5000, text.length * 120));
+            speechSynthesis.speak(u);
+        });
+    }
+    async speakServer(text) {
+        const headers = { "content-type": "application/json" };
+        if (this.opts.authToken)
+            headers.authorization = `Bearer ${this.opts.authToken}`;
+        let res;
+        try {
+            res = await fetch(`${this.opts.serverUrl}/v1/voice/tts`, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                    text,
+                    voiceId: this.opts.voiceId,
+                    provider: this.opts.ttsProvider,
+                }),
+            });
+        }
+        catch {
+            return this.speakBrowser(text);
+        }
+        if (!res.ok)
+            return this.speakBrowser(text);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        this.currentAudio = audio;
+        this.speaking = true;
+        return new Promise((resolve) => {
+            let settled = false;
+            const done = () => {
+                if (settled)
+                    return;
+                settled = true;
+                this.speaking = false;
+                this.currentAudio = undefined;
+                this.stopBargeIn();
+                URL.revokeObjectURL(url); // free the blob once playback is over/aborted
+                resolve();
+            };
+            audio.onended = done;
+            audio.onerror = done;
+            // Safari can block autoplay: play() rejects and onended never fires. Resolve on
+            // rejection instead of hanging forever with the mascot stuck "talking".
+            audio.play().then(() => this.startBargeIn(), () => done());
+        });
+    }
+    stop() {
+        if ("speechSynthesis" in window)
+            speechSynthesis.cancel();
+        this.currentUtterance = undefined;
+        if (this.currentAudio) {
+            this.currentAudio.pause();
+            const src = this.currentAudio.src;
+            this.currentAudio = undefined;
+            if (src.startsWith("blob:")) {
+                try {
+                    URL.revokeObjectURL(src);
+                }
+                catch {
+                    /* ignore */
+                }
+            }
+        }
+        this.speaking = false;
+        this.stopBargeIn();
+    }
+    // ---- Barge-in: real voice-activity detection ------------------------------
+    /**
+     * Start barge-in — BUT never open the mic just to speak. Opening getUserMedia on every
+     * TTS reply prompted TTS-only users for mic access, lit the mic indicator during all
+     * speech, and let speaker echo trip the RMS threshold (the assistant barged in on
+     * itself). So we only run barge-in when the mic is already available:
+     *   - a live listen stream already exists (reuse it), or
+     *   - mic permission was ALREADY granted (Permissions API says "granted").
+     * Otherwise barge-in is silently skipped; tapping the mic button still interrupts TTS.
+     */
+    startBargeIn() {
+        this.stopBargeIn();
+        if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia)
+            return;
+        if (this.opts.vad === "silero") {
+            // Silero manages its own mic; gate it behind an already-granted permission too so it
+            // doesn't surprise-prompt TTS-only users.
+            this.ifMicAlreadyGranted(() => this.startSileroBargeIn());
+            return;
+        }
+        this.ifMicAlreadyGranted(() => this.startAnalyserBargeIn());
+    }
+    /** Run `fn` only if the mic is already usable without a new permission prompt. */
+    ifMicAlreadyGranted(fn) {
+        const perms = navigator.permissions;
+        if (!perms?.query) {
+            // No Permissions API (Safari, older browsers): can't tell without prompting, so
+            // skip barge-in rather than risk a surprise mic prompt. Mic-tap still interrupts.
+            return;
+        }
+        perms
+            .query({ name: "microphone" })
+            .then((status) => {
+            if (status.state === "granted")
+                fn();
+        })
+            .catch(() => {
+            /* query unsupported for "microphone" — skip barge-in silently */
+        });
+    }
+    startAnalyserBargeIn() {
+        let cancelled = false;
+        let stream;
+        let ctx;
+        let raf = 0;
+        const cleanup = () => {
+            cancelled = true;
+            if (raf)
+                cancelAnimationFrame(raf);
+            stream?.getTracks().forEach((t) => t.stop());
+            ctx?.close().catch(() => { });
+        };
+        this.bargeCleanup = cleanup;
+        navigator.mediaDevices
+            // Echo cancellation + noise suppression so the speaker output doesn't feed back into
+            // the analyser and trip barge-in on the assistant's own voice.
+            .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
+            .then((s) => {
+            if (cancelled) {
+                s.getTracks().forEach((t) => t.stop());
+                return;
+            }
+            stream = s;
+            const AC = window.AudioContext || window.webkitAudioContext;
+            ctx = new AC();
+            const source = ctx.createMediaStreamSource(s);
+            const analyser = ctx.createAnalyser();
+            analyser.fftSize = 512;
+            source.connect(analyser);
+            const buf = new Uint8Array(analyser.fftSize);
+            let voicedFrames = 0;
+            const tick = () => {
+                if (cancelled || !this.speaking)
+                    return;
+                analyser.getByteTimeDomainData(buf);
+                // RMS of the centred waveform (0..~1). Speech spikes well above room noise.
+                let sum = 0;
+                for (let i = 0; i < buf.length; i++) {
+                    const v = (buf[i] - 128) / 128;
+                    sum += v * v;
+                }
+                const rms = Math.sqrt(sum / buf.length);
+                // Higher threshold + more sustained voiced frames so residual speaker echo (past
+                // echo cancellation) and brief thumps don't self-interrupt.
+                if (rms > 0.09) {
+                    if (++voicedFrames >= 6) {
+                        this.stop(); // user is talking — cut the assistant off (barge-in)
+                        return;
+                    }
+                }
+                else {
+                    voicedFrames = 0;
+                }
+                raf = requestAnimationFrame(tick);
+            };
+            raf = requestAnimationFrame(tick);
+        })
+            .catch(() => {
+            /* mic became unavailable — barge-in via VAD unavailable; mic-tap still stops TTS */
+        });
+    }
+    /** Optional Silero VAD via lazy CDN import. Never bundled; opt-in via `vad:"silero"`. */
+    startSileroBargeIn() {
+        let cancelled = false;
+        let vadInstance;
+        this.bargeCleanup = () => {
+            cancelled = true;
+            try {
+                vadInstance?.destroy?.();
+            }
+            catch {
+                /* ignore */
+            }
+        };
+        // Build the specifier at runtime so bundlers (esbuild/vite) don't statically pull the
+        // CDN module into the bundle — this stays truly optional and zero bundle-size.
+        let dynImport;
+        try {
+            dynImport = new Function("s", "return import(s)")(SILERO_CDN);
+        }
+        catch {
+            // CSP without 'unsafe-eval' blocks new Function — fall back to the built-in path.
+            this.startAnalyserBargeIn();
+            return;
+        }
+        dynImport
+            .then(async (mod) => {
+            if (cancelled)
+                return;
+            const MicVAD = mod?.MicVAD ?? window.vad?.MicVAD;
+            if (!MicVAD)
+                return this.startAnalyserBargeIn();
+            vadInstance = await MicVAD.new({
+                onSpeechStart: () => {
+                    if (this.speaking)
+                        this.stop();
+                },
+            });
+            if (cancelled) {
+                vadInstance?.destroy?.();
+                return;
+            }
+            vadInstance.start();
+        })
+            .catch(() => {
+            // CDN unreachable / blocked — fall back to the built-in path so barge-in still works.
+            if (!cancelled)
+                this.startAnalyserBargeIn();
+        });
+    }
+    stopBargeIn() {
+        const c = this.bargeCleanup;
+        this.bargeCleanup = undefined;
+        c?.();
+    }
+    /**
+     * Listen for one utterance. Uses the browser SpeechRecognition API when available
+     * (instant, free); falls back to MediaRecorder + backend Whisper. Distinguishes
+     * no-speech / permission-denied / other errors so the caller can surface a message.
+     */
+    async listenOnce(hooks) {
+        this.stop(); // barge-in
+        if (this.opts.sttMode === "server" && this.opts.serverUrl) {
+            try {
+                return await this.listenServer(hooks);
+            }
+            catch (e) {
+                // A saved "server STT" preference against a server that has no Whisper key made
+                // every mic tap throw VoiceError("other") → the user saw "I couldn't access the
+                // microphone." If the failure is server-side (not a mic/permission/no-speech
+                // problem), transparently fall back to the free browser recognizer with a notice.
+                if (e instanceof VoiceError && e.reason === "other") {
+                    const SRfb = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    if (SRfb) {
+                        hooks?.onServerFallback?.();
+                        return this.listenBrowser(SRfb);
+                    }
+                }
+                throw e;
+            }
+        }
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SR)
+            return this.listenBrowser(SR);
+        return this.listenServer(hooks);
+    }
+    /** Browser SpeechRecognition path (free, instant). Extracted so server STT can fall back to it. */
+    listenBrowser(SR) {
+        return new Promise((resolve, reject) => {
+            const r = new SR();
+            this.activeRecognition = r;
+            r.lang = "en-US";
+            r.interimResults = false;
+            r.maxAlternatives = 1;
+            let settled = false;
+            let gotError = null;
+            const finish = (text) => {
+                if (settled)
+                    return;
+                settled = true;
+                this.activeRecognition = undefined;
+                resolve(text);
+            };
+            const fail = (reason) => {
+                if (settled)
+                    return;
+                settled = true;
+                this.activeRecognition = undefined;
+                reject(new VoiceError(reason));
+            };
+            r.onresult = (e) => finish(e.results[0][0].transcript);
+            r.onerror = (e) => {
+                // "aborted" is our own cancel() — resolve empty, no error surfaced.
+                if (e?.error === "aborted")
+                    return finish("");
+                if (e?.error === "not-allowed" || e?.error === "service-not-allowed") {
+                    gotError = "not-allowed";
+                    return fail("not-allowed");
+                }
+                if (e?.error === "no-speech") {
+                    gotError = "no-speech";
+                    return; // let onend resolve/reject below
+                }
+                gotError = "other";
+            };
+            // Silence ends recognition with NO result — surface "no-speech" (I didn't catch that)
+            // rather than silently resolving "".
+            r.onend = () => {
+                if (settled)
+                    return;
+                if (gotError === "no-speech" || gotError === null)
+                    return fail("no-speech");
+                if (gotError === "other")
+                    return fail("other");
+                finish("");
+            };
+            this.listenAbort = new AbortController();
+            this.listenAbort.signal.addEventListener("abort", () => {
+                try {
+                    r.abort();
+                }
+                catch {
+                    /* already stopped */
+                }
+                finish("");
+            });
+            setTimeout(() => {
+                try {
+                    r.stop();
+                }
+                catch {
+                    /* already stopped */
+                }
+            }, 12000);
+            try {
+                r.start();
+            }
+            catch {
+                fail("other");
+            }
+        });
+    }
+    /** Cancel an in-flight listen (second mic tap). Resolves the pending listenOnce with "". */
+    cancelListen() {
+        if (this.activeRecognition) {
+            try {
+                this.activeRecognition.abort();
+            }
+            catch {
+                /* ignore */
+            }
+        }
+        this.listenAbort?.abort();
+    }
+    async listenServer(hooks) {
+        if (!this.opts.serverUrl)
+            return "";
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+        catch (e) {
+            if (e?.name === "NotAllowedError" || e?.name === "SecurityError") {
+                throw new VoiceError("not-allowed");
+            }
+            if (e?.name === "NotFoundError" || e?.name === "NotReadableError") {
+                throw new VoiceError("no-mic");
+            }
+            throw new VoiceError("other");
+        }
+        const abort = new AbortController();
+        this.listenAbort = abort;
+        let cancelled = false;
+        abort.signal.addEventListener("abort", () => (cancelled = true));
+        try {
+            const rec = new MediaRecorder(stream);
+            const chunks = [];
+            rec.ondataavailable = (e) => chunks.push(e.data);
+            const stopped = new Promise((r) => {
+                rec.onstop = () => r();
+                setTimeout(r, 6000);
+            });
+            rec.start();
+            hooks?.onCaptureStart?.();
+            // 4s capture window with a visible countdown and tap-to-cancel.
+            const CAPTURE_MS = 4000;
+            const start = Date.now();
+            await new Promise((resolve) => {
+                const iv = setInterval(() => {
+                    const remaining = CAPTURE_MS - (Date.now() - start);
+                    if (cancelled || remaining <= 0) {
+                        clearInterval(iv);
+                        hooks?.onCountdown?.(0, CAPTURE_MS);
+                        resolve();
+                    }
+                    else {
+                        hooks?.onCountdown?.(remaining, CAPTURE_MS);
+                    }
+                }, 250);
+                abort.signal.addEventListener("abort", () => {
+                    clearInterval(iv);
+                    resolve();
+                });
+            });
+            try {
+                rec.stop();
+            }
+            catch {
+                /* already inactive */
+            }
+            await stopped;
+            if (cancelled)
+                return "";
+            const blob = new Blob(chunks, { type: "audio/webm" });
+            if (!blob.size)
+                throw new VoiceError("no-speech");
+            const headers = { "content-type": "application/octet-stream" };
+            if (this.opts.authToken)
+                headers.authorization = `Bearer ${this.opts.authToken}`;
+            let res;
+            try {
+                res = await fetch(`${this.opts.serverUrl}/v1/voice/stt`, {
+                    method: "POST",
+                    headers,
+                    body: await blob.arrayBuffer(),
+                });
+            }
+            catch {
+                throw new VoiceError("other");
+            }
+            if (!res.ok)
+                throw new VoiceError("other");
+            const text = (await res.json()).text ?? "";
+            if (!text.trim())
+                throw new VoiceError("no-speech");
+            return text;
+        }
+        finally {
+            this.listenAbort = undefined;
+            stream.getTracks().forEach((t) => t.stop()); // mic indicator must die even on errors
+        }
+    }
+}

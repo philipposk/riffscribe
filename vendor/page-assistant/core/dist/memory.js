@@ -1,0 +1,30 @@
+/**
+ * Tiny keyword memory, ported in spirit from AI-OS / Daisy memory.py (SQLite keyword
+ * recall) but dependency-free so it runs in the browser, in Node, or behind a real DB.
+ * Swap this for a Supabase/sqlite-backed store in production; the interface is the contract.
+ */
+/** Hard cap on stored facts, matching the widget's 200-fact bound. Oldest are evicted. */
+const MAX_FACTS = 200;
+export class InMemoryStore {
+    maxFacts;
+    facts = [];
+    seq = 0;
+    constructor(maxFacts = MAX_FACTS) {
+        this.maxFacts = maxFacts;
+    }
+    remember(fact) {
+        this.facts.push({ ...fact, id: String(++this.seq), createdAt: new Date().toISOString() });
+        // Bound memory so a chatty session can't grow this unbounded (DoS / cross-turn bloat).
+        if (this.facts.length > this.maxFacts)
+            this.facts.splice(0, this.facts.length - this.maxFacts);
+    }
+    recall(query, limit = 5) {
+        const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
+        return this.facts
+            .map((f) => ({ f, score: terms.reduce((s, t) => s + (`${f.topic} ${f.content}`.toLowerCase().includes(t) ? 1 : 0), 0) }))
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit)
+            .map((x) => x.f);
+    }
+}
