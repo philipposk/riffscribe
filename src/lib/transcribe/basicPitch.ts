@@ -22,23 +22,26 @@ let backendReady: Promise<string> | null = null;
 /**
  * Pick a TensorFlow.js backend.
  *
- * WebGL is the fastest on Chrome, but on WebKit/Safari reading results back off
- * the GPU can stall indefinitely for this model — the run just stops mid-way
- * with no error. So Safari goes straight to WASM, and everyone else falls back
- * to WASM (then plain CPU) if WebGL cannot be initialised.
+ * WASM first, deliberately. WebGL looks like the fast choice, but reading this
+ * model's results back off the GPU stalls — a 24-second clip crawled to 73% and
+ * stopped, on Chrome as well as Safari. The WASM backend finishes reliably, and
+ * with cross-origin isolation already enabled for the stem splitter it runs
+ * multi-threaded across the machine's cores.
  */
 async function ensureBackend(): Promise<string> {
   if (backendReady) return backendReady;
   backendReady = (async () => {
     const tf = await import("@tensorflow/tfjs");
-    const { setWasmPaths } = await import("@tensorflow/tfjs-backend-wasm");
-    setWasmPaths("/tfjs-wasm/");
+    const wasm = await import("@tensorflow/tfjs-backend-wasm");
+    wasm.setWasmPaths("/tfjs-wasm/");
+    try {
+      const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
+      wasm.setThreadsCount(Math.max(1, Math.min(8, cores - 1)));
+    } catch {
+      /* single-threaded is fine, just slower */
+    }
 
-    const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
-    const isWebKit = /safari/i.test(ua) && !/chrome|chromium|edg|android/i.test(ua);
-    const order = isWebKit ? ["wasm", "cpu"] : ["webgl", "wasm", "cpu"];
-
-    for (const backend of order) {
+    for (const backend of ["wasm", "webgl", "cpu"]) {
       try {
         if (await tf.setBackend(backend)) {
           await tf.ready();
