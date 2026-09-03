@@ -8,7 +8,8 @@
     "build": "npm run assets && next build",
     "start": "next start",
     "lint": "next lint",
-    "postinstall": "node scripts/copy-assets.mjs"
+    "postinstall": "node scripts/copy-assets.mjs",
+    "fetch-server": "node local/fetch-server.mjs"
   },
   "dependencies": {
     "@coderline/alphatab": "^1.8.4",

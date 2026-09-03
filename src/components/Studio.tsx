@@ -8,7 +8,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Download, FileMusic, Loader2, Mic, Music2, Printer, Scissors, Square, Upload, Users, Wand2,
+  Download, FileMusic, Link as LinkIcon, Loader2, Mic, Music2, Printer, Scissors, Square,
+  Upload, Users, Wand2,
 } from "lucide-react";
 
 import Assistant, { type AssistantActions } from "./Assistant";
@@ -90,6 +91,7 @@ export default function Studio() {
   const [nudgeMs, setNudgeMs] = useState(0);
   const [loopOnlyExport, setLoopOnlyExport] = useState(false);
   const [playAlong, setPlayAlong] = useState(true);
+  const [linkUrl, setLinkUrl] = useState("");
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -136,6 +138,36 @@ export default function Studio() {
       setBusy(null);
     }
   }, []);
+
+  /**
+   * Pull a song in from a link, via the little fetcher you run on your own
+   * machine (see local/fetch-server.mjs). A page cannot do this itself — the
+   * media is cross-origin and signed — and a hosted server doing it would get
+   * blocked, so this stays on localhost where it also keeps the audio private.
+   */
+  const loadFromLink = useCallback(async (link: string) => {
+    const base = process.env.NEXT_PUBLIC_FETCH_URL || "http://127.0.0.1:7749";
+    setError(null);
+    setBusy({ label: "Fetching the audio through your local helper…" });
+    try {
+      const res = await fetch(`${base}/fetch?url=${encodeURIComponent(link)}`, { mode: "cors" });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(detail.error || `the helper answered ${res.status}`);
+      }
+      const blob = await res.blob();
+      const name = decodeURIComponent(link.slice(0, 60)).replace(/[^\w.-]+/g, "-") + ".mp3";
+      await loadFile(new File([blob], name, { type: blob.type || "audio/mpeg" }));
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      setError(
+        /fetch|network|Failed/i.test(why)
+          ? "Could not reach the local helper. Start it with: node local/fetch-server.mjs"
+          : why
+      );
+      setBusy(null);
+    }
+  }, [loadFile]);
 
   /* --------------------------------------------------------------- engine  */
 
@@ -841,6 +873,29 @@ export default function Studio() {
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadFile(f); }}
           />
         </label>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            className="min-w-0 flex-1"
+            placeholder="…or paste a link (YouTube, SoundCloud, a direct mp3)"
+            value={linkUrl}
+            onChange={(e) => setLinkUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && linkUrl.trim()) void loadFromLink(linkUrl.trim()); }}
+          />
+          <button
+            className="btn"
+            disabled={!linkUrl.trim() || !!busy}
+            onClick={() => void loadFromLink(linkUrl.trim())}
+          >
+            <LinkIcon size={15} /> Fetch
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-white/35">
+          Links go through a small helper you run yourself —{" "}
+          <code className="text-white/50">node local/fetch-server.mjs</code> — because a web page
+          cannot pull audio off YouTube, and a shared server doing it would be blocked within a day.
+          It also means the audio never touches anyone else&rsquo;s machine.
+        </p>
         {log && <p className="mt-3 text-xs text-white/45">{log}</p>}
       </section>
 
