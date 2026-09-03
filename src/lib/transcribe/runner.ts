@@ -57,20 +57,30 @@ export function transcribeInWorker(mono22k: Float32Array, opts: TranscribeOption
       if (cancelled) return;
       inline(mono22k, opts).then(
         (r) => resolve(r),
-        (e) => reject(e)
+        (e) => {
+          console.error("[riffscribe] inline transcription failed:", e);
+          reject(e instanceof Error && e.message ? e : new Error("the transcriber could not start"));
+        }
       );
     };
 
     worker.onerror = (e) => {
       e.preventDefault?.();
+      console.warn("[riffscribe] transcription worker failed, running inline:", e.message || e);
       finish(fallBack);
     };
-    worker.onmessageerror = () => finish(fallBack);
+    worker.onmessageerror = () => {
+      console.warn("[riffscribe] transcription worker sent an unreadable message, running inline");
+      finish(fallBack);
+    };
     worker.onmessage = (e) => {
       const m = e.data;
       if (m.type === "progress") opts.onProgress?.(m.value);
       else if (m.type === "done") finish(() => resolve({ notes: m.notes as NoteEvent[], backend: m.backend as string }));
-      else if (m.type === "error") finish(() => reject(new Error(m.message)));
+      else if (m.type === "error") {
+        console.error("[riffscribe] transcription failed:", m.message);
+        finish(() => reject(new Error(m.message || "the transcriber stopped without saying why")));
+      }
     };
 
     const { onProgress: _ignored, ...options } = opts;

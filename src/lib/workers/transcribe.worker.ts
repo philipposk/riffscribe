@@ -29,6 +29,8 @@ self.onmessage = async (e: MessageEvent<In>) => {
     const backend = (await transcriptionBackend()) ?? "";
     post({ type: "done", notes, backend });
   } catch (err) {
-    post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    const message =
+      (err instanceof Error && (err.stack || err.message)) || String(err) || "unknown failure";
+    post({ type: "error", message });
   }
 };

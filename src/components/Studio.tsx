@@ -353,7 +353,8 @@ export default function Studio() {
       const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
       setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • ${elapsed}s on ${backend}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "transcription failed");
+      console.error("[riffscribe] transcribe:", e);
+      setError((e instanceof Error && e.message) || "The transcriber failed — see the browser console for detail.");
     } finally {
       cancelTranscribeRef.current = null;
       setBusy(null);
