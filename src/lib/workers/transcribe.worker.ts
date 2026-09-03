@@ -19,10 +19,24 @@ type In = {
 const post = (m: unknown, transfer?: Transferable[]) =>
   (self as unknown as DedicatedWorkerGlobalScope).postMessage(m, transfer ?? []);
 
+/**
+ * The samples do not always arrive as a Float32Array — depending on how the
+ * bundler wires the worker up, the message can come through as a plain object of
+ * numeric keys, which TensorFlow rejects with "Unknown dtype undefined". Rebuild
+ * a real typed array whatever we were handed.
+ */
+function asSamples(raw: unknown): Float32Array {
+  if (raw instanceof Float32Array) return raw;
+  if (ArrayBuffer.isView(raw)) return new Float32Array((raw as ArrayBufferView).buffer);
+  if (raw instanceof ArrayBuffer) return new Float32Array(raw);
+  const values = Object.values(raw as Record<string, number>);
+  return Float32Array.from(values);
+}
+
 self.onmessage = async (e: MessageEvent<In>) => {
   if (e.data.type !== "transcribe") return;
   try {
-    const notes = await transcribeAudio(e.data.mono22k, {
+    const notes = await transcribeAudio(asSamples(e.data.mono22k), {
       ...e.data.options,
       onProgress: (p) => post({ type: "progress", value: p }),
     });
