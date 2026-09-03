@@ -3,7 +3,7 @@ import Link from "next/link";
 const FEATURES = [
   {
     title: "Hear it, read it",
-    body: "Basic Pitch — Spotify's note-detection model — listens to the audio and writes out the notes. You get standard notation and guitar/bass/ukulele tablature side by side, with the frets chosen so your hand barely moves.",
+    body: "Basic Pitch — Spotify's note-detection model — listens to the audio and writes out the notes. You get standard notation and tablature side by side, with the frets chosen so your hand barely moves. Guitar, bass, uke, mandolin, banjo, piano, voice, violin, viola, violoncello, double bass, flute, clarinet, sax, trumpet, trombone.",
   },
   {
     title: "Mute the singer",
@@ -18,8 +18,16 @@ const FEATURES = [
     body: "Record your own part over the backing track. Record it at half speed if you need to — it gets stretched back to full tempo without turning you into a chipmunk — then mix it and export a wav.",
   },
   {
+    title: "Reads along with you",
+    body: "Turn on follow-the-music and the score scrolls itself, highlighting the beat being played, so you can keep both hands on the instrument. The part is played back in your instrument's voice too — mute it once you can hold the line yourself.",
+  },
+  {
     title: "Takes your file anywhere",
-    body: "Export MIDI, MusicXML for MuseScore or Guitar Pro, alphaTex, printable PDF, and wav stems.",
+    body: "Export MIDI, MusicXML for MuseScore or Guitar Pro, alphaTex, printable PDF, and wav — the whole mix, the backing track, one stem on its own, or just the bars you looped.",
+  },
+  {
+    title: "Or just ask",
+    body: "There is an assistant in the corner that works the studio for you. \u201cSplit the stems and write the bass part out.\u201d \u201cSlow it to 60% and loop the first eight bars.\u201d It presses the same buttons you would.",
   },
   {
     title: "Nothing leaves the room",
