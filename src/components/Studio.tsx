@@ -26,9 +26,7 @@ import {
 } from "@/lib/audio/stems";
 import { synthesizeGuide } from "@/lib/audio/guide";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
-import {
-  channelsToAudioBuffer, toModelInput, transcribeAudio, transcriptionBackend,
-} from "@/lib/transcribe/basicPitch";
+import { channelsToAudioBuffer, toModelInput, transcribeAudio } from "@/lib/transcribe/basicPitch";
 import { keyToken, sheetToAlphaTex } from "@/lib/transcribe/alphatex";
 import { notesToMidi } from "@/lib/transcribe/midi";
 import { sheetToMusicXml } from "@/lib/transcribe/musicxml";

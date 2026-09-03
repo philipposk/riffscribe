@@ -17,53 +17,17 @@ function lib() {
   return cached;
 }
 
-let backendReady: Promise<string> | null = null;
-
 /**
- * Pick a TensorFlow.js backend.
+ * We deliberately do NOT import TensorFlow.js ourselves.
  *
- * WASM first, deliberately. WebGL looks like the fast choice, but reading this
- * model's results back off the GPU stalls — a 24-second clip crawled to 73% and
- * stopped, on Chrome as well as Safari. Single-threaded WASM is the only
- * combination that reliably finishes.
+ * Basic Pitch brings its own copy and creates its tensors through it. Importing
+ * tfjs here as well — to force a backend — produced a second instance, and
+ * tensors made by one were then written through the other's backend registry,
+ * which fails outright with "Unknown dtype undefined". Letting Basic Pitch pick
+ * its own backend is both simpler and the only arrangement that works.
  */
-async function ensureBackend(): Promise<string> {
-  if (backendReady) return backendReady;
-  backendReady = (async () => {
-    const tf = await import("@tensorflow/tfjs");
-    const wasm = await import("@tensorflow/tfjs-backend-wasm");
-    wasm.setWasmPaths("/tfjs-wasm/");
-    // Single-threaded on purpose. The page is cross-origin isolated (the stem
-    // splitter needs it), which makes TensorFlow reach for its threaded WASM
-    // build — and that build loads and then deadlocks before the first batch,
-    // leaving the run at 0% forever. Turning the flag off makes it pick the
-    // plain SIMD binary, which finishes. setThreadsCount alone is not enough:
-    // it does not change which binary gets chosen.
-    tf.env().set("WASM_HAS_MULTITHREAD_SUPPORT", false);
-    try {
-      wasm.setThreadsCount(1);
-    } catch {
-      /* older builds decide this themselves */
-    }
-
-    for (const backend of ["wasm", "webgl", "cpu"]) {
-      try {
-        if (await tf.setBackend(backend)) {
-          await tf.ready();
-          return backend;
-        }
-      } catch {
-        /* try the next one */
-      }
-    }
-    await tf.ready();
-    return tf.getBackend();
-  })();
-  return backendReady;
-}
-
-export function transcriptionBackend() {
-  return backendReady;
+export async function transcriptionBackend(): Promise<string> {
+  return "";
 }
 
 /** Down-mix + resample any AudioBuffer to the mono 22.05 kHz the model expects. */
@@ -107,7 +71,6 @@ export async function transcribeAudio(
   mono22k: Float32Array,
   opts: TranscribeOptions
 ): Promise<NoteEvent[]> {
-  await ensureBackend();
   const {
     BasicPitch,
     noteFramesToTime,
