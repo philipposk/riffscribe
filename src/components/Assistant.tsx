@@ -30,6 +30,8 @@ export interface AssistantActions {
   exportFile: (what: string) => string;
   setPlayAlong: (on: boolean) => string;
   arrange: (size: number) => string;
+  checkTake: () => Promise<string>;
+  loopWeakest: () => string;
   pageState: () => Record<string, unknown>;
 }
 
@@ -246,6 +248,22 @@ export default function Assistant({ actions }: { actions: AssistantActions }) {
           render: (r: { text: string }) => r.text,
         }),
         capability({
+          name: "check_take",
+          description:
+            "Mark the take the player just recorded against the written part — how much was clean, what was missed, what sat out of tune or out of time, and which bars are weakest. Needs a recording and a transcribed part.",
+          parameters: { type: "object", properties: {} },
+          run: async () => ({ text: await a().checkTake() }),
+          render: (r: { text: string }) => r.text,
+        }),
+        capability({
+          name: "loop_weakest_bars",
+          description:
+            "Set the practice loop around the bars that came out worst in the last take, and go back to their start.",
+          parameters: { type: "object", properties: {} },
+          run: async () => ({ text: a().loopWeakest() }),
+          render: (r: { text: string }) => r.text,
+        }),
+        capability({
           name: "set_play_along",
           description:
             "Turn the follow-the-music view on or off — the score scrolls itself and highlights the beat being played.",
@@ -275,6 +293,7 @@ export default function Assistant({ actions }: { actions: AssistantActions }) {
           "Split the stems and write the bass part out",
           "Write this for violoncello",
           "Slow it to 60% and loop the first eight bars",
+          "How did my take go?",
           "Split the harmony into a string quartet",
           "Mute the vocals and export the backing track",
         ],

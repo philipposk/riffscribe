@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bookmark, Check, Download, FileMusic, Link as LinkIcon, Loader2, Mic, Music2, Pause, Play, Printer,
-  Repeat, RotateCcw, Scissors, Square,
+  Repeat, RotateCcw, Scissors, Square, Target,
   Upload, Users, Wand2,
 } from "lucide-react";
 
@@ -37,6 +37,7 @@ import { keyToken, sheetsToAlphaTex } from "@/lib/transcribe/alphatex";
 import { partsToMidi } from "@/lib/transcribe/midi";
 import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
 import { quantize, slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
+import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcribe/compare";
 import { assignFrets } from "@/lib/transcribe/tab";
 import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
@@ -118,6 +119,10 @@ export default function Studio() {
   /** Named parts of the song, so you can practise "the solo" rather than 2:14. */
   const [sections, setSections] = useState<{ name: string; from: number; to: number }[]>([]);
   const [editingSection, setEditingSection] = useState<number | null>(null);
+
+  /** How the last take measured up against the written part. */
+  const [report, setReport] = useState<TakeReport | null>(null);
+  const [checkPart, setCheckPart] = useState<string | null>(null);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -495,6 +500,61 @@ export default function Studio() {
     setLog("Forgotten. The next split will run from scratch.");
   }
 
+  /**
+   * Mark the take against the written part.
+   *
+   * The recording has already been stretched back to full tempo and slid to
+   * account for the speaker-to-microphone delay, so it is in song time and can
+   * be compared with the chart directly. We transcribe it with the same model
+   * that produced the chart, which means both sides carry the same biases and
+   * a disagreement is more likely to be the player than the machine.
+   */
+  async function checkTake(): Promise<TakeReport | null> {
+    const part = parts.find((x) => x.id === checkPart) ?? parts[0];
+    if (!overdub || !part) return null;
+    const inst = INSTRUMENTS[part.instrument];
+    setError(null);
+    setBusy({ label: "Listening to your take…", value: 0 });
+    try {
+      const buffer = channelsToAudioBuffer([overdub.left, overdub.right], DEMUCS_SAMPLE_RATE);
+      const mono22 = await toModelInput(buffer);
+      const played = await transcribeAudio(mono22, {
+        onsetThreshold: settings.onsetThreshold,
+        frameThreshold: settings.frameThreshold,
+        minNoteLength: settings.minNoteLength,
+        minMidi: inst.range[0],
+        maxMidi: inst.range[1],
+        onProgress: (p) => setBusy({ label: "Listening to your take…", value: p }),
+      });
+      const r = markTake(part.notes, played, {
+        bpm: settings.bpm,
+        beatsPerBar: settings.timeSignature[0],
+        offsetSeconds: settings.offsetSeconds,
+      });
+      setReport(r);
+      setLog(summarise(r));
+      return r;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "could not mark that take");
+      return null;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function loopWorstBars() {
+    if (!report) return;
+    const range = barsToRange(report.worstBars, {
+      bpm: settings.bpm,
+      beatsPerBar: settings.timeSignature[0],
+      offsetSeconds: settings.offsetSeconds,
+    });
+    if (!range) return;
+    setLoop(range);
+    void engineRef.current?.seek(range[0]);
+    setLog(`Looping the bars that need it: ${report.worstBars.map((b) => b.bar).join(", ")}.`);
+  }
+
   async function runTranscribe() {
     const src = sourceChannels();
     if (!src) return;
@@ -673,6 +733,7 @@ export default function Studio() {
       const total = audio ? audio.left.length : l.length;
       const [pl, pr] = placeTake({ left: l, right: r, startSeconds: start, sampleRate: DEMUCS_SAMPLE_RATE }, total);
       setOverdub({ left: pl, right: pr });
+      setReport(null);
       setLog(`Take captured at ${Math.round(rate * 100)}% speed and mapped back to full tempo.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not process the recording");
@@ -912,6 +973,19 @@ export default function Studio() {
       return `I can export midi, musicxml, alphatex, pdf, the backing track, the current mix, or one of: ${trackList.map((t) => t.id).join(", ")}.`;
     },
 
+    checkTake: async () => {
+      if (!overdub) return "There is no take to mark yet — record one first.";
+      if (!parts.length) return "Nothing to mark it against — transcribe the part first.";
+      const r = await checkTake();
+      if (!r) return "That take could not be marked.";
+      return summarise(r) + (r.worstBars.length ? ` Weakest: ${r.worstBars.map((b) => `bar ${b.bar}`).join(", ")}.` : "");
+    },
+    loopWeakest: () => {
+      if (!report) return "Mark a take first and I will know which bars need the work.";
+      if (!report.worstBars.length) return "No bar stands out as weak — take the speed up instead.";
+      loopWorstBars();
+      return `Looping bars ${report.worstBars.map((b) => b.bar).join(", ")}.`;
+    },
     arrange: (size) => {
       const target = parts.find((p) => p.source === "other") ?? parts[parts.length - 1];
       if (!target) return "Transcribe a part first — there is nothing to split.";
@@ -1446,6 +1520,89 @@ export default function Studio() {
                   onChange={(e) => setNudgeMs(Number(e.target.value))} className="ml-2 align-middle" />
               </label>
             </div>
+            {overdub && parts.length > 0 && (
+              <div className="mt-4 rounded-md border border-white/10 bg-white/[0.02] p-4">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <button className="btn btn-primary" onClick={checkTake} disabled={!!busy}>
+                    {busy?.label.startsWith("Listening to your take") ? <Loader2 className="animate-spin" size={15} /> : <Target size={15} />}
+                    How did I do?
+                  </button>
+                  {parts.length > 1 && (
+                    <select
+                      className="text-xs"
+                      value={checkPart ?? parts[0].id}
+                      onChange={(e) => setCheckPart(e.target.value)}
+                    >
+                      {parts.map((x) => (
+                        <option key={x.id} value={x.id}>
+                          against {INSTRUMENTS[x.instrument].label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {report && (
+                    <span className="text-sm">
+                      <b className={report.accuracy >= 0.9 ? "text-emerald-300" : report.accuracy >= 0.7 ? "text-[var(--color-accent)]" : "text-red-300"}>
+                        {Math.round(report.accuracy * 100)}%
+                      </b>
+                      <span className="text-white/45"> clean</span>
+                    </span>
+                  )}
+                </div>
+
+                {report && (
+                  <>
+                    <div className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-white/55">
+                      <span>{report.clean} right</span>
+                      {report.missed > 0 && <span>{report.missed} missed</span>}
+                      {report.outOfTune > 0 && <span>{report.outOfTune} out of tune</span>}
+                      {report.outOfTime > 0 && <span>{report.outOfTime} out of time</span>}
+                      {report.extra > 0 && <span>{report.extra} not in the part</span>}
+                      {Math.abs(report.meanMsOff) >= 25 && (
+                        <span className="text-[var(--color-accent)]">
+                          {report.meanMsOff > 0 ? "dragging" : "rushing"} ~{Math.abs(report.meanMsOff)} ms
+                        </span>
+                      )}
+                    </div>
+
+                    {/* A bar per column, so the shape of the problem is visible at a glance. */}
+                    <div className="mb-3 flex items-end gap-[3px]" style={{ height: 44 }}>
+                      {report.bars.map((b) => (
+                        <div
+                          key={b.bar}
+                          title={`Bar ${b.bar}: ${b.clean} of ${b.notes} clean`}
+                          className={`w-3 shrink-0 rounded-sm ${
+                            b.accuracy >= 0.9 ? "bg-emerald-400/70" : b.accuracy >= 0.6 ? "bg-[var(--color-accent)]/70" : "bg-red-400/70"
+                          }`}
+                          style={{ height: `${Math.max(8, b.accuracy * 44)}px` }}
+                        />
+                      ))}
+                    </div>
+
+                    {report.worstBars.length > 0 ? (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="text-white/55">
+                          Weakest {report.worstBars.length === 1 ? "bar" : "bars"}:{" "}
+                          {report.worstBars.map((b) => b.bar).join(", ")}
+                        </span>
+                        <button className="btn text-xs" onClick={loopWorstBars}>
+                          <Repeat size={13} /> Loop those and go again
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-emerald-300/80">Nothing stands out as weak. Take the speed up.</p>
+                    )}
+
+                    <p className="mt-3 text-xs text-white/35">
+                      Marked by transcribing your take and lining it up with the written part, so it
+                      inherits the same blind spots as the transcription — treat a surprising result as
+                      a question rather than a verdict.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+
             <p className="mt-3 text-xs text-white/45">
               Record at any speed — a take played at 60% is stretched back to full tempo without going
               chipmunk. Use headphones so the backing track does not bleed into the mic.
