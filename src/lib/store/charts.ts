@@ -92,7 +92,7 @@ export async function signOut(): Promise<void> {
 
 export async function listCharts(): Promise<ChartRow[]> {
   const { data, error } = await db()
-    .from("charts")
+    .from("riffscribe_charts")
     .select("id, title, shared, updated_at")
     .order("updated_at", { ascending: false });
   if (error) throw error;
@@ -107,14 +107,14 @@ export async function saveChart(chart: Chart, id?: string): Promise<string> {
 
   if (id) {
     const { error } = await s
-      .from("charts")
+      .from("riffscribe_charts")
       .update({ title: chart.title, data: chart, updated_at: new Date().toISOString() })
       .eq("id", id);
     if (error) throw error;
     return id;
   }
   const { data, error } = await s
-    .from("charts")
+    .from("riffscribe_charts")
     .insert({ owner, title: chart.title, data: chart })
     .select("id")
     .single();
@@ -127,20 +127,20 @@ export async function saveChart(chart: Chart, id?: string): Promise<string> {
  * shared it — the row-level policy allows that and nothing else.
  */
 export async function loadChart(id: string): Promise<Chart | null> {
-  const { data, error } = await db().from("charts").select("data").eq("id", id).maybeSingle();
+  const { data, error } = await db().from("riffscribe_charts").select("data").eq("id", id).maybeSingle();
   if (error) throw error;
   const row = data as { data: Chart } | null;
   return row?.data ?? null;
 }
 
 export async function deleteChart(id: string): Promise<void> {
-  const { error } = await db().from("charts").delete().eq("id", id);
+  const { error } = await db().from("riffscribe_charts").delete().eq("id", id);
   if (error) throw error;
 }
 
 /** Turn the link on or off. Off means nobody but the owner can open it again. */
 export async function setShared(id: string, shared: boolean): Promise<void> {
-  const { error } = await db().from("charts").update({ shared }).eq("id", id);
+  const { error } = await db().from("riffscribe_charts").update({ shared }).eq("id", id);
   if (error) throw error;
 }
 
