@@ -45,6 +45,62 @@ tenor sax, trumpet and trombone. Fretted instruments get tablature as well as
 notation, and every instrument gets guide playback in a voice that suits it —
 bowed sustain, plucked decay, struck decay, breath, reed or brass.
 
+## What it remembers
+
+Separating a song takes minutes and transcribing it blocks the page, so neither
+is thrown away any more. Stems and transcriptions are kept in IndexedDB, keyed
+by a hash of the file's contents — drop the same song in again, renamed or
+moved, and its stems come straight back. They are stored as Opus, roughly 12 MB
+for the four stems of a four-minute song rather than 340 MB of raw samples. The
+eight most recent songs are kept, within a 600 MB budget, and one link throws a
+bad split away.
+
+## Saving and sharing
+
+Optional, and off unless a Supabase project is configured.
+
+Signing in (Google, or a link by email) lets you keep a **chart**: the parts,
+the notes, the tempo and key you settled on, the sections you named, the loop
+you keep coming back to. A few kilobytes of JSON.
+
+The audio is deliberately not part of it. A four-minute song is ~85 MB of
+samples and four times that again as stems; uploading it would be slower than
+re-splitting it locally, would cost real money to store, and would mean hosting
+recordings that are not ours to host. So stems stay on the machine that made
+them and only the writing travels.
+
+That is what makes the sharing worth having: an arranger sends one link and each
+player opens the same parts, tempo and markings against their own copy of the
+song. A shared chart opens at `/c/<id>` — readable and printable without an
+account, and openable in the studio.
+
+```bash
+# 1. create a Supabase project
+# 2. run the schema (table + row-level security)
+supabase db execute -f supabase/schema.sql   # or paste it into the SQL editor
+# 3. put the project URL and anon key in .env.local — see .env.example
+```
+
+Row-level security allows exactly two reads: your own charts, and any chart
+whose owner has turned the link on. Ids are v4 uuids and there is no policy that
+lets anyone list rows, so an unshared chart cannot be reached or enumerated.
+
+## Practising
+
+- **Count-in** — one or two bars of clicks at the speed you are practising at,
+  so you can come in with the music instead of chasing it.
+- **Speed trainer** — with a loop running, every clean pass nudges the tempo up
+  5% until it reaches your target, then switches itself off.
+- **Named sections** — practise "the chorus", not "somewhere around 2:14".
+- **How did I do?** — records are marked against the written part: what was
+  clean, what was missed, what sat out of tune or out of time, whether you rush
+  or drag, and which bars are weakest, with one press to loop those and go
+  again. It works by transcribing your take and lining it up with the chart, so
+  it inherits the same blind spots as the transcription — a surprising result is
+  a question, not a verdict.
+- The transport stays pinned to the bottom of the window, because someone
+  holding an instrument cannot go hunting up a long score for the play button.
+
 ## The assistant
 
 An embedded [page-assistant](https://github.com/philipposk/page-assistant) can
@@ -117,10 +173,16 @@ The app sets `COOP: same-origin` and `COEP: credentialless` so
 ## Layout
 
 ```
-src/lib/audio/      decode, fft, karaoke split, tempo/key, playback engine, recorder
-src/lib/transcribe/ basic-pitch runner, quantiser, fretting, alphaTex/MusicXML/MIDI writers
+src/lib/audio/      decode, fft, karaoke split, tempo/key, playback engine,
+                    guide synth, count-in, recorder
+src/lib/transcribe/ basic-pitch runner, quantiser, fretting, voice splitter,
+                    engraver, take marking, alphaTex/MusicXML/MIDI writers
+src/lib/store/      the on-device cache, and saved charts
+src/lib/supabase/   the optional client
 src/lib/workers/    demucs stem-separation worker
-src/components/     studio UI (mixer, transport, waveform, score)
+src/components/     studio UI (mixer, transport, waveform, score, save bar)
+supabase/schema.sql the charts table and its row-level security
+scripts/verify-*    checks for the tex writer, voice splitter and take marking
 ```
 
 ## Honest limits

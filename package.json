@@ -16,6 +16,7 @@
     "@page-assistant/core": "file:vendor/page-assistant/core",
     "@page-assistant/widget": "file:vendor/page-assistant/widget",
     "@spotify/basic-pitch": "^1.0.1",
+    "@supabase/supabase-js": "^2.115.0",
     "@tensorflow/tfjs": "^3.21.0",
     "@tonejs/midi": "^2.0.28",
     "demucs-web": "^1.0.2",

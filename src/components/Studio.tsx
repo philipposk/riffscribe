@@ -15,6 +15,8 @@ import {
 
 import Assistant, { type AssistantActions } from "./Assistant";
 import Mixer, { type MixTrack } from "./Mixer";
+import SaveBar from "./SaveBar";
+import { HANDOFF_KEY } from "./SharedChart";
 import ScoreView from "./ScoreView";
 import Transport from "./Transport";
 import Waveform from "./Waveform";
@@ -33,12 +35,12 @@ import {
 } from "@/lib/store/cache";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
 import { channelsToAudioBuffer, toModelInput, transcribeAudio } from "@/lib/transcribe/basicPitch";
-import { keyToken, sheetsToAlphaTex } from "@/lib/transcribe/alphatex";
 import { partsToMidi } from "@/lib/transcribe/midi";
 import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
-import { quantize, slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
+import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcribe/compare";
-import { assignFrets } from "@/lib/transcribe/tab";
+import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
+import { CHART_VERSION, type Chart } from "@/lib/store/charts";
 import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
   DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part,
@@ -123,6 +125,9 @@ export default function Studio() {
   /** How the last take measured up against the written part. */
   const [report, setReport] = useState<TakeReport | null>(null);
   const [checkPart, setCheckPart] = useState<string | null>(null);
+
+  /** The saved chart this session is editing, once there is one. */
+  const [chartId, setChartId] = useState<string | null>(null);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -226,6 +231,50 @@ export default function Studio() {
       .finally(() => clearTimeout(timer));
     return () => stop.abort();
   }, []);
+
+  /* ---------------------------------------------------------------- charts */
+
+  /** Everything worth keeping about a song, and nothing that weighs anything. */
+  const buildChart = useCallback((): Chart | null => {
+    if (!parts.length) return null;
+    return {
+      version: CHART_VERSION,
+      title: file?.name.replace(/\.[^.]+$/, "") || "Untitled",
+      settings,
+      parts,
+      sections,
+      loop,
+    };
+  }, [parts, settings, sections, loop, file]);
+
+  const openChart = useCallback((chart: Chart) => {
+    setSettings(chart.settings);
+    setParts(chart.parts);
+    setSections(chart.sections ?? []);
+    setLoop(chart.loop ?? null);
+    setReport(null);
+    setLog(
+      `Opened "${chart.title}" — ${chart.parts.length} ${chart.parts.length === 1 ? "part" : "parts"}. ` +
+        "Load the song itself to play along."
+    );
+  }, []);
+
+  /** A chart arriving from a shared link, handed over through session storage. */
+  useEffect(() => {
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem(HANDOFF_KEY);
+      if (raw) sessionStorage.removeItem(HANDOFF_KEY);
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    try {
+      openChart(JSON.parse(raw) as Chart);
+    } catch {
+      /* a chart we cannot read is not worth an error message */
+    }
+  }, [openChart]);
 
   /* --------------------------------------------------------------- engine  */
 
@@ -655,16 +704,7 @@ export default function Studio() {
   }
 
   /** Every part, quantised and fretted, ready to engrave. */
-  const partSheets = useMemo(() => {
-    return parts.map((part) => {
-      const sheet = quantize(part.notes, { ...settings, instrument: part.instrument });
-      const inst = INSTRUMENTS[part.instrument];
-      if (inst.tuning) {
-        assignFrets(sheet, { tuning: inst.tuning, maxFret: inst.frets ?? 22, capo: settings.capo });
-      }
-      return { part, sheet, instrument: inst };
-    });
-  }, [parts, settings]);
+  const partSheets = useMemo(() => engraveParts(parts, settings), [parts, settings]);
 
   const sheet: Sheet | null = partSheets[0]?.sheet ?? null;
 
@@ -675,24 +715,15 @@ export default function Studio() {
     [sheet, settings.offsetSeconds]
   );
 
-  const tex = useMemo(() => {
-    if (!partSheets.length) return "";
-    return sheetsToAlphaTex(
-      partSheets.map(({ part, sheet: sh, instrument }) => ({
-        sheet: sh,
-        options: {
-          instrument,
-          capo: settings.capo,
-          keySignature: keyToken(part.fifths, part.keyMode),
-          trackName: instrument.label,
-        },
-      })),
-      {
-        title: file?.name.replace(/\.[^.]+$/, "") || "Riffscribe transcription",
-        bpm: settings.bpm,
-      }
-    );
-  }, [partSheets, settings.capo, settings.bpm, file]);
+  const tex = useMemo(
+    () =>
+      partsToTex(
+        partSheets,
+        settings,
+        file?.name.replace(/\.[^.]+$/, "") || "Riffscribe transcription"
+      ),
+    [partSheets, settings, file]
+  );
 
   /* ----------------------------------------------------------------- record */
 
@@ -1109,6 +1140,18 @@ export default function Studio() {
         )}
         {log && <p className="mt-3 text-xs text-white/45">{log}</p>}
       </section>
+
+      {/*
+        Outside the "a song is loaded" block on purpose: someone coming back to
+        pick up a chart, or arriving from a shared link, has no audio yet and
+        still needs to reach their own work.
+      */}
+      <SaveBar
+        buildChart={buildChart}
+        onOpen={openChart}
+        chartId={chartId}
+        onChartId={setChartId}
+      />
 
       {audio && (
         <>
