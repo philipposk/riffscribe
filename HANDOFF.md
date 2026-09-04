@@ -88,7 +88,13 @@ code is "cleaned up" past them.
    SharedArrayBuffer for Demucs. Anything cross-origin the app fetches must be
    CORS-clean.
 
-7. **Opus always decodes at 48 kHz**, whatever rate it was given. The stem cache
+7. **The 6x7 Supabase project is shared by ~18 apps in one `public` schema** —
+   88 tables, and already two different functions named `touch_updated_at`.
+   Everything riffscribe owns is prefixed `riffscribe_` for that reason; an
+   unprefixed `create or replace function touch_updated_at` would have quietly
+   taken over another app's trigger.
+
+8. **Opus always decodes at 48 kHz**, whatever rate it was given. The stem cache
    encodes at 44.1 kHz and gets 48 kHz back, so `decodeTrack` resamples to the
    rate the studio wants; skip that and everything plays 8.8% long. Also:
    `AudioData.copyTo` returns **one plane per call** — asking for plane 0 and
@@ -96,7 +102,7 @@ code is "cleaned up" past them.
    pass a test that uses identical audio in each channel, so the check in
    `cache.ts` uses different tones per channel on purpose.
 
-8. **The assistant mounts on React's second effect pass, not the first.** The
+9. **The assistant mounts on React's second effect pass, not the first.** The
    widget import is async, so in development the first pass is always torn down
    before it resolves. Guarding with a "have I started?" ref blocks the second
    pass and the assistant then never appears while developing.
@@ -147,16 +153,24 @@ Checked against the live deployment, not just locally:
   counted faults, plus the degenerate cases.
 - Saving with no Supabase project configured: controls absent, `/c/<id>` explains
   itself, studio unchanged.
+- Recording and take marking end to end, with a synthetic microphone
+  (`getUserMedia` stubbed with a MediaStreamDestination playing a known
+  performance). Two faults injected — one note a semitone flat, one not played —
+  and the report came back "75% clean · 1 missed · 1 out of tune", weakest bar 1.
+- Row-level security against the live table, as owner and as an anonymous
+  caller: owner CRUD works; an unshared chart is invisible to anonymous; a shared
+  one is readable; an anonymous edit of a shared chart changes nothing. Note that
+  the refused edit answers **204**, not an error — PostgREST reports 204 when a
+  policy matches zero rows, so check the value, not the status.
 
 ## Not verified
 
 - Overdub recording end to end — needs a microphone grant, never exercised. The
   take-marking UI sits behind it, so that path is unexercised too; the marking
   logic underneath it is unit-tested.
-- Saving and sharing against a real Supabase project. The code is complete and
-  the no-keys path is verified, but no project has been created — that needs the
-  owner's dashboard. Create one, run `supabase/schema.sql`, and put the URL and
-  anon key in Vercel.
+- Nothing outstanding. Saving and sharing now run against the shared 6x7
+  Supabase project (`fmrnqepyyjucnfbrqawl`), which ~18 apps already use
+  client-side, so riffscribe's anon key publishes nothing new.
 - `local/fetch-server.mjs` — written and syntax-checked, never run, because
   `yt-dlp` is not installed on this machine.
 - Anything on a real full-length song. All testing used synthetic clips of
@@ -202,16 +216,12 @@ If accounts ever arrive, put this route behind a session and relax the caps.
    (import only `tfjs-core` + `tfjs-converter` + a backend rather than the union
    bundle) or chunk the work with yields. Still the biggest usability win
    available, and now the only slow thing left that is not cached.
-2. **Stand up the Supabase project** so saving and sharing actually run. The code
-   is done and inert; it needs a project, `supabase/schema.sql`, and two env vars.
-3. **Exercise recording and take marking with a real microphone.** Everything
-   underneath is tested; the path through the browser is not.
-4. **Editable notes.** Transcription is a first draft and the only way to fix a
+2. **Editable notes.** Transcription is a first draft and the only way to fix a
    wrong note today is to export to MuseScore. Nudging one in place would matter
    more than most of what is left.
-5. **Tuner and drone.** Small, and a drone on the tonic is the most useful
+3. **Tuner and drone.** Small, and a drone on the tonic is the most useful
    intonation tool there is for cello and violin.
-6. **Better guide sound**, if it matters — alphaTab ships a 1.3 MB Sonivox
+4. **Better guide sound**, if it matters — alphaTab ships a 1.3 MB Sonivox
    soundfont in `public/alphatab/soundfont/` and exposes `api.exportAudio()`, so
    the guide could be rendered from real samples instead of the synth in
    `guide.ts`.
