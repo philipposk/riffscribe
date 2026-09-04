@@ -8,7 +8,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Check, Download, FileMusic, Link as LinkIcon, Loader2, Mic, Music2, Printer, Scissors, Square,
+  Bookmark, Check, Download, FileMusic, Link as LinkIcon, Loader2, Mic, Music2, Pause, Play, Printer,
+  Repeat, RotateCcw, Scissors, Square,
   Upload, Users, Wand2,
 } from "lucide-react";
 
@@ -21,6 +22,7 @@ import Waveform from "./Waveform";
 import { fileToAudioBuffer, peaks as peaksOf, toMono, toStereo } from "@/lib/audio/decode";
 import { estimateKey, estimateTempo, chromaFromNotes } from "@/lib/audio/analyze";
 import { PracticeEngine, makeClickTrack, type EngineTrack } from "@/lib/audio/engine";
+import { countIn, countInSeconds } from "@/lib/audio/countin";
 import { MicRecorder, estimateLatency, placeTake, stretchOffline } from "@/lib/audio/recorder";
 import {
   DEMUCS_SAMPLE_RATE, mixStems, separateInstantAsync, separateWithDemucs, type StemSet,
@@ -99,6 +101,23 @@ export default function Studio() {
   /** Content hash of the loaded file — the cache key for its stems and parts. */
   const [key, setKey] = useState<string | null>(null);
   const [restored, setRestored] = useState<string | null>(null);
+
+  /** Bars of clicks before playback and before a take. 0 turns it off. */
+  const [countInBars, setCountInBars] = useState(1);
+  const [counting, setCounting] = useState(false);
+  const countRef = useRef<{ cancel: () => void } | null>(null);
+
+  /**
+   * The speed trainer: every time the loop comes round, nudge the tempo up a
+   * little, until it reaches the target. This is how the thing is actually
+   * practised — slow enough to play it right, then faster by degrees.
+   */
+  const [trainer, setTrainer] = useState<{ step: number; target: number } | null>(null);
+  const [passes, setPasses] = useState(0);
+
+  /** Named parts of the song, so you can practise "the solo" rather than 2:14. */
+  const [sections, setSections] = useState<{ name: string; from: number; to: number }[]>([]);
+  const [editingSection, setEditingSection] = useState<number | null>(null);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -313,6 +332,64 @@ export default function Studio() {
   }, [mix, soloed, trackList]);
 
   useEffect(() => { void engineRef.current?.setLoop(loop); }, [loop]);
+
+  /**
+   * A loop pass ends when the clock jumps backwards inside the loop. That is
+   * the only signal the engine gives us, and it is enough: count the pass, and
+   * if the trainer is on, nudge the speed up a step.
+   */
+  const lastTime = useRef(0);
+  useEffect(() => {
+    const prev = lastTime.current;
+    lastTime.current = transport.time;
+    if (!loop || !transport.playing) return;
+    const wrapped = prev > transport.time + 0.25 && prev <= loop[1] + 0.5 && transport.time >= loop[0] - 0.5;
+    if (!wrapped) return;
+    setPasses((n) => n + 1);
+    if (!trainer) return;
+    const next = Math.min(trainer.target, Math.round((transport.rate + trainer.step) * 100) / 100);
+    if (next > transport.rate) {
+      void engineRef.current?.setRate(next);
+      setLog(`Clean pass — up to ${Math.round(next * 100)}%.`);
+    } else if (transport.rate >= trainer.target) {
+      setTrainer(null);
+      setLog(`You are up to ${Math.round(trainer.target * 100)}%. Trainer off.`);
+    }
+  }, [transport.time, transport.playing, transport.rate, loop, trainer]);
+
+  /** Play, but count it in first so you can come in with it. */
+  const startPlaying = useCallback(async () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (transport.playing) {
+      countRef.current?.cancel();
+      setCounting(false);
+      await engine.pause();
+      return;
+    }
+    if (countInBars > 0) {
+      setCounting(true);
+      const c = countIn(settings.bpm, transport.rate, settings.timeSignature[0], countInBars);
+      countRef.current = c;
+      await c.done;
+      countRef.current = null;
+      setCounting(false);
+    }
+    await engine.play();
+  }, [transport.playing, transport.rate, countInBars, settings.bpm, settings.timeSignature]);
+
+  /**
+   * Mark the section you are looping, so you can come back to it by name.
+   * The name is edited in place rather than through a browser prompt, which
+   * some browsers refuse to show and none of them make look like part of this.
+   */
+  function nameLoop() {
+    if (!loop) return;
+    const next = [...sections, { name: `Section ${sections.length + 1}`, from: loop[0], to: loop[1] }]
+      .sort((a, b) => a.from - b.from);
+    setSections(next);
+    setEditingSection(next.findIndex((s) => s.from === loop[0] && s.to === loop[1]));
+  }
 
   /* -------------------------------------------------------------- separate */
 
@@ -1039,6 +1116,94 @@ export default function Studio() {
               <button className="btn text-xs" onClick={trimToLoop} disabled={!loop}>
                 Trim song to loop
               </button>
+              <button className="btn text-xs" onClick={nameLoop} disabled={!loop}>
+                <Bookmark size={13} /> Name this section
+              </button>
+            </div>
+
+            {sections.length > 0 && (
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-white/40">Sections:</span>
+                {sections.map((s, i) => (
+                  <span key={`${s.from}-${s.to}-${i}`} className="flex items-center overflow-hidden rounded bg-white/5">
+                    {editingSection === i ? (
+                      <input
+                        autoFocus
+                        className="w-28 bg-transparent px-2 py-1 text-xs text-white outline-none"
+                        defaultValue={s.name}
+                        onBlur={(e) => {
+                          const name = e.target.value.trim() || s.name;
+                          setSections((l) => l.map((x, j) => (j === i ? { ...x, name } : x)));
+                          setEditingSection(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") e.currentTarget.blur();
+                          if (e.key === "Escape") setEditingSection(null);
+                        }}
+                      />
+                    ) : (
+                      <button
+                        className="px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white"
+                        onClick={() => { setLoop([s.from, s.to]); void engineRef.current?.seek(s.from); }}
+                        onDoubleClick={() => setEditingSection(i)}
+                        title={`${fmtTime(s.from)}–${fmtTime(s.to)} — double-click to rename`}
+                      >
+                        {s.name}
+                      </button>
+                    )}
+                    <button
+                      className="px-1.5 py-1 text-xs text-white/25 hover:text-white/70"
+                      onClick={() => setSections((l) => l.filter((_, j) => j !== i))}
+                      aria-label={`Remove ${s.name}`}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <div className="mb-4 flex flex-wrap items-center gap-4 rounded-md border border-white/10 bg-white/[0.02] px-3 py-2">
+              <label className="flex items-center gap-2 text-xs text-white/60">
+                Count-in
+                <select
+                  className="bg-transparent text-xs"
+                  value={countInBars}
+                  onChange={(e) => setCountInBars(Number(e.target.value))}
+                >
+                  <option value={0}>off</option>
+                  <option value={1}>1 bar</option>
+                  <option value={2}>2 bars</option>
+                </select>
+              </label>
+
+              <label className="flex items-center gap-2 text-xs text-white/60">
+                <input
+                  type="checkbox"
+                  checked={!!trainer}
+                  disabled={!loop}
+                  onChange={(e) => { setTrainer(e.target.checked ? { step: 0.05, target: 1 } : null); setPasses(0); }}
+                />
+                Speed trainer
+                {trainer && (
+                  <>
+                    <span className="text-white/35">+5% a pass, up to</span>
+                    <select
+                      className="bg-transparent text-xs"
+                      value={trainer.target}
+                      onChange={(e) => setTrainer({ ...trainer, target: Number(e.target.value) })}
+                    >
+                      <option value={0.75}>75%</option>
+                      <option value={0.9}>90%</option>
+                      <option value={1}>100%</option>
+                      <option value={1.1}>110%</option>
+                    </select>
+                  </>
+                )}
+              </label>
+
+              {loop && <span className="text-xs text-white/35">{passes} {passes === 1 ? "pass" : "passes"}</span>}
+              {!loop && <span className="text-xs text-white/25">The trainer needs a loop.</span>}
             </div>
             <Transport
               playing={transport.playing}
@@ -1048,7 +1213,7 @@ export default function Studio() {
               semitones={transport.semitones}
               rendering={transport.rendering}
               loop={loop}
-              onToggle={() => void engineRef.current?.toggle()}
+              onToggle={() => void startPlaying()}
               onSeek={(t) => void engineRef.current?.seek(t)}
               onRate={(r) => void engineRef.current?.setRate(r)}
               onSemitones={(s) => void engineRef.current?.setSemitones(s)}
@@ -1289,6 +1454,71 @@ export default function Studio() {
           </section>
         </>
       )}
+
+      {/*
+        The transport, always within reach. A player holding an instrument
+        cannot go hunting up the page for the play button, and the score is
+        long — so it follows you down the page instead.
+      */}
+      {audio && (
+        <div className="no-print fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0c0f14]/95 backdrop-blur">
+          <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-3 px-4 py-2.5">
+            <button
+              className="btn btn-primary"
+              onClick={() => void startPlaying()}
+              aria-label={transport.playing ? "Pause" : "Play"}
+            >
+              {counting ? <Loader2 className="animate-spin" size={16} /> : transport.playing ? <Pause size={16} /> : <Play size={16} />}
+              {counting ? "Counting in…" : transport.playing ? "Pause" : "Play"}
+            </button>
+            <button
+              className="btn"
+              onClick={() => void engineRef.current?.seek(loop ? loop[0] : 0)}
+              title="Back to the start of the loop"
+            >
+              <RotateCcw size={15} />
+            </button>
+            <span className="font-mono text-sm tabular-nums text-white/70">
+              {fmtTime(transport.time)}
+              <span className="text-white/30"> / {fmtTime(transport.duration)}</span>
+            </span>
+
+            <span className="flex items-center gap-1">
+              {[0.5, 0.75, 1].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => void engineRef.current?.setRate(s)}
+                  className={`rounded px-1.5 py-0.5 text-xs ${
+                    Math.abs(transport.rate - s) < 0.005
+                      ? "bg-[var(--color-accent)] text-black"
+                      : "bg-white/5 text-white/60 hover:bg-white/10"
+                  }`}
+                >
+                  {Math.round(s * 100)}%
+                </button>
+              ))}
+              {![0.5, 0.75, 1].some((s) => Math.abs(transport.rate - s) < 0.005) && (
+                <span className="rounded bg-[var(--color-accent)] px-1.5 py-0.5 text-xs text-black">
+                  {Math.round(transport.rate * 100)}%
+                </span>
+              )}
+            </span>
+
+            {loop && (
+              <button className="btn text-xs text-emerald-300" onClick={() => setLoop(null)} title="Clear the loop">
+                <Repeat size={14} /> {fmtTime(loop[0])}–{fmtTime(loop[1])} ✕
+              </button>
+            )}
+            {trainer && <span className="text-xs text-[var(--color-accent)]">trainer → {Math.round(trainer.target * 100)}%</span>}
+            {transport.rendering !== null && (
+              <span className="flex items-center gap-1.5 text-xs text-[var(--color-accent)]">
+                <Loader2 className="animate-spin" size={12} /> {Math.round(transport.rendering * 100)}%
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+      {audio && <div className="no-print h-16" aria-hidden />}
 
       <Assistant actions={assistantActions} />
 
