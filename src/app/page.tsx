@@ -18,6 +18,22 @@ const FEATURES = [
     body: "Record your own part over the backing track. Record it at half speed if you need to — it gets stretched back to full tempo without turning you into a chipmunk — then mix it and export a wav.",
   },
   {
+    title: "Tells you how it went",
+    body: "Play it, then ask how you did. Your take is marked against the written part: what was clean, what you missed, what sat flat or came in late, whether you rush or drag, and which bars are weakest — with one press to loop those and go again.",
+  },
+  {
+    title: "Practises the way you do",
+    body: "A count-in so you can come in with the music. A speed trainer that nudges the tempo up 5% every clean pass until you reach full speed. Named sections, so it is \u201cthe chorus\u201d and not \u201csomewhere around 2:14\u201d. And the transport stays pinned to the bottom \u2014 you are holding an instrument, not a mouse.",
+  },
+  {
+    title: "Only takes a song apart once",
+    body: "Separating costs minutes, so the stems are kept on your machine and come straight back the next time you open that song \u2014 even if you renamed the file. About 12 MB for a four-minute song, not the 340 MB the raw audio would take.",
+  },
+  {
+    title: "Send it to the other players",
+    body: "Sign in and your chart is saved \u2014 parts, tempo, key, sections, loops. Share the link and each player opens the same writing against their own copy of the song. Only the notes travel; the recording never leaves your machine.",
+  },
+  {
     title: "Reads along with you",
     body: "Turn on follow-the-music and the score scrolls itself, highlighting the beat being played, so you can keep both hands on the instrument. The part is played back in your instrument's voice too — mute it once you can hold the line yourself.",
   },
@@ -49,7 +65,8 @@ export default function Home() {
       <p className="mt-5 max-w-2xl text-lg text-white/60">
         Riffscribe listens to a recording and writes down what it hears — notes on a stave and
         numbers on a fretboard. Then it strips the vocals out, slows the whole thing down without
-        dropping the pitch, and records you playing over the top.
+        dropping the pitch, records you playing over the top, and tells you which bars you still
+        need to work on.
       </p>
 
       <div className="mt-8 flex flex-wrap gap-3">

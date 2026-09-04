@@ -25,15 +25,21 @@ uploads. The only server route is the assistant's LLM proxy.
 
 ```
 src/lib/audio/       decode, fft, karaoke split, tempo/key, playback engine,
-                     guide synth, recorder, wav
+                     guide synth, count-in, recorder, wav
 src/lib/transcribe/  basic-pitch runner, quantiser, fretting, voice splitter,
-                     alphaTex / MusicXML / MIDI writers
+                     engraver, take marking, alphaTex / MusicXML / MIDI writers
+src/lib/store/       cache.ts (stems + transcriptions on the device),
+                     charts.ts (saved and shared charts)
+src/lib/supabase/    the optional client
 src/lib/workers/     demucs + karaoke workers
 src/components/      Studio (the whole app), Mixer, Transport, Waveform,
-                     ScoreView, Assistant
-src/app/api/pa/…     the assistant's LLM proxy (the only server route)
+                     ScoreView, SaveBar, SharedChart, Assistant
+src/app/api/pa/…     the assistant's LLM proxy
+src/app/c/[id]/      a shared chart, readable without an account
+supabase/schema.sql  the charts table and its row-level security
 local/               fetch-server.mjs — optional link fetcher, runs on your Mac
-scripts/             copy-assets (runs on install), verify-tex, verify-voices
+scripts/             copy-assets (runs on install), verify-tex, verify-voices,
+                     verify-marking
 ```
 
 `Studio.tsx` is large and holds all the state. That is deliberate — the pieces
@@ -82,6 +88,33 @@ code is "cleaned up" past them.
    SharedArrayBuffer for Demucs. Anything cross-origin the app fetches must be
    CORS-clean.
 
+7. **Opus always decodes at 48 kHz**, whatever rate it was given. The stem cache
+   encodes at 44.1 kHz and gets 48 kHz back, so `decodeTrack` resamples to the
+   rate the studio wants; skip that and everything plays 8.8% long. Also:
+   `AudioData.copyTo` returns **one plane per call** — asking for plane 0 and
+   slicing it in half yields the left channel followed by silence. Both of these
+   pass a test that uses identical audio in each channel, so the check in
+   `cache.ts` uses different tones per channel on purpose.
+
+8. **The assistant mounts on React's second effect pass, not the first.** The
+   widget import is async, so in development the first pass is always torn down
+   before it resolves. Guarding with a "have I started?" ref blocks the second
+   pass and the assistant then never appears while developing.
+
+## What it does now, beyond transcribing
+
+- **Nothing is recomputed twice.** Stems and transcriptions live in IndexedDB,
+  keyed by a hash of the file's contents, stored as Opus (~12 MB for a
+  four-minute song's four stems rather than 340 MB). Eight songs, 600 MB budget,
+  least-recently-opened evicted first.
+- **Practice tools**: count-in, a speed trainer that steps the tempo up on each
+  clean loop pass, named sections, and a transport pinned to the bottom.
+- **Take marking**: the recording is transcribed and lined up against the chart
+  to report clean / missed / out of tune / out of time, rush-or-drag, and the
+  weakest bars, which can be looped in one press.
+- **Charts save and share** through Supabase, if configured. Only the writing
+  travels; audio never leaves the machine.
+
 ## Verified
 
 Checked against the live deployment, not just locally:
@@ -103,10 +136,27 @@ Checked against the live deployment, not just locally:
   two lines out of a quartet become violin + cello (not two violins).
 - Assistant: "slow it down to 60 percent" moved the real Speed control to 60%
   and reported the actual studio state back.
+- Stem cache: a restored backing track matches a freshly separated one to within
+  0.2% RMS **on both channels** at exactly the same duration, against a file with
+  a different tone in each channel.
+- Count-in: 2.22s measured against 2.17s expected for one bar at 114.8 BPM.
+- Speed trainer: climbed 50% → 75% over successive loop passes and switched
+  itself off at the target.
+- Sections: named in place, and the chip restores its loop and seeks to its start.
+- Take marking: `scripts/verify-marking.mjs`, 16 assertions on a performance with
+  counted faults, plus the degenerate cases.
+- Saving with no Supabase project configured: controls absent, `/c/<id>` explains
+  itself, studio unchanged.
 
 ## Not verified
 
-- Overdub recording end to end — needs a microphone grant, never exercised.
+- Overdub recording end to end — needs a microphone grant, never exercised. The
+  take-marking UI sits behind it, so that path is unexercised too; the marking
+  logic underneath it is unit-tested.
+- Saving and sharing against a real Supabase project. The code is complete and
+  the no-keys path is verified, but no project has been created — that needs the
+  owner's dashboard. Create one, run `supabase/schema.sql`, and put the URL and
+  anon key in Vercel.
 - `local/fetch-server.mjs` — written and syntax-checked, never run, because
   `yt-dlp` is not installed on this machine.
 - Anything on a real full-length song. All testing used synthetic clips of
@@ -150,14 +200,18 @@ If accounts ever arrive, put this route behind a session and relax the caps.
 
 1. **Get transcription off the main thread.** Either make a worker load work
    (import only `tfjs-core` + `tfjs-converter` + a backend rather than the union
-   bundle) or chunk the work with yields. Biggest usability win available.
-2. **Save projects.** Not the audio — a four-minute song is ~85 MB raw and ×4
-   for stems, and hosting other people's music is a liability. Save the *chart*:
-   parts, notes, tempo, key, loop markers, fret choices, instrument. A few KB of
-   JSON, on the same Vercel + Supabase pattern as `transcriber`.
-3. **Practice features that are cheap and wanted:** count-in, a speed trainer
-   that steps the tempo up each loop pass, section markers.
-4. **Better guide sound**, if it matters — alphaTab ships a 1.3 MB Sonivox
+   bundle) or chunk the work with yields. Still the biggest usability win
+   available, and now the only slow thing left that is not cached.
+2. **Stand up the Supabase project** so saving and sharing actually run. The code
+   is done and inert; it needs a project, `supabase/schema.sql`, and two env vars.
+3. **Exercise recording and take marking with a real microphone.** Everything
+   underneath is tested; the path through the browser is not.
+4. **Editable notes.** Transcription is a first draft and the only way to fix a
+   wrong note today is to export to MuseScore. Nudging one in place would matter
+   more than most of what is left.
+5. **Tuner and drone.** Small, and a drone on the tonic is the most useful
+   intonation tool there is for cello and violin.
+6. **Better guide sound**, if it matters — alphaTab ships a 1.3 MB Sonivox
    soundfont in `public/alphatab/soundfont/` and exposes `api.exportAudio()`, so
    the guide could be rendered from real samples instead of the synth in
    `guide.ts`.
