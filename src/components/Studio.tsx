@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Download, FileMusic, Link as LinkIcon, Loader2, Mic, Music2, Printer, Scissors, Square,
+  Check, Download, FileMusic, Link as LinkIcon, Loader2, Mic, Music2, Printer, Scissors, Square,
   Upload, Users, Wand2,
 } from "lucide-react";
 
@@ -26,6 +26,9 @@ import {
   DEMUCS_SAMPLE_RATE, mixStems, separateInstantAsync, separateWithDemucs, type StemSet,
 } from "@/lib/audio/stems";
 import { synthesizeGuide } from "@/lib/audio/guide";
+import {
+  forget, getScore, getStems, putScore, putStems, requestPersistence, songKey,
+} from "@/lib/store/cache";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
 import { channelsToAudioBuffer, toModelInput, transcribeAudio } from "@/lib/transcribe/basicPitch";
 import { keyToken, sheetsToAlphaTex } from "@/lib/transcribe/alphatex";
@@ -35,7 +38,7 @@ import { quantize, slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { assignFrets } from "@/lib/transcribe/tab";
 import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
-  DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type Part,
+  DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part,
   type TranscriptionSettings,
 } from "@/lib/types";
 
@@ -93,6 +96,9 @@ export default function Studio() {
   const [playAlong, setPlayAlong] = useState(true);
   const [linkUrl, setLinkUrl] = useState("");
   const [helperUp, setHelperUp] = useState<boolean | null>(null);
+  /** Content hash of the loaded file — the cache key for its stems and parts. */
+  const [key, setKey] = useState<string | null>(null);
+  const [restored, setRestored] = useState<string | null>(null);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -128,6 +134,20 @@ export default function Studio() {
       setParts([]);
       setOverdub(null);
       setSource("mix");
+      setRestored(null);
+
+      // Have we taken this song apart before? Separating costs minutes, so it
+      // is worth a moment's hashing to find out.
+      const id = await songKey(f);
+      setKey(id);
+      setBusy({ label: "Looking for work you have already done…" });
+      const cached = await getStems(id, DEMUCS_SAMPLE_RATE);
+      if (cached) {
+        setStems(cached.stems as StemSet);
+        setStemMode(cached.mode as StemMode);
+        setSource("other");
+        setRestored(cached.mode === "ai" ? "Stems restored from this device — no need to split again." : "Instant split restored from this device.");
+      }
 
       const mono = toMono(stereo.left, stereo.right);
       const tempo = estimateTempo(mono, DEMUCS_SAMPLE_RATE);
@@ -310,6 +330,7 @@ export default function Studio() {
       setStemMode("instant");
       setSource("other");
       setLog("Instant split done. For a cleaner result, run the AI split.");
+      if (key && file) void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "instant");
     } catch (e) {
       setError(e instanceof Error ? e.message : "instant split failed");
     } finally {
@@ -338,6 +359,11 @@ export default function Studio() {
       setStemMode("ai");
       setSource("other");
       setLog("Four stems ready. Mute what you don't want to hear.");
+      // Minutes of work — never make anyone wait for it twice.
+      if (key && file) {
+        void requestPersistence();
+        void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "ai");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "stem separation failed");
     } finally {
@@ -381,6 +407,17 @@ export default function Studio() {
     return stems[source];
   }, [audio, stems, source]);
 
+  /** Throw away what we remembered, for when a split went badly. */
+  async function forgetSong() {
+    if (!key) return;
+    await forget(key);
+    setStems(null);
+    setStemMode("none");
+    setSource("mix");
+    setRestored(null);
+    setLog("Forgotten. The next split will run from scratch.");
+  }
+
   async function runTranscribe() {
     const src = sourceChannels();
     if (!src) return;
@@ -388,17 +425,23 @@ export default function Studio() {
     setError(null);
     setBusy({ label: "Listening for notes…", value: 0 });
     const startedAt = performance.now();
+    const variant = `${source}:${settings.instrument}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}`;
     try {
-      const buffer = channelsToAudioBuffer([src.left, src.right], DEMUCS_SAMPLE_RATE);
-      const mono22 = await toModelInput(buffer);
-      const found = await transcribeAudio(mono22, {
-        onsetThreshold: settings.onsetThreshold,
-        frameThreshold: settings.frameThreshold,
-        minNoteLength: settings.minNoteLength,
-        minMidi: inst.range[0],
-        maxMidi: inst.range[1],
-        onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
-      });
+      let found = key ? await getScore<NoteEvent[]>(key, variant) : null;
+      const fromCache = !!found;
+      if (!found) {
+        const buffer = channelsToAudioBuffer([src.left, src.right], DEMUCS_SAMPLE_RATE);
+        const mono22 = await toModelInput(buffer);
+        found = await transcribeAudio(mono22, {
+          onsetThreshold: settings.onsetThreshold,
+          frameThreshold: settings.frameThreshold,
+          minNoteLength: settings.minNoteLength,
+          minMidi: inst.range[0],
+          maxMidi: inst.range[1],
+          onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
+        });
+        if (key) void putScore(key, variant, found);
+      }
       const k = estimateKey(chromaFromNotes(found));
       addPart({
         source,
@@ -409,7 +452,11 @@ export default function Studio() {
         keyMode: k.mode,
       });
       const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
-      setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • took ${elapsed}s`);
+      setLog(
+        fromCache
+          ? `${found.length} notes • ${k.name} • ${settings.bpm} BPM • reused an earlier pass`
+          : `${found.length} notes • ${k.name} • ${settings.bpm} BPM • took ${elapsed}s`
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "transcription failed");
     } finally {
@@ -929,9 +976,22 @@ export default function Studio() {
                 {busy && /model|Separating/i.test(busy.label) ? "Separating…" : "AI split into 4 stems"}
               </button>
             </div>
+            {restored && (
+              <p className="mb-4 flex items-center gap-2 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/10 px-3 py-2 text-xs text-white/70">
+                <Check size={14} className="shrink-0 text-[var(--color-accent)]" />
+                {restored}
+                <button
+                  className="ml-auto shrink-0 underline decoration-white/30 underline-offset-2 hover:text-white"
+                  onClick={forgetSong}
+                >
+                  Split it again
+                </button>
+              </p>
+            )}
             <p className="mb-4 text-xs text-white/45">
               Instant is phase-based: no download, about a second, decent on most pop mixes.
               The AI split runs Demucs on your machine — first run pulls a ~180 MB model, then it is cached.
+              Stems are kept on this device afterwards, so a song is only ever separated once.
             </p>
             <Mixer
               tracks={mixTracks}
