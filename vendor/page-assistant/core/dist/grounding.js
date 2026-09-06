@@ -192,6 +192,7 @@ export class Assistant {
                 ok: true,
                 result,
                 rendered: cap.render ? cap.render(result, args) : undefined,
+                verbatim: cap.verbatim === true,
             };
         }
         catch (e) {
@@ -312,6 +313,16 @@ export function validateFactualText(text, invocations) {
     const rendered = invocations.filter((i) => i.ok && i.rendered).map((i) => i.rendered);
     if (!rendered.length)
         return { text, wasCorrected: false };
+    /* A capability may declare that its rendering IS the answer. The number
+       check below only asks whether each figure appears somewhere in the trusted
+       output, which a reordering satisfies: a model asked for withdrawals per
+       partner returned both real amounts against the wrong names and passed.
+       Where a figure only means something next to its label, the prose is not
+       worth the risk and the rendering is shown as written. */
+    if (invocations.some((i) => i.ok && i.rendered && i.verbatim)) {
+        const joined = rendered.join("\n\n");
+        return { text: joined, wasCorrected: joined !== text };
+    }
     const trusted = [];
     const trustedNumbers = new Set();
     for (const r of rendered)

@@ -10,6 +10,10 @@
  */
 import { useEffect, useRef } from "react";
 
+import {
+  GREEK_STRINGS, bcp47, languageInstruction, type AssistantLang,
+} from "@/lib/assistantLang";
+
 export interface AssistantActions {
   describe: () => string;
   setInstrument: (id: string) => string;
@@ -41,7 +45,14 @@ const INSTRUMENT_IDS = [
   "trumpet", "trombone",
 ];
 
-export default function Assistant({ actions }: { actions: AssistantActions }) {
+export default function Assistant({
+  actions,
+  lang = "auto",
+}: {
+  actions: AssistantActions;
+  /** Language for the mic, the spoken replies and the chrome. */
+  lang?: AssistantLang;
+}) {
   const latest = useRef(actions);
   latest.current = actions;
 
@@ -277,12 +288,28 @@ export default function Assistant({ actions }: { actions: AssistantActions }) {
         }),
       ];
 
+      // Checked again here: the language can change while the import is in
+      // flight, and without this the abandoned pass would mount a second
+      // widget that nothing owns or tears down.
+      if (disposed) return;
       PageAssistant.init({
         serverUrl: "/api/pa",
         appName: "Riffscribe",
         launcherIcon: "sparkle",
+        // The tag reaches the microphone, the spoken reply, and Whisper and
+        // ElevenLabs where a server voice is configured.
+        // Riffscribe's proxy fixes the model on purpose — the route is
+        // unauthenticated, so a visitor picking a costlier one would be
+        // spending someone else's money. Hiding the picker keeps the settings
+        // honest rather than offering a choice that is quietly ignored.
+        showModelPicker: false,
+        modelFixedNote:
+          "Riffscribe runs one small model for everyone, chosen on the server. There is no account here, so the choice is not yours to make — and nothing you type is billed to you.",
+        lang: bcp47(lang),
+        strings: lang === "el" ? GREEK_STRINGS : undefined,
         persona:
-          "A patient studio hand for a musician learning a part by ear. Practical and brief. You press the same buttons the player would.",
+          "A patient studio hand for a musician learning a part by ear. Practical and brief. You press the same buttons the player would." +
+          languageInstruction(lang),
         knowledge:
           "Riffscribe turns a recording into something you can practise: notation and tablature for your instrument, the song with your part removed, a pitch-preserving slow-down, and overdub recording. Everything runs in the browser; audio is never uploaded. You cannot load a song yourself — the player has to pick the file.",
         knowledgeUrl: "/llm.txt",
@@ -306,7 +333,7 @@ export default function Assistant({ actions }: { actions: AssistantActions }) {
       teardown?.();
       teardown = null;
     };
-  }, []);
+  }, [lang]);
 
   return null;
 }

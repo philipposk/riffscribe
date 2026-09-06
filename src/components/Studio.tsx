@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bookmark, Check, ChevronDown, ChevronUp, Download, FileMusic, Link as LinkIcon, Loader2, Mic,
-  Music2, Pause, Play, Printer, Repeat, RotateCcw, Scissors, Square, Target, Trash2, Undo2,
+  Languages, Music2, Pause, Play, Printer, Repeat, RotateCcw, Scissors, Square, Target,
+  Trash2, Undo2,
   Upload, Users, Wand2,
 } from "lucide-react";
 
@@ -46,6 +47,7 @@ import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcribe/compare";
 import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
 import { CHART_VERSION, type Chart } from "@/lib/store/charts";
+import { LANG_OPTIONS, loadLang, saveLang, type AssistantLang } from "@/lib/assistantLang";
 import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
   DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part,
@@ -140,6 +142,10 @@ export default function Studio() {
 
   /** The saved chart this session is editing, once there is one. */
   const [chartId, setChartId] = useState<string | null>(null);
+
+  /** What the assistant listens and speaks in. Remembered per device. */
+  const [assistantLang, setAssistantLang] = useState<AssistantLang>("auto");
+  useEffect(() => setAssistantLang(loadLang()), []);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -1150,7 +1156,26 @@ export default function Studio() {
             Song in, sheet music and tab out. Everything runs on this device.
           </p>
         </div>
-        <a className="btn" href="/">About</a>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-white/45">
+            <Languages size={14} />
+            <select
+              className="bg-transparent text-xs"
+              value={assistantLang}
+              onChange={(e) => {
+                const v = e.target.value as AssistantLang;
+                setAssistantLang(v);
+                saveLang(v);
+              }}
+              title="Language the assistant listens and speaks in"
+            >
+              {LANG_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+          <a className="btn" href="/">About</a>
+        </div>
       </header>
 
       {error && (
@@ -1842,7 +1867,7 @@ export default function Studio() {
       )}
       {audio && <div className="no-print h-16" aria-hidden />}
 
-      <Assistant actions={assistantActions} />
+      <Assistant actions={assistantActions} lang={assistantLang} />
 
       <footer className="no-print pb-10 pt-4 text-center text-xs text-white/30">
         Basic Pitch (Spotify, Apache-2.0) · Demucs (Meta, MIT) · alphaTab (MPL-2.0) · Signalsmith Stretch (MIT)

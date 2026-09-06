@@ -37,6 +37,11 @@ export async function fetchVoiceCapabilities(serverUrl, signal, authToken) {
         return BROWSER_ONLY_CAPABILITIES;
     }
 }
+/**
+ * Shipped defaults. Do NOT change these: apps rely on the free browser STT path being the
+ * default and must not be moved onto a paid one by a version bump. A host that wants a
+ * different starting point sets `voiceDefaults` instead.
+ */
 const DEFAULTS = {
     autoSpeak: false,
     ttsMode: "server",
@@ -45,6 +50,37 @@ const DEFAULTS = {
     openaiVoice: "nova",
     sttMode: "browser",
 };
+const SETTING_KEYS = [
+    "autoSpeak",
+    "ttsMode",
+    "ttsProvider",
+    "elevenLabsVoiceId",
+    "openaiVoice",
+    "sttMode",
+];
+/**
+ * The host's own starting point, layered between the shipped defaults and the user's
+ * stored choices: DEFAULTS < voiceDefaults < stored.
+ *
+ * Module-level because the settings panel and the change listener call `getVoiceSettings()`
+ * with no host context. Passing a full `VoiceOptions` object instead would bypass both, so
+ * the user's own preferences would stop applying — which is the thing this exists to avoid.
+ */
+let hostDefaults = {};
+/** Set the host's defaults. Unknown or undefined keys are ignored. */
+export function setVoiceDefaults(d) {
+    hostDefaults = {};
+    if (!d)
+        return;
+    for (const k of SETTING_KEYS) {
+        if (d[k] !== undefined)
+            hostDefaults[k] = d[k];
+    }
+}
+/** The effective defaults before the user's stored choices are applied. */
+export function getVoiceDefaults() {
+    return { ...DEFAULTS, ...hostDefaults };
+}
 /** Curated ElevenLabs voices — same API cost per character; voice id only changes sound. */
 export const ELEVENLABS_VOICES = [
     { id: "21m00Tcm4TlvDq8ikWAM", label: "Rachel — warm US" },
@@ -67,13 +103,15 @@ export const OPENAI_VOICES = [
     { id: "onyx", label: "Onyx (deep)" },
 ];
 export function getVoiceSettings(storageKey = VOICE_SETTINGS_STORAGE_KEY) {
+    const base = getVoiceDefaults();
     if (typeof localStorage === "undefined")
-        return DEFAULTS;
+        return base;
     try {
-        return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(storageKey) || "{}") };
+        // Stored user choices win over the host's defaults, which win over the shipped ones.
+        return { ...base, ...JSON.parse(localStorage.getItem(storageKey) || "{}") };
     }
     catch {
-        return DEFAULTS;
+        return base;
     }
 }
 export function setVoiceSettings(patch, storageKey = VOICE_SETTINGS_STORAGE_KEY) {

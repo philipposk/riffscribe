@@ -34,7 +34,7 @@ export function mountAssistantSettingsPanel(container, opts = {}) {
         root.appendChild(tabs);
         const body = el("div", "tab-body");
         if (activeTab === "General")
-            renderGeneral(body, storageKey);
+            renderGeneral(body, storageKey, opts);
         else if (activeTab === "Voice")
             renderVoice(body, voiceKey, caps);
         else
@@ -62,21 +62,29 @@ export function mountAssistantSettingsPanel(container, opts = {}) {
         host.remove();
     };
 }
-function renderGeneral(root, storageKey) {
+function renderGeneral(root, storageKey, opts = {}) {
     const s = getAssistantSettings(storageKey);
-    addRow(root, "Model", () => {
-        const sel = el("select", "field");
-        sel.innerHTML = DEFAULT_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
-        sel.value = s.model;
-        sel.onchange = () => setAssistantSettings({ model: sel.value }, storageKey);
-        return sel;
-    });
-    // The list is static; a model only works if the server's LLM router has a key/route
-    // for its provider. Say so instead of letting a bad pick fail silently at chat time.
-    const modelNote = el("p", "hint");
-    modelNote.style.margin = "-6px 0 12px 152px";
-    modelNote.textContent = "Models depend on the server's configured providers — an unsupported one will error when you send.";
-    root.appendChild(modelNote);
+    if (opts.showModel === false) {
+        const note = el("p", "hint");
+        note.style.margin = "0 0 12px";
+        note.textContent = opts.modelFixedNote ?? "The model is chosen by this site and cannot be changed here.";
+        root.appendChild(note);
+    }
+    else {
+        addRow(root, "Model", () => {
+            const sel = el("select", "field");
+            sel.innerHTML = DEFAULT_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
+            sel.value = s.model;
+            sel.onchange = () => setAssistantSettings({ model: sel.value }, storageKey);
+            return sel;
+        });
+        // The list is static; a model only works if the server's LLM router has a key/route
+        // for its provider. Say so instead of letting a bad pick fail silently at chat time.
+        const modelNote = el("p", "hint");
+        modelNote.style.margin = "-6px 0 12px 152px";
+        modelNote.textContent = "Models depend on the server's configured providers — an unsupported one will error when you send.";
+        root.appendChild(modelNote);
+    }
     addRow(root, "Theme", () => {
         const sel = el("select", "field");
         sel.innerHTML = `<option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option>`;

@@ -36,6 +36,10 @@ export declare const BROWSER_ONLY_CAPABILITIES: VoiceCapabilities;
  * try/catch and the UI still renders.
  */
 export declare function fetchVoiceCapabilities(serverUrl: string | undefined, signal?: AbortSignal, authToken?: string): Promise<VoiceCapabilities>;
+/** Set the host's defaults. Unknown or undefined keys are ignored. */
+export declare function setVoiceDefaults(d?: Partial<VoiceSettings>): void;
+/** The effective defaults before the user's stored choices are applied. */
+export declare function getVoiceDefaults(): VoiceSettings;
 /** Curated ElevenLabs voices — same API cost per character; voice id only changes sound. */
 export declare const ELEVENLABS_VOICES: {
     id: string;

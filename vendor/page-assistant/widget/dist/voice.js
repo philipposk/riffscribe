@@ -10,6 +10,44 @@ export class VoiceError extends Error {
     }
 }
 const SILERO_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/index.js";
+/**
+ * Resolve the BCP-47 language to use for speech I/O. Called per utterance, never cached:
+ * a host that swaps `<html lang>` on a language switch is honoured on the next mic tap.
+ * An explicit value always wins — `<html lang>` can lie (a translated UI whose root
+ * element still says "en"), so it is only consulted when the host said nothing.
+ */
+export function resolveVoiceLang(explicit) {
+    const set = explicit?.trim();
+    if (set)
+        return set;
+    if (typeof document !== "undefined") {
+        const htmlLang = document.documentElement?.lang?.trim();
+        if (htmlLang)
+            return htmlLang;
+    }
+    if (typeof navigator !== "undefined" && navigator.language?.trim())
+        return navigator.language.trim();
+    return "en-US";
+}
+/** "el-GR" → "el". Whisper and ElevenLabs want the bare ISO-639-1 code. */
+export function baseLang(lang) {
+    return lang.toLowerCase().replace(/_/g, "-").split("-")[0];
+}
+/**
+ * True when a mic tap could actually produce a transcript: the browser has
+ * SpeechRecognition, or there is a server to send recorded audio to AND the browser can
+ * record. Used to avoid rendering a mic button that can only ever do nothing.
+ */
+export function voiceInputAvailable(serverUrl) {
+    if (typeof window === "undefined")
+        return false;
+    if (window.SpeechRecognition || window.webkitSpeechRecognition)
+        return true;
+    return (!!serverUrl &&
+        typeof navigator !== "undefined" &&
+        !!navigator.mediaDevices?.getUserMedia &&
+        typeof window.MediaRecorder !== "undefined");
+}
 export class Voice {
     opts;
     speaking = false;
@@ -24,6 +62,10 @@ export class Voice {
     get isSpeaking() {
         return this.speaking;
     }
+    /** The language for this utterance/listen. Resolved now, not at construction. */
+    lang() {
+        return resolveVoiceLang(this.opts.lang);
+    }
     async speak(text, onWord) {
         this.stop();
         if (this.opts.ttsMode === "server" && this.opts.serverUrl) {
@@ -37,10 +79,12 @@ export class Voice {
                 return resolve();
             const u = new SpeechSynthesisUtterance(text);
             this.currentUtterance = u;
-            if (this.opts.browserVoice) {
-                const v = speechSynthesis.getVoices().find((x) => x.name.includes(this.opts.browserVoice));
-                if (v)
-                    u.voice = v;
+            const lang = this.lang();
+            u.lang = lang;
+            const v = this.pickBrowserVoice(lang);
+            if (v) {
+                u.voice = v;
+                u.lang = v.lang || lang;
             }
             let settled = false;
             const done = () => {
@@ -64,6 +108,34 @@ export class Voice {
             speechSynthesis.speak(u);
         });
     }
+    /**
+     * Choose a synthesis voice for `lang`. Language beats the host's `browserVoice` name
+     * hint, because a name like "Samantha" is an en-US voice and reading Greek with it is
+     * unintelligible. The name still wins inside the same base language, so an app that
+     * asked for "Daniel" keeps Daniel while the page is in English.
+     */
+    pickBrowserVoice(lang) {
+        let voices = [];
+        try {
+            voices = speechSynthesis.getVoices() ?? [];
+        }
+        catch {
+            return undefined;
+        }
+        if (!voices.length)
+            return undefined; // Chrome populates async; leave u.lang to decide
+        const want = lang.toLowerCase().replace(/_/g, "-");
+        const wantBase = baseLang(lang);
+        const named = this.opts.browserVoice
+            ? voices.filter((v) => v.name.includes(this.opts.browserVoice))
+            : [];
+        const vLang = (v) => (v.lang ?? "").toLowerCase().replace(/_/g, "-");
+        return (named.find((v) => vLang(v) === want) ??
+            named.find((v) => baseLang(vLang(v)) === wantBase) ??
+            voices.find((v) => vLang(v) === want) ??
+            voices.find((v) => baseLang(vLang(v)) === wantBase) ??
+            named[0]);
+    }
     async speakServer(text) {
         const headers = { "content-type": "application/json" };
         if (this.opts.authToken)
@@ -77,6 +149,7 @@ export class Voice {
                     text,
                     voiceId: this.opts.voiceId,
                     provider: this.opts.ttsProvider,
+                    lang: this.lang(),
                 }),
             });
         }
@@ -311,16 +384,47 @@ export class Voice {
             }
         }
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (SR)
-            return this.listenBrowser(SR);
-        return this.listenServer(hooks);
+        if (SR) {
+            try {
+                return await this.listenBrowser(SR);
+            }
+            catch (e) {
+                // The reverse fallback, and the one that matters on iOS: webkitSpeechRecognition
+                // is present inside an installed PWA / WKWebView but its service does not work,
+                // so it fails with a network/service error while the mic is perfectly fine.
+                // Retry ONCE through server STT. Never on "not-allowed" (mic refused — the server
+                // path needs the same permission and would fail identically) and never on
+                // "no-speech" (the user simply said nothing).
+                if (e instanceof VoiceError && (e.reason === "service" || e.reason === "other") && this.canServerStt()) {
+                    hooks?.onBrowserFallback?.();
+                    return this.listenServer(hooks); // single retry — listenServer never re-enters here
+                }
+                throw e;
+            }
+        }
+        // No recogniser at all (Firefox, some WKWebViews). Server STT is the only path.
+        if (this.canServerStt()) {
+            hooks?.onBrowserFallback?.();
+            return this.listenServer(hooks);
+        }
+        // Nothing can transcribe. Fail loudly — a silent "" here is the original bug.
+        throw new VoiceError("service");
+    }
+    /** True when recorded audio can actually be sent somewhere for transcription. */
+    canServerStt() {
+        return (!!this.opts.serverUrl &&
+            typeof navigator !== "undefined" &&
+            !!navigator.mediaDevices?.getUserMedia &&
+            typeof window.MediaRecorder !== "undefined");
     }
     /** Browser SpeechRecognition path (free, instant). Extracted so server STT can fall back to it. */
     listenBrowser(SR) {
         return new Promise((resolve, reject) => {
             const r = new SR();
             this.activeRecognition = r;
-            r.lang = "en-US";
+            // Told the wrong language, the recogniser returns nothing or nonsense — which used
+            // to land on the silent empty-string path. Resolve it per tap.
+            r.lang = this.lang();
             r.interimResults = false;
             r.maxAlternatives = 1;
             let settled = false;
@@ -344,9 +448,18 @@ export class Voice {
                 // "aborted" is our own cancel() — resolve empty, no error surfaced.
                 if (e?.error === "aborted")
                     return finish("");
-                if (e?.error === "not-allowed" || e?.error === "service-not-allowed") {
+                if (e?.error === "not-allowed") {
+                    // The USER refused the mic. Server STT needs the same permission, so this is
+                    // never worth retrying — say so instead.
                     gotError = "not-allowed";
                     return fail("not-allowed");
+                }
+                if (e?.error === "service-not-allowed" ||
+                    e?.error === "network" ||
+                    e?.error === "language-not-supported") {
+                    // The recogniser SERVICE failed, not the microphone. Retryable via the server.
+                    gotError = "service";
+                    return fail("service");
                 }
                 if (e?.error === "no-speech") {
                     gotError = "no-speech";
@@ -361,6 +474,8 @@ export class Voice {
                     return;
                 if (gotError === "no-speech" || gotError === null)
                     return fail("no-speech");
+                if (gotError === "service")
+                    return fail("service");
                 if (gotError === "other")
                     return fail("other");
                 finish("");
@@ -404,8 +519,10 @@ export class Voice {
         this.listenAbort?.abort();
     }
     async listenServer(hooks) {
+        // Never resolve "" here: an empty resolve is invisible to the caller and was exactly
+        // how a mic tap ended in no transcript, no error and no message.
         if (!this.opts.serverUrl)
-            return "";
+            throw new VoiceError("service");
         let stream;
         try {
             stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -465,12 +582,17 @@ export class Voice {
             const blob = new Blob(chunks, { type: "audio/webm" });
             if (!blob.size)
                 throw new VoiceError("no-speech");
-            const headers = { "content-type": "application/octet-stream" };
+            const lang = this.lang();
+            const headers = {
+                "content-type": "application/octet-stream",
+                // Give Whisper the language instead of letting it guess from a 4s clip.
+                "x-audio-lang": lang,
+            };
             if (this.opts.authToken)
                 headers.authorization = `Bearer ${this.opts.authToken}`;
             let res;
             try {
-                res = await fetch(`${this.opts.serverUrl}/v1/voice/stt`, {
+                res = await fetch(`${this.opts.serverUrl}/v1/voice/stt?lang=${encodeURIComponent(lang)}`, {
                     method: "POST",
                     headers,
                     body: await blob.arrayBuffer(),

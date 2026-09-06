@@ -2,6 +2,14 @@
 // Bottom-right launcher + panel + sidebar + animated mascot.
 import { ChatSidebar } from "./chatSidebar.js";
 import { themeCssVars } from "./themes.js";
+import { DEFAULT_STRINGS, fmt } from "./strings.js";
+/**
+ * The read-aloud toggle. It used to be a telephone (☎), which reads as "call support"
+ * rather than "speak this reply" — and the launcher's telephone was already removed for
+ * the same reason. On/off are visibly different marks, not just a colour change, so the
+ * state is readable without relying on the accent colour.
+ */
+const TTS_GLYPH = { on: "🔊", off: "🔈" };
 const CSS = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; }
@@ -80,6 +88,7 @@ const CSS = `
 .foot .mic.on { background:var(--pa-accent); color:#fff; }
 .foot .mic .countdown { position:absolute; top:-6px; right:-4px; background:var(--pa-accent); color:#fff; font-size:9px; min-width:14px; height:14px; border-radius:7px; display:none; align-items:center; justify-content:center; padding:0 3px; }
 .foot .mic.counting .countdown { display:flex; }
+.foot .mic.unavailable { opacity:.4; cursor:not-allowed; }
 .foot .tts { background: var(--pa-border); color: var(--pa-text-muted); font-size: 18px; }
 .foot .tts.on { background:#0d9488; color:#ecfdf5; }
 .foot .send { background: var(--pa-accent); color: #fff; }
@@ -149,6 +158,8 @@ export class WidgetUI {
     lastFocused;
     keydownHandler;
     viewportHandler;
+    /** Resolved chrome strings — every user-facing literal below reads from here. */
+    s = DEFAULT_STRINGS;
     constructor(title, handlers, opts = {}) {
         this.title = title;
         this.handlers = handlers;
@@ -158,8 +169,11 @@ export class WidgetUI {
         const isNarrow = typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
         this.sidebarOpen = isNarrow ? false : opts.sidebarOpen ?? true;
         this.theme = opts.theme ?? "dark";
+        this.s = opts.strings ?? DEFAULT_STRINGS;
         this.host = document.createElement("div");
         this.host.id = "page-assistant-root";
+        if (opts.lang)
+            this.host.lang = opts.lang;
         document.body.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: "open" });
         this.render();
@@ -179,7 +193,7 @@ export class WidgetUI {
         this.launcher = el("button", "launcher");
         this.launcher.innerHTML = resolveLauncherIcon(this.opts.launcherIcon);
         this.launcher.title = this.title;
-        this.launcher.setAttribute("aria-label", `Open ${this.title}`);
+        this.launcher.setAttribute("aria-label", fmt(this.s.launcherOpen, { title: this.title }));
         this.launcher.setAttribute("aria-expanded", "false");
         this.panelWrap = el("div", "panel-wrap");
         this.panel = el("div", "panel");
@@ -205,7 +219,7 @@ export class WidgetUI {
                 onShare: (id) => {
                     const json = this.opts.chatStore.share(id);
                     if (json) {
-                        navigator.clipboard?.writeText(json).then(() => this.toast("Chat JSON copied to clipboard"), () => this.toast("Couldn't copy to clipboard"));
+                        navigator.clipboard?.writeText(json).then(() => this.toast(this.s.copied), () => this.toast(this.s.copyFailed));
                     }
                 },
                 onSearch: () => { },
@@ -232,8 +246,8 @@ export class WidgetUI {
         if (this.opts.chatStore) {
             const sidebarToggle = el("button");
             sidebarToggle.textContent = "☰";
-            sidebarToggle.title = "Toggle chat history";
-            sidebarToggle.setAttribute("aria-label", "Toggle chat history sidebar");
+            sidebarToggle.title = this.s.historyToggle;
+            sidebarToggle.setAttribute("aria-label", this.s.historyToggle);
             sidebarToggle.setAttribute("aria-pressed", String(this.sidebarOpen));
             sidebarToggle.onclick = () => {
                 this.setSidebarOpen(!this.sidebarOpen);
@@ -243,17 +257,17 @@ export class WidgetUI {
         }
         const exportBtn = el("button");
         exportBtn.textContent = "↓";
-        exportBtn.title = "Export chat";
-        exportBtn.setAttribute("aria-label", "Export this chat");
+        exportBtn.title = this.s.exportChat;
+        exportBtn.setAttribute("aria-label", this.s.exportChat);
         exportBtn.onclick = () => this.handlers.onExportChat?.();
         const settingsBtn = el("button");
         settingsBtn.textContent = "⚙";
-        settingsBtn.title = "Assistant settings";
-        settingsBtn.setAttribute("aria-label", "Open assistant settings");
+        settingsBtn.title = this.s.settings;
+        settingsBtn.setAttribute("aria-label", this.s.settings);
         settingsBtn.onclick = () => this.handlers.onSettings?.();
         const closeBtn = el("button");
         closeBtn.textContent = "×";
-        closeBtn.setAttribute("aria-label", "Close assistant");
+        closeBtn.setAttribute("aria-label", this.s.close);
         closeBtn.onclick = () => this.toggle(false);
         actions.append(exportBtn, settingsBtn, closeBtn);
         head.appendChild(actions);
@@ -273,28 +287,36 @@ export class WidgetUI {
         this.fileInput.onchange = () => this.handleFiles();
         const attachBtn = el("button", "attach");
         attachBtn.textContent = "📎";
-        attachBtn.title = "Attach file";
-        attachBtn.setAttribute("aria-label", "Attach a file");
+        attachBtn.title = this.s.attach;
+        attachBtn.setAttribute("aria-label", this.s.attach);
         attachBtn.onclick = () => this.fileInput.click();
         this.attachBtn = attachBtn;
         this.input = el("input");
         this.input.type = "text";
-        this.input.placeholder = "Ask or tell me to do something…";
-        this.input.setAttribute("aria-label", "Message the assistant");
+        this.input.placeholder = this.s.inputPlaceholder;
+        this.input.setAttribute("aria-label", this.s.inputLabel);
         this.ttsBtn = el("button", "tts");
-        this.ttsBtn.textContent = "☎";
-        this.ttsBtn.title = "Read replies aloud (off)";
-        this.ttsBtn.setAttribute("aria-label", "Read replies aloud");
+        this.ttsBtn.textContent = TTS_GLYPH.off;
+        this.ttsBtn.title = this.s.readAloudOff;
+        this.ttsBtn.setAttribute("aria-label", this.s.readAloud);
         this.ttsBtn.setAttribute("aria-pressed", "false");
         this.micBtn = el("button", "mic");
         this.micBtn.textContent = "🎙";
         this.micCountdown = el("span", "countdown");
         this.micBtn.appendChild(this.micCountdown);
-        this.micBtn.setAttribute("aria-label", "Speak to the assistant");
+        this.micBtn.setAttribute("aria-label", this.s.mic);
         this.micBtn.setAttribute("aria-pressed", "false");
+        // A control that cannot work must not look like one that can.
+        if (this.opts.micAvailable === false) {
+            this.micBtn.disabled = true;
+            this.micBtn.classList.add("unavailable");
+            this.micBtn.title = this.s.micUnavailable;
+            this.micBtn.setAttribute("aria-label", this.s.micUnavailable);
+            this.micBtn.setAttribute("aria-disabled", "true");
+        }
         this.sendBtn = el("button", "send");
         this.sendBtn.textContent = "➤";
-        this.sendBtn.setAttribute("aria-label", "Send message");
+        this.sendBtn.setAttribute("aria-label", this.s.send);
         foot.append(attachBtn, this.input, this.ttsBtn, this.micBtn, this.sendBtn);
         body.append(head, this.log, this.attachPreview, foot);
         this.panel.appendChild(body);
@@ -407,7 +429,7 @@ export class WidgetUI {
             label.textContent = a.name;
             const rm = el("button");
             rm.textContent = "×";
-            rm.setAttribute("aria-label", `Remove attachment ${a.name}`);
+            rm.setAttribute("aria-label", fmt(this.s.removeAttachment, { name: a.name }));
             rm.onclick = () => {
                 this.pendingAttachments.splice(i, 1);
                 this.refreshAttachPreview();
@@ -464,7 +486,7 @@ export class WidgetUI {
         if (this.typingEl)
             return;
         const t = el("div", "typing");
-        t.setAttribute("aria-label", "Assistant is thinking");
+        t.setAttribute("aria-label", this.s.thinking);
         t.innerHTML = "<span></span><span></span><span></span>";
         this.log.appendChild(t);
         this.typingEl = t;
@@ -493,7 +515,7 @@ export class WidgetUI {
     setMic(on) {
         this.micBtn.classList.toggle("on", on);
         this.micBtn.setAttribute("aria-pressed", String(on));
-        this.micBtn.setAttribute("aria-label", on ? "Stop listening" : "Speak to the assistant");
+        this.micBtn.setAttribute("aria-label", on ? this.s.micStop : this.s.mic);
         if (!on)
             this.setMicCountdown(null);
     }
@@ -510,7 +532,8 @@ export class WidgetUI {
     }
     setTtsEnabled(on) {
         this.ttsBtn.classList.toggle("on", on);
-        this.ttsBtn.title = on ? "Read replies aloud (on)" : "Read replies aloud (off)";
+        this.ttsBtn.textContent = on ? TTS_GLYPH.on : TTS_GLYPH.off;
+        this.ttsBtn.title = on ? this.s.readAloudOn : this.s.readAloudOff;
         this.ttsBtn.setAttribute("aria-pressed", String(on));
     }
     clearLog() {
@@ -551,7 +574,7 @@ export class WidgetUI {
         m.appendChild(line);
         if (onRetry) {
             const btn = el("button", "retry");
-            btn.textContent = "Retry";
+            btn.textContent = this.s.retry;
             btn.onclick = () => {
                 m.remove();
                 onRetry();
@@ -576,9 +599,9 @@ export class WidgetUI {
         wrap.textContent = preview;
         const row = el("div", "confirm");
         const yes = el("button", "yes");
-        yes.textContent = "Confirm";
+        yes.textContent = this.s.confirm;
         const no = el("button", "no");
-        no.textContent = "Cancel";
+        no.textContent = this.s.cancel;
         yes.onclick = () => {
             this.clearConfirm();
             this.clearHighlight();
@@ -697,7 +720,7 @@ export class WidgetUI {
         if (!items.length)
             return;
         const wrap = el("div", "msg system");
-        wrap.textContent = "Try:";
+        wrap.textContent = this.s.suggestionsLabel;
         const row = el("div", "chips");
         for (const it of items.slice(0, 4)) {
             const c = el("button", "chip");

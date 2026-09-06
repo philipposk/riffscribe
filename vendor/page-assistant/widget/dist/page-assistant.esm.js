@@ -247,7 +247,8 @@ ${this.opts.knowledge.slice(0, 4e3)}`);
         args,
         ok: true,
         result,
-        rendered: cap.render ? cap.render(result, args) : void 0
+        rendered: cap.render ? cap.render(result, args) : void 0,
+        verbatim: cap.verbatim === true
       };
     } catch (e) {
       return { name: cap.name, args, ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -334,6 +335,10 @@ function validateFactualText(text, invocations) {
   const rendered = invocations.filter((i) => i.ok && i.rendered).map((i) => i.rendered);
   if (!rendered.length)
     return { text, wasCorrected: false };
+  if (invocations.some((i) => i.ok && i.rendered && i.verbatim)) {
+    const joined = rendered.join("\n\n");
+    return { text: joined, wasCorrected: joined !== text };
+  }
   const trusted = [];
   const trustedNumbers = /* @__PURE__ */ new Set();
   for (const r of rendered)
@@ -479,6 +484,24 @@ var VoiceError = class extends Error {
   }
 };
 var SILERO_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/index.js";
+function resolveVoiceLang(explicit) {
+  const set = explicit?.trim();
+  if (set) return set;
+  if (typeof document !== "undefined") {
+    const htmlLang = document.documentElement?.lang?.trim();
+    if (htmlLang) return htmlLang;
+  }
+  if (typeof navigator !== "undefined" && navigator.language?.trim()) return navigator.language.trim();
+  return "en-US";
+}
+function baseLang(lang) {
+  return lang.toLowerCase().replace(/_/g, "-").split("-")[0];
+}
+function voiceInputAvailable(serverUrl) {
+  if (typeof window === "undefined") return false;
+  if (window.SpeechRecognition || window.webkitSpeechRecognition) return true;
+  return !!serverUrl && typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof window.MediaRecorder !== "undefined";
+}
 var Voice = class {
   constructor(opts = {}) {
     this.opts = opts;
@@ -492,6 +515,10 @@ var Voice = class {
   get isSpeaking() {
     return this.speaking;
   }
+  /** The language for this utterance/listen. Resolved now, not at construction. */
+  lang() {
+    return resolveVoiceLang(this.opts.lang);
+  }
   async speak(text, onWord) {
     this.stop();
     if (this.opts.ttsMode === "server" && this.opts.serverUrl) {
@@ -504,9 +531,12 @@ var Voice = class {
       if (!("speechSynthesis" in window)) return resolve();
       const u = new SpeechSynthesisUtterance(text);
       this.currentUtterance = u;
-      if (this.opts.browserVoice) {
-        const v = speechSynthesis.getVoices().find((x) => x.name.includes(this.opts.browserVoice));
-        if (v) u.voice = v;
+      const lang = this.lang();
+      u.lang = lang;
+      const v = this.pickBrowserVoice(lang);
+      if (v) {
+        u.voice = v;
+        u.lang = v.lang || lang;
       }
       let settled = false;
       const done = () => {
@@ -528,6 +558,26 @@ var Voice = class {
       speechSynthesis.speak(u);
     });
   }
+  /**
+   * Choose a synthesis voice for `lang`. Language beats the host's `browserVoice` name
+   * hint, because a name like "Samantha" is an en-US voice and reading Greek with it is
+   * unintelligible. The name still wins inside the same base language, so an app that
+   * asked for "Daniel" keeps Daniel while the page is in English.
+   */
+  pickBrowserVoice(lang) {
+    let voices = [];
+    try {
+      voices = speechSynthesis.getVoices() ?? [];
+    } catch {
+      return void 0;
+    }
+    if (!voices.length) return void 0;
+    const want = lang.toLowerCase().replace(/_/g, "-");
+    const wantBase = baseLang(lang);
+    const named = this.opts.browserVoice ? voices.filter((v) => v.name.includes(this.opts.browserVoice)) : [];
+    const vLang = (v) => (v.lang ?? "").toLowerCase().replace(/_/g, "-");
+    return named.find((v) => vLang(v) === want) ?? named.find((v) => baseLang(vLang(v)) === wantBase) ?? voices.find((v) => vLang(v) === want) ?? voices.find((v) => baseLang(vLang(v)) === wantBase) ?? named[0];
+  }
   async speakServer(text) {
     const headers = { "content-type": "application/json" };
     if (this.opts.authToken) headers.authorization = `Bearer ${this.opts.authToken}`;
@@ -539,7 +589,8 @@ var Voice = class {
         body: JSON.stringify({
           text,
           voiceId: this.opts.voiceId,
-          provider: this.opts.ttsProvider
+          provider: this.opts.ttsProvider,
+          lang: this.lang()
         })
       });
     } catch {
@@ -730,15 +781,33 @@ var Voice = class {
       }
     }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SR) return this.listenBrowser(SR);
-    return this.listenServer(hooks);
+    if (SR) {
+      try {
+        return await this.listenBrowser(SR);
+      } catch (e) {
+        if (e instanceof VoiceError && (e.reason === "service" || e.reason === "other") && this.canServerStt()) {
+          hooks?.onBrowserFallback?.();
+          return this.listenServer(hooks);
+        }
+        throw e;
+      }
+    }
+    if (this.canServerStt()) {
+      hooks?.onBrowserFallback?.();
+      return this.listenServer(hooks);
+    }
+    throw new VoiceError("service");
+  }
+  /** True when recorded audio can actually be sent somewhere for transcription. */
+  canServerStt() {
+    return !!this.opts.serverUrl && typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof window.MediaRecorder !== "undefined";
   }
   /** Browser SpeechRecognition path (free, instant). Extracted so server STT can fall back to it. */
   listenBrowser(SR) {
     return new Promise((resolve, reject) => {
       const r = new SR();
       this.activeRecognition = r;
-      r.lang = "en-US";
+      r.lang = this.lang();
       r.interimResults = false;
       r.maxAlternatives = 1;
       let settled = false;
@@ -758,9 +827,13 @@ var Voice = class {
       r.onresult = (e) => finish(e.results[0][0].transcript);
       r.onerror = (e) => {
         if (e?.error === "aborted") return finish("");
-        if (e?.error === "not-allowed" || e?.error === "service-not-allowed") {
+        if (e?.error === "not-allowed") {
           gotError = "not-allowed";
           return fail("not-allowed");
+        }
+        if (e?.error === "service-not-allowed" || e?.error === "network" || e?.error === "language-not-supported") {
+          gotError = "service";
+          return fail("service");
         }
         if (e?.error === "no-speech") {
           gotError = "no-speech";
@@ -771,6 +844,7 @@ var Voice = class {
       r.onend = () => {
         if (settled) return;
         if (gotError === "no-speech" || gotError === null) return fail("no-speech");
+        if (gotError === "service") return fail("service");
         if (gotError === "other") return fail("other");
         finish("");
       };
@@ -806,7 +880,7 @@ var Voice = class {
     this.listenAbort?.abort();
   }
   async listenServer(hooks) {
-    if (!this.opts.serverUrl) return "";
+    if (!this.opts.serverUrl) throw new VoiceError("service");
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -859,11 +933,16 @@ var Voice = class {
       if (cancelled) return "";
       const blob = new Blob(chunks, { type: "audio/webm" });
       if (!blob.size) throw new VoiceError("no-speech");
-      const headers = { "content-type": "application/octet-stream" };
+      const lang = this.lang();
+      const headers = {
+        "content-type": "application/octet-stream",
+        // Give Whisper the language instead of letting it guess from a 4s clip.
+        "x-audio-lang": lang
+      };
       if (this.opts.authToken) headers.authorization = `Bearer ${this.opts.authToken}`;
       let res;
       try {
-        res = await fetch(`${this.opts.serverUrl}/v1/voice/stt`, {
+        res = await fetch(`${this.opts.serverUrl}/v1/voice/stt?lang=${encodeURIComponent(lang)}`, {
           method: "POST",
           headers,
           body: await blob.arrayBuffer()
@@ -1462,7 +1541,55 @@ function themeCssVars(mode) {
   return Object.entries(vars).map(([k, v]) => `${k}: ${v}`).join("; ");
 }
 
+// src/strings.ts
+var DEFAULT_STRINGS = {
+  launcherOpen: "Open {title}",
+  close: "Close assistant",
+  settings: "Assistant settings",
+  exportChat: "Export chat",
+  historyToggle: "Toggle chat history",
+  attach: "Attach file",
+  removeAttachment: "Remove attachment {name}",
+  inputPlaceholder: "Ask or tell me to do something\u2026",
+  inputLabel: "Message the assistant",
+  send: "Send message",
+  mic: "Speak to the assistant",
+  micStop: "Stop listening",
+  micUnavailable: "Voice input isn't available in this browser.",
+  readAloud: "Read replies aloud",
+  readAloudOn: "Read replies aloud (on)",
+  readAloudOff: "Read replies aloud (off)",
+  thinking: "Assistant is thinking",
+  confirm: "Confirm",
+  cancel: "Cancel",
+  retry: "Retry",
+  suggestionsLabel: "Try:",
+  copied: "Chat JSON copied to clipboard",
+  copyFailed: "Couldn't copy to clipboard",
+  scanning: "Reading this app\u2026",
+  scanReady: "Ready.",
+  voiceOff: "Voice is off for this app.",
+  voiceNoSpeech: "I didn't catch that \u2014 tap the mic and try again.",
+  voiceNotAllowed: "Microphone permission denied. Allow mic access in your browser to use voice.",
+  voiceNoMic: "No microphone was found.",
+  voiceError: "I couldn't access the microphone.",
+  voiceServerFallback: "Server voice isn't available here \u2014 using your browser's microphone instead.",
+  voiceBrowserFallback: "Your browser's speech recognition isn't working here \u2014 using server transcription instead."
+};
+function resolveStrings(overrides) {
+  if (!overrides) return { ...DEFAULT_STRINGS };
+  const out = { ...DEFAULT_STRINGS };
+  for (const [k, v] of Object.entries(overrides)) {
+    if (typeof v === "string" && v.trim()) out[k] = v;
+  }
+  return out;
+}
+function fmt(template, vars) {
+  return template.replace(/\{(\w+)\}/g, (m, k) => k in vars ? vars[k] : m);
+}
+
 // src/ui.ts
+var TTS_GLYPH = { on: "\u{1F50A}", off: "\u{1F508}" };
 var CSS2 = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; }
@@ -1541,6 +1668,7 @@ var CSS2 = `
 .foot .mic.on { background:var(--pa-accent); color:#fff; }
 .foot .mic .countdown { position:absolute; top:-6px; right:-4px; background:var(--pa-accent); color:#fff; font-size:9px; min-width:14px; height:14px; border-radius:7px; display:none; align-items:center; justify-content:center; padding:0 3px; }
 .foot .mic.counting .countdown { display:flex; }
+.foot .mic.unavailable { opacity:.4; cursor:not-allowed; }
 .foot .tts { background: var(--pa-border); color: var(--pa-text-muted); font-size: 18px; }
 .foot .tts.on { background:#0d9488; color:#ecfdf5; }
 .foot .send { background: var(--pa-accent); color: #fff; }
@@ -1609,11 +1737,15 @@ var WidgetUI = class {
     __publicField(this, "lastFocused");
     __publicField(this, "keydownHandler");
     __publicField(this, "viewportHandler");
+    /** Resolved chrome strings — every user-facing literal below reads from here. */
+    __publicField(this, "s", DEFAULT_STRINGS);
     const isNarrow = typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
     this.sidebarOpen = isNarrow ? false : opts.sidebarOpen ?? true;
     this.theme = opts.theme ?? "dark";
+    this.s = opts.strings ?? DEFAULT_STRINGS;
     this.host = document.createElement("div");
     this.host.id = "page-assistant-root";
+    if (opts.lang) this.host.lang = opts.lang;
     document.body.appendChild(this.host);
     this.root = this.host.attachShadow({ mode: "open" });
     this.render();
@@ -1633,7 +1765,7 @@ var WidgetUI = class {
     this.launcher = el2("button", "launcher");
     this.launcher.innerHTML = resolveLauncherIcon(this.opts.launcherIcon);
     this.launcher.title = this.title;
-    this.launcher.setAttribute("aria-label", `Open ${this.title}`);
+    this.launcher.setAttribute("aria-label", fmt(this.s.launcherOpen, { title: this.title }));
     this.launcher.setAttribute("aria-expanded", "false");
     this.panelWrap = el2("div", "panel-wrap");
     this.panel = el2("div", "panel");
@@ -1658,8 +1790,8 @@ var WidgetUI = class {
           const json = this.opts.chatStore.share(id);
           if (json) {
             navigator.clipboard?.writeText(json).then(
-              () => this.toast("Chat JSON copied to clipboard"),
-              () => this.toast("Couldn't copy to clipboard")
+              () => this.toast(this.s.copied),
+              () => this.toast(this.s.copyFailed)
             );
           }
         },
@@ -1685,8 +1817,8 @@ var WidgetUI = class {
     if (this.opts.chatStore) {
       const sidebarToggle = el2("button");
       sidebarToggle.textContent = "\u2630";
-      sidebarToggle.title = "Toggle chat history";
-      sidebarToggle.setAttribute("aria-label", "Toggle chat history sidebar");
+      sidebarToggle.title = this.s.historyToggle;
+      sidebarToggle.setAttribute("aria-label", this.s.historyToggle);
       sidebarToggle.setAttribute("aria-pressed", String(this.sidebarOpen));
       sidebarToggle.onclick = () => {
         this.setSidebarOpen(!this.sidebarOpen);
@@ -1696,17 +1828,17 @@ var WidgetUI = class {
     }
     const exportBtn = el2("button");
     exportBtn.textContent = "\u2193";
-    exportBtn.title = "Export chat";
-    exportBtn.setAttribute("aria-label", "Export this chat");
+    exportBtn.title = this.s.exportChat;
+    exportBtn.setAttribute("aria-label", this.s.exportChat);
     exportBtn.onclick = () => this.handlers.onExportChat?.();
     const settingsBtn = el2("button");
     settingsBtn.textContent = "\u2699";
-    settingsBtn.title = "Assistant settings";
-    settingsBtn.setAttribute("aria-label", "Open assistant settings");
+    settingsBtn.title = this.s.settings;
+    settingsBtn.setAttribute("aria-label", this.s.settings);
     settingsBtn.onclick = () => this.handlers.onSettings?.();
     const closeBtn = el2("button");
     closeBtn.textContent = "\xD7";
-    closeBtn.setAttribute("aria-label", "Close assistant");
+    closeBtn.setAttribute("aria-label", this.s.close);
     closeBtn.onclick = () => this.toggle(false);
     actions.append(exportBtn, settingsBtn, closeBtn);
     head.appendChild(actions);
@@ -1724,28 +1856,35 @@ var WidgetUI = class {
     this.fileInput.onchange = () => this.handleFiles();
     const attachBtn = el2("button", "attach");
     attachBtn.textContent = "\u{1F4CE}";
-    attachBtn.title = "Attach file";
-    attachBtn.setAttribute("aria-label", "Attach a file");
+    attachBtn.title = this.s.attach;
+    attachBtn.setAttribute("aria-label", this.s.attach);
     attachBtn.onclick = () => this.fileInput.click();
     this.attachBtn = attachBtn;
     this.input = el2("input");
     this.input.type = "text";
-    this.input.placeholder = "Ask or tell me to do something\u2026";
-    this.input.setAttribute("aria-label", "Message the assistant");
+    this.input.placeholder = this.s.inputPlaceholder;
+    this.input.setAttribute("aria-label", this.s.inputLabel);
     this.ttsBtn = el2("button", "tts");
-    this.ttsBtn.textContent = "\u260E";
-    this.ttsBtn.title = "Read replies aloud (off)";
-    this.ttsBtn.setAttribute("aria-label", "Read replies aloud");
+    this.ttsBtn.textContent = TTS_GLYPH.off;
+    this.ttsBtn.title = this.s.readAloudOff;
+    this.ttsBtn.setAttribute("aria-label", this.s.readAloud);
     this.ttsBtn.setAttribute("aria-pressed", "false");
     this.micBtn = el2("button", "mic");
     this.micBtn.textContent = "\u{1F399}";
     this.micCountdown = el2("span", "countdown");
     this.micBtn.appendChild(this.micCountdown);
-    this.micBtn.setAttribute("aria-label", "Speak to the assistant");
+    this.micBtn.setAttribute("aria-label", this.s.mic);
     this.micBtn.setAttribute("aria-pressed", "false");
+    if (this.opts.micAvailable === false) {
+      this.micBtn.disabled = true;
+      this.micBtn.classList.add("unavailable");
+      this.micBtn.title = this.s.micUnavailable;
+      this.micBtn.setAttribute("aria-label", this.s.micUnavailable);
+      this.micBtn.setAttribute("aria-disabled", "true");
+    }
     this.sendBtn = el2("button", "send");
     this.sendBtn.textContent = "\u27A4";
-    this.sendBtn.setAttribute("aria-label", "Send message");
+    this.sendBtn.setAttribute("aria-label", this.s.send);
     foot.append(attachBtn, this.input, this.ttsBtn, this.micBtn, this.sendBtn);
     body.append(head, this.log, this.attachPreview, foot);
     this.panel.appendChild(body);
@@ -1845,7 +1984,7 @@ var WidgetUI = class {
       label.textContent = a.name;
       const rm = el2("button");
       rm.textContent = "\xD7";
-      rm.setAttribute("aria-label", `Remove attachment ${a.name}`);
+      rm.setAttribute("aria-label", fmt(this.s.removeAttachment, { name: a.name }));
       rm.onclick = () => {
         this.pendingAttachments.splice(i, 1);
         this.refreshAttachPreview();
@@ -1895,7 +2034,7 @@ var WidgetUI = class {
   showTyping() {
     if (this.typingEl) return;
     const t = el2("div", "typing");
-    t.setAttribute("aria-label", "Assistant is thinking");
+    t.setAttribute("aria-label", this.s.thinking);
     t.innerHTML = "<span></span><span></span><span></span>";
     this.log.appendChild(t);
     this.typingEl = t;
@@ -1921,7 +2060,7 @@ var WidgetUI = class {
   setMic(on) {
     this.micBtn.classList.toggle("on", on);
     this.micBtn.setAttribute("aria-pressed", String(on));
-    this.micBtn.setAttribute("aria-label", on ? "Stop listening" : "Speak to the assistant");
+    this.micBtn.setAttribute("aria-label", on ? this.s.micStop : this.s.mic);
     if (!on) this.setMicCountdown(null);
   }
   /** Show a remaining-seconds badge on the mic during the server-STT capture window. */
@@ -1936,7 +2075,8 @@ var WidgetUI = class {
   }
   setTtsEnabled(on) {
     this.ttsBtn.classList.toggle("on", on);
-    this.ttsBtn.title = on ? "Read replies aloud (on)" : "Read replies aloud (off)";
+    this.ttsBtn.textContent = on ? TTS_GLYPH.on : TTS_GLYPH.off;
+    this.ttsBtn.title = on ? this.s.readAloudOn : this.s.readAloudOff;
     this.ttsBtn.setAttribute("aria-pressed", String(on));
   }
   clearLog() {
@@ -1971,7 +2111,7 @@ var WidgetUI = class {
     m.appendChild(line);
     if (onRetry) {
       const btn = el2("button", "retry");
-      btn.textContent = "Retry";
+      btn.textContent = this.s.retry;
       btn.onclick = () => {
         m.remove();
         onRetry();
@@ -1996,9 +2136,9 @@ var WidgetUI = class {
     wrap.textContent = preview;
     const row = el2("div", "confirm");
     const yes = el2("button", "yes");
-    yes.textContent = "Confirm";
+    yes.textContent = this.s.confirm;
     const no = el2("button", "no");
-    no.textContent = "Cancel";
+    no.textContent = this.s.cancel;
     yes.onclick = () => {
       this.clearConfirm();
       this.clearHighlight();
@@ -2097,7 +2237,7 @@ var WidgetUI = class {
   addSuggestions(items, onPick) {
     if (!items.length) return;
     const wrap = el2("div", "msg system");
-    wrap.textContent = "Try:";
+    wrap.textContent = this.s.suggestionsLabel;
     const row = el2("div", "chips");
     for (const it of items.slice(0, 4)) {
       const c = el2("button", "chip");
@@ -2364,6 +2504,25 @@ var DEFAULTS = {
   openaiVoice: "nova",
   sttMode: "browser"
 };
+var SETTING_KEYS = [
+  "autoSpeak",
+  "ttsMode",
+  "ttsProvider",
+  "elevenLabsVoiceId",
+  "openaiVoice",
+  "sttMode"
+];
+var hostDefaults = {};
+function setVoiceDefaults(d) {
+  hostDefaults = {};
+  if (!d) return;
+  for (const k of SETTING_KEYS) {
+    if (d[k] !== void 0) hostDefaults[k] = d[k];
+  }
+}
+function getVoiceDefaults() {
+  return { ...DEFAULTS, ...hostDefaults };
+}
 var ELEVENLABS_VOICES = [
   { id: "21m00Tcm4TlvDq8ikWAM", label: "Rachel \u2014 warm US" },
   { id: "EXAVITQu4vr4xnSDxMaL", label: "Sarah \u2014 soft US" },
@@ -2385,11 +2544,12 @@ var OPENAI_VOICES = [
   { id: "onyx", label: "Onyx (deep)" }
 ];
 function getVoiceSettings(storageKey = VOICE_SETTINGS_STORAGE_KEY) {
-  if (typeof localStorage === "undefined") return DEFAULTS;
+  const base = getVoiceDefaults();
+  if (typeof localStorage === "undefined") return base;
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(storageKey) || "{}") };
+    return { ...base, ...JSON.parse(localStorage.getItem(storageKey) || "{}") };
   } catch {
-    return DEFAULTS;
+    return base;
   }
 }
 function setVoiceSettings(patch, storageKey = VOICE_SETTINGS_STORAGE_KEY) {
@@ -2465,7 +2625,7 @@ function renderForm(root, storageKey) {
   const refreshSpeak = () => {
     const s = getVoiceSettings(storageKey);
     speakCb.checked = s.autoSpeak;
-    speakText.textContent = s.autoSpeak ? "On (\u260E in assistant)" : "Off \u2014 text only (default)";
+    speakText.textContent = s.autoSpeak ? "On (\u{1F50A} in assistant)" : "Off \u2014 text only (default)";
   };
   speakCb.onchange = () => {
     setVoiceSettings({ autoSpeak: speakCb.checked }, storageKey);
@@ -2712,7 +2872,7 @@ function mountAssistantSettingsPanel(container, opts = {}) {
     }
     root.appendChild(tabs);
     const body = el4("div", "tab-body");
-    if (activeTab === "General") renderGeneral(body, storageKey);
+    if (activeTab === "General") renderGeneral(body, storageKey, opts);
     else if (activeTab === "Voice") renderVoice(body, voiceKey, caps);
     else renderData(body, opts.chatStore);
     root.appendChild(body);
@@ -2733,19 +2893,26 @@ function mountAssistantSettingsPanel(container, opts = {}) {
     host.remove();
   };
 }
-function renderGeneral(root, storageKey) {
+function renderGeneral(root, storageKey, opts = {}) {
   const s = getAssistantSettings(storageKey);
-  addRow(root, "Model", () => {
-    const sel = el4("select", "field");
-    sel.innerHTML = DEFAULT_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
-    sel.value = s.model;
-    sel.onchange = () => setAssistantSettings({ model: sel.value }, storageKey);
-    return sel;
-  });
-  const modelNote = el4("p", "hint");
-  modelNote.style.margin = "-6px 0 12px 152px";
-  modelNote.textContent = "Models depend on the server's configured providers \u2014 an unsupported one will error when you send.";
-  root.appendChild(modelNote);
+  if (opts.showModel === false) {
+    const note = el4("p", "hint");
+    note.style.margin = "0 0 12px";
+    note.textContent = opts.modelFixedNote ?? "The model is chosen by this site and cannot be changed here.";
+    root.appendChild(note);
+  } else {
+    addRow(root, "Model", () => {
+      const sel = el4("select", "field");
+      sel.innerHTML = DEFAULT_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
+      sel.value = s.model;
+      sel.onchange = () => setAssistantSettings({ model: sel.value }, storageKey);
+      return sel;
+    });
+    const modelNote = el4("p", "hint");
+    modelNote.style.margin = "-6px 0 12px 152px";
+    modelNote.textContent = "Models depend on the server's configured providers \u2014 an unsupported one will error when you send.";
+    root.appendChild(modelNote);
+  }
   addRow(root, "Theme", () => {
     const sel = el4("select", "field");
     sel.innerHTML = `<option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option>`;
@@ -3003,7 +3170,12 @@ var PageAssistantController = class {
     __publicField(this, "lastTurn");
     __publicField(this, "greetedChatId", null);
     __publicField(this, "notedSttFallback", false);
+    __publicField(this, "notedBrowserFallback", false);
     __publicField(this, "destroyed", false);
+    /** English defaults merged with whatever the host translated. */
+    __publicField(this, "strings", DEFAULT_STRINGS);
+    this.strings = resolveStrings(cfg.strings);
+    setVoiceDefaults(cfg.voiceDefaults);
     this.settingsKey = cfg.settingsStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
     this.assistantSettingsKey = cfg.assistantSettingsStorageKey ?? ASSISTANT_SETTINGS_STORAGE_KEY;
     const assistantSettings = getAssistantSettings(this.assistantSettingsKey);
@@ -3054,6 +3226,7 @@ var PageAssistantController = class {
         vo = { serverUrl: cfg.serverUrl, ...cfg.voice };
       }
       if (cfg.authToken) vo = { ...vo, authToken: cfg.authToken };
+      if (cfg.lang && !vo.lang) vo = { ...vo, lang: cfg.lang };
       this.voice = new Voice(vo);
     }
     const settingsUiOpts = {
@@ -3062,7 +3235,9 @@ var PageAssistantController = class {
       title: cfg.appName ? `${cfg.appName} assistant` : "Page assistant",
       chatStore: cfg.disableChatHistory ? void 0 : this.chatStore,
       serverUrl: cfg.serverUrl,
-      authToken: cfg.authToken
+      authToken: cfg.authToken,
+      showModel: cfg.showModelPicker,
+      modelFixedNote: cfg.modelFixedNote
     };
     this.ui = new WidgetUI(cfg.appName ?? "Assistant", {
       onSend: (t, attachments) => this.handleUser(t, attachments),
@@ -3083,7 +3258,12 @@ var PageAssistantController = class {
       chatStore: cfg.disableChatHistory ? void 0 : this.chatStore,
       theme: assistantSettings.theme,
       sidebarOpen: assistantSettings.sidebarOpen,
-      imagesEnabled: cfg.imagesEnabled
+      imagesEnabled: cfg.imagesEnabled,
+      strings: this.strings,
+      lang: cfg.lang,
+      // Don't render a mic that can only ever do nothing. Only relevant when voice is on
+      // at all — `voice: false` keeps the existing "Voice is off for this app." message.
+      micAvailable: cfg.voice === false ? void 0 : voiceInputAvailable(cfg.serverUrl)
     });
     if (this.activeChatId && this.history.length) {
       this.ui.loadMessages(this.displayHistory());
@@ -3124,6 +3304,7 @@ var PageAssistantController = class {
     closeVoiceSettingsModal();
     this.ui.destroy();
     removeDiscoveryHint();
+    setVoiceDefaults(void 0);
   }
   updateConfig(patch) {
     if (patch.autoSpeak !== void 0) {
@@ -3134,7 +3315,8 @@ var PageAssistantController = class {
       if (patch.voice === false) {
         this.voice = void 0;
       } else {
-        const vo = patch.voice === true ? { serverUrl: this.cfg.serverUrl, authToken: this.cfg.authToken } : { serverUrl: this.cfg.serverUrl, authToken: this.cfg.authToken, ...patch.voice };
+        let vo = patch.voice === true ? { serverUrl: this.cfg.serverUrl, authToken: this.cfg.authToken } : { serverUrl: this.cfg.serverUrl, authToken: this.cfg.authToken, ...patch.voice };
+        if (this.cfg.lang && !vo.lang) vo = { ...vo, lang: this.cfg.lang };
         this.voice = new Voice(vo);
       }
     }
@@ -3261,14 +3443,14 @@ var PageAssistantController = class {
     }
     if (this.cfg.autoScan !== false) {
       this.ui.setState("scanning");
-      this.ui.addMessage("system", "Reading this app\u2026");
+      this.ui.toast(this.strings.scanning);
       try {
         this.map = await fullScan();
       } catch {
         this.map = { scannedAt: (/* @__PURE__ */ new Date()).toISOString(), pages: [], controls: scanPage() };
       }
       this.ui.setState("idle");
-      this.ui.addMessage("system", `Ready \u2014 mapped ${this.map?.pages.length ?? 0} pages, ${this.map?.controls.length ?? 0} controls.`);
+      this.ui.toast(this.strings.scanReady);
     }
   }
   pageContext() {
@@ -3401,7 +3583,7 @@ var PageAssistantController = class {
   }
   async toggleMic() {
     if (!this.voice) {
-      this.ui.addMessage("system", "Voice is off for this app.");
+      this.ui.addMessage("system", this.strings.voiceOff);
       return;
     }
     if (this.listening) {
@@ -3419,20 +3601,28 @@ var PageAssistantController = class {
         onServerFallback: () => {
           if (this.notedSttFallback) return;
           this.notedSttFallback = true;
-          this.ui.addMessage("system", "Server voice isn't available here \u2014 using your browser's microphone instead.");
+          this.ui.addMessage("system", this.strings.voiceServerFallback);
+        },
+        // The reverse direction (iOS PWA / WKWebView): told once, not on every tap.
+        onBrowserFallback: () => {
+          if (this.notedBrowserFallback) return;
+          this.notedBrowserFallback = true;
+          this.ui.addMessage("system", this.strings.voiceBrowserFallback);
         }
       });
     } catch (e) {
       if (e instanceof VoiceError) {
         const map = {
-          "no-speech": "I didn't catch that \u2014 tap the mic and try again.",
-          "not-allowed": "Microphone permission denied. Allow mic access in your browser to use voice.",
-          "no-mic": "No microphone was found.",
-          other: "I couldn't access the microphone."
+          "no-speech": this.strings.voiceNoSpeech,
+          "not-allowed": this.strings.voiceNotAllowed,
+          "no-mic": this.strings.voiceNoMic,
+          // Service-level failure with no server to retry through.
+          service: this.strings.micUnavailable,
+          other: this.strings.voiceError
         };
         this.ui.addMessage("system", map[e.reason] ?? map.other);
       } else {
-        this.ui.addMessage("system", "I couldn't access the microphone.");
+        this.ui.addMessage("system", this.strings.voiceError);
       }
     } finally {
       this.listening = false;
@@ -3519,6 +3709,7 @@ export {
   CHAT_HISTORY_STORAGE_KEY,
   ChatHistoryStore,
   DEFAULT_MODELS,
+  DEFAULT_STRINGS,
   ELEVENLABS_VOICES,
   LocalMemoryStore,
   OPENAI_VOICES,
@@ -3533,6 +3724,7 @@ export {
   fullScan,
   getAssistantSettings,
   getLocalAnalytics,
+  getVoiceDefaults,
   getVoiceSettings,
   mountAssistantSettingsPanel,
   mountVoiceSettingsPanel,
@@ -3540,10 +3732,14 @@ export {
   openVoiceSettingsModal,
   pageActionCapabilities,
   readFileAttachment,
+  resolveStrings,
+  resolveVoiceLang,
   scanPage,
   setAssistantSettings,
+  setVoiceDefaults,
   setVoiceSettings,
   trackEvent,
+  voiceInputAvailable,
   voiceOptionsFromSettings
 };
 //# sourceMappingURL=page-assistant.esm.js.map

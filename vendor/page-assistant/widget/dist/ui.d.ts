@@ -2,6 +2,7 @@ import type { ChatHistoryStore } from "./chatHistory.js";
 import { type ChatSidebarHandlers } from "./chatSidebar.js";
 import type { FileAttachment } from "./fileUpload.js";
 import type { ThemeMode } from "./assistant-settings.js";
+import { type WidgetStrings } from "./strings.js";
 export type MascotState = "idle" | "listening" | "thinking" | "talking" | "scanning";
 export interface UIHandlers {
     onSend: (text: string, attachments?: FileAttachment[]) => void;
@@ -25,6 +26,16 @@ export interface UIOptions {
     sidebarOpen?: boolean;
     imagesEnabled?: boolean;
     onSidebarHandlers?: (h: ChatSidebarHandlers) => void;
+    /** Fully-resolved chrome strings (defaults merged with host overrides). */
+    strings?: WidgetStrings;
+    /**
+     * False when nothing can back the mic (no SpeechRecognition AND no server STT). The
+     * button is then rendered visibly disabled with an explanation instead of silently
+     * doing nothing when tapped.
+     */
+    micAvailable?: boolean;
+    /** BCP-47 language, set on the widget host so assistive tech pronounces it correctly. */
+    lang?: string;
 }
 export declare class WidgetUI {
     private title;
@@ -62,6 +73,8 @@ export declare class WidgetUI {
     private lastFocused?;
     private keydownHandler?;
     private viewportHandler?;
+    /** Resolved chrome strings — every user-facing literal below reads from here. */
+    private s;
     constructor(title: string, handlers: UIHandlers, opts?: UIOptions);
     private themeStyle;
     private render;

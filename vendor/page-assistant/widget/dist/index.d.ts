@@ -1,7 +1,9 @@
 import { type Capability } from "@page-assistant/core";
 import { type VoiceOptions } from "./voice.js";
+import { type VoiceSettings } from "./settings.js";
 import { openVoiceSettingsModal, mountVoiceSettingsPanel, closeVoiceSettingsModal } from "./settings-ui.js";
 import { openAssistantSettingsModal, closeAssistantSettingsModal, mountAssistantSettingsPanel } from "./assistant-settings-ui.js";
+import { type WidgetStrings } from "./strings.js";
 export interface PageAssistantConfig {
     serverUrl: string;
     appName?: string;
@@ -26,6 +28,13 @@ export interface PageAssistantConfig {
     autoSpeak?: boolean;
     /** Use extended settings modal (model, theme, chat export). Default true. */
     useExtendedSettings?: boolean;
+    /**
+     * Show the model picker in settings. Set false where the server fixes the
+     * model — a dropdown that silently does nothing is worse than none.
+     */
+    showModelPicker?: boolean;
+    /** What to say instead, when the picker is hidden. */
+    modelFixedNote?: string;
     onSettings?: () => void;
     settingsPageUrl?: string;
     settingsStorageKey?: string;
@@ -44,6 +53,38 @@ export interface PageAssistantConfig {
     imagesEnabled?: boolean;
     /** Per-request LLM timeout in ms (default 30000). */
     requestTimeoutMs?: number;
+    /**
+     * BCP-47 language for speech recognition and speech synthesis, e.g. "el-GR".
+     *
+     * Resolved on every mic tap and every spoken reply, in this order:
+     *   1. this option — ALWAYS wins when set;
+     *   2. `document.documentElement.lang`;
+     *   3. `navigator.language`;
+     *   4. "en-US".
+     *
+     * Set it explicitly if you know the language. `<html lang>` is only a last resort: a
+     * host can render a fully translated UI while its root element still says "en", and a
+     * recogniser told the wrong language returns nothing at all.
+     *
+     * Also passed to the server for Whisper STT and ElevenLabs TTS, and set on the widget's
+     * host element so assistive tech pronounces the chrome correctly.
+     */
+    lang?: string;
+    /**
+     * Override any of the widget's chrome strings (placeholder, buttons, aria-labels,
+     * toasts, voice errors). Anything omitted keeps its English default — see
+     * `DEFAULT_STRINGS` for the full key set.
+     */
+    strings?: Partial<WidgetStrings>;
+    /**
+     * This app's starting voice preferences, e.g. `{ sttMode: "server" }`.
+     *
+     * Layered `shipped defaults < voiceDefaults < the user's stored settings`, so a host can
+     * say "start with server transcription here" while a user who picks something else in
+     * the settings panel still wins. Unlike passing a full `VoiceOptions` object to `voice`,
+     * this keeps the settings UI and its change listener working.
+     */
+    voiceDefaults?: Partial<VoiceSettings>;
 }
 export { capability } from "./capability.js";
 export type { Capability } from "@page-assistant/core";
@@ -57,6 +98,9 @@ export { mountVoiceSettingsPanel, openVoiceSettingsModal, closeVoiceSettingsModa
 export { mountAssistantSettingsPanel, openAssistantSettingsModal, closeAssistantSettingsModal, type AssistantSettingsUIOptions, } from "./assistant-settings-ui.js";
 export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analytics.js";
 export { readFileAttachment, formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
+export { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
+export { setVoiceDefaults, getVoiceDefaults } from "./settings.js";
+export { resolveVoiceLang, voiceInputAvailable } from "./voice.js";
 declare class PageAssistantController {
     private cfg;
     private assistant;
@@ -77,7 +121,10 @@ declare class PageAssistantController {
     private lastTurn?;
     private greetedChatId;
     private notedSttFallback;
+    private notedBrowserFallback;
     private destroyed;
+    /** English defaults merged with whatever the host translated. */
+    private strings;
     constructor(cfg: PageAssistantConfig);
     dispose(): void;
     /** Full teardown for SPA/React strict-mode remounts: listeners, timers, voice, DOM. */
