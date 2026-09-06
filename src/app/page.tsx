@@ -18,6 +18,10 @@ const FEATURES = [
     body: "Record your own part over the backing track. Record it at half speed if you need to — it gets stretched back to full tempo without turning you into a chipmunk — then mix it and export a wav.",
   },
   {
+    title: "In the key you want",
+    body: "Pick the key the part should be written in and the notes and the key signature move together. Accidentals are spelled for that key \u2014 E flat in a flat key, not D sharp \u2014 and transposing instruments are handled, so a clarinet or trumpet part is written where those players expect to read it.",
+  },
+  {
     title: "Fix what it mishears",
     body: "Automatic transcription is a first draft. Click any note on the staff and move it a semitone or an octave, or take it out \u2014 with an undo. No round trip through MuseScore to correct one wrong note.",
   },

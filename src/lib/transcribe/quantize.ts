@@ -42,6 +42,16 @@ export interface Sheet {
   division: number;
 }
 
+/**
+ * The shortest note that may carry a dot.
+ *
+ * A dotted eighth is a rhythm someone played. A dotted sixteenth, at a grid
+ * this fine, is almost always a note that arrived a fraction late — and
+ * writing it out turns ordinary timing into a thicket of dots and ties that
+ * reads as far harder than the music is. Below this, round instead.
+ */
+const SHORTEST_DOTTED = 8;
+
 /** Durations expressible as one notehead, in grid units, largest first. */
 function representable(division: number) {
   const out: { units: number; value: number; dots: 0 | 1 }[] = [];
@@ -49,7 +59,7 @@ function representable(division: number) {
     const base = division / value;
     if (!Number.isInteger(base) || base < 1) continue;
     out.push({ units: base, value, dots: 0 });
-    if (base * 1.5 >= 1 && Number.isInteger(base * 1.5)) {
+    if (value <= SHORTEST_DOTTED && base * 1.5 >= 1 && Number.isInteger(base * 1.5)) {
       out.push({ units: base * 1.5, value, dots: 1 });
     }
   }

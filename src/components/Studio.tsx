@@ -46,6 +46,7 @@ import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
 import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcribe/compare";
 import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
+import { keyChoices, keyName, shortestShift } from "@/lib/transcribe/spelling";
 import { CHART_VERSION, type Chart } from "@/lib/store/charts";
 import { LANG_OPTIONS, loadLang, saveLang, type AssistantLang } from "@/lib/assistantLang";
 import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
@@ -662,6 +663,7 @@ export default function Studio() {
         source,
         instrument: settings.instrument,
         notes: found,
+        tonicPc: k.tonic,
         fifths: k.fifths,
         keyName: k.name,
         keyMode: k.mode,
@@ -751,6 +753,30 @@ export default function Studio() {
         file?.name.replace(/\.[^.]+$/, "") || "Riffscribe transcription"
       ),
     [partSheets, settings, file]
+  );
+
+  /**
+   * The key as heard, and the key it is being written in.
+   *
+   * Lydia's ask: choose the key and have the parts come out in it. The two are
+   * the same until someone transposes; keeping both means the picker can show
+   * which one the recording actually is.
+   */
+  const soundingTonic = useMemo(() => {
+    const p0 = parts[0];
+    if (!p0) return 0;
+    if (typeof p0.tonicPc === "number") return ((p0.tonicPc % 12) + 12) % 12;
+    const base: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+    const name = (p0.keyName || "C").trim();
+    let pc = base[name.charAt(0).toUpperCase()] ?? 0;
+    if (name.charAt(1) === "#") pc += 1;
+    if (name.charAt(1) === "b") pc -= 1;
+    return ((pc % 12) + 12) % 12;
+  }, [parts]);
+
+  const writtenTonic = useMemo(
+    () => (parts.length ? (((soundingTonic + settings.transposeSemitones) % 12) + 12) % 12 : null),
+    [parts.length, soundingTonic, settings.transposeSemitones]
   );
 
   /* ------------------------------------------------------- fixing the notes */
@@ -880,11 +906,11 @@ export default function Studio() {
   function exportMusicXml() {
     if (!partSheets.length) return;
     const xml = sheetsToMusicXml(
-      partSheets.map(({ part, sheet: sh, instrument }) => ({
+      partSheets.map(({ sheet: sh, instrument, fifths }) => ({
         sheet: sh,
         options: {
           instrument,
-          fifths: part.fifths,
+          fifths,
           capo: settings.capo,
           partName: instrument.label,
         },
@@ -1520,10 +1546,38 @@ export default function Studio() {
                   <input type="range" min={0} max={9} step={1} value={settings.capo}
                     onChange={(e) => patch({ capo: Number(e.target.value) })} className="w-full" />
                 </label>
+                {/*
+                  Pick a key, not a number of semitones. A player asks for "put
+                  it in G", not "move it up seven" — and the key signature moves
+                  with the notes, which it did not used to.
+                */}
                 <label>
-                  <span className="mb-1 block text-white/60">Transpose {settings.transposeSemitones} st</span>
-                  <input type="range" min={-12} max={12} step={1} value={settings.transposeSemitones}
-                    onChange={(e) => patch({ transposeSemitones: Number(e.target.value) })} className="w-full" />
+                  <span className="mb-1 block text-white/60">
+                    Write it in
+                    {settings.transposeSemitones !== 0 && (
+                      <span className="ml-1 text-white/35">
+                        ({settings.transposeSemitones > 0 ? "+" : ""}{settings.transposeSemitones} st)
+                      </span>
+                    )}
+                  </span>
+                  <select
+                    className="w-full"
+                    value={writtenTonic ?? ""}
+                    disabled={!parts.length}
+                    onChange={(e) => {
+                      const to = Number(e.target.value);
+                      patch({ transposeSemitones: shortestShift(soundingTonic, to) });
+                    }}
+                  >
+                    {!parts.length && <option value="">transcribe a part first</option>}
+                    {parts.length > 0 &&
+                      keyChoices(parts[0].keyMode).map((k) => (
+                        <option key={k.tonicPc} value={k.tonicPc}>
+                          {k.label}
+                          {k.tonicPc === soundingTonic ? " — as played" : ""}
+                        </option>
+                      ))}
+                  </select>
                 </label>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" checked={settings.monophonic}

@@ -8,7 +8,10 @@
  */
 import type { Instrument } from "../types";
 import type { Sheet, SheetBar, SheetSlot } from "./quantize";
+import { spell } from "./spelling";
 
+// Kept only for the tuning block, where a string's pitch is named on its own
+// and has no key to be spelled against.
 const STEPS = ["C", "C", "D", "D", "E", "F", "F", "G", "G", "A", "A", "B"];
 const ALTER = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
 const TYPE_NAME: Record<number, string> = {
@@ -17,11 +20,10 @@ const TYPE_NAME: Record<number, string> = {
 
 const esc = (s: string) => s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!));
 
-function pitchXml(midi: number) {
-  const pc = ((midi % 12) + 12) % 12;
-  const octave = Math.floor(midi / 12) - 1;
-  const alter = ALTER[pc];
-  return `<pitch><step>${STEPS[pc]}</step>${alter ? `<alter>${alter}</alter>` : ""}<octave>${octave}</octave></pitch>`;
+/** Spelled for the key, so a flat key opens as flats in MuseScore too. */
+function pitchXml(midi: number, fifths: number) {
+  const { step, alter, octave } = spell(midi, fifths);
+  return `<pitch><step>${step}</step>${alter ? `<alter>${alter}</alter>` : ""}<octave>${octave}</octave></pitch>`;
 }
 
 function slotDuration(slot: SheetSlot, divisionsPerWhole: number) {
@@ -105,7 +107,7 @@ function measuresFor(sheet: Sheet, o: MusicXmlOptions): string {
                   : "";
               const notations =
                 tiedNotations || tech ? `<notations>${tiedNotations}${tech}</notations>` : "";
-              return `<note>${ni ? "<chord/>" : ""}${pitchXml(n.midi)}${ties}<duration>${dur}</duration><type>${type}</type>${dot}${notations}</note>`;
+              return `<note>${ni ? "<chord/>" : ""}${pitchXml(n.midi, o.fifths ?? 0)}${ties}<duration>${dur}</duration><type>${type}</type>${dot}${notations}</note>`;
             })
             .join("");
         })

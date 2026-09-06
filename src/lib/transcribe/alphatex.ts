@@ -7,6 +7,7 @@
  */
 import type { Instrument } from "../types";
 import type { Sheet, SheetSlot } from "./quantize";
+import { spellScientific } from "./spelling";
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -27,7 +28,7 @@ function escapeTex(s: string) {
   return s.replace(/"/g, "'");
 }
 
-function beatFor(slot: SheetSlot, stringed: boolean) {
+function beatFor(slot: SheetSlot, stringed: boolean, fifths: number) {
   const dur = `${slot.value}${slot.dots ? "{d}" : ""}`;
   // on a fretted staff a note without a string/fret cannot be drawn — the
   // fretter already decided it is out of reach, so it becomes silence
@@ -37,7 +38,9 @@ function beatFor(slot: SheetSlot, stringed: boolean) {
   const parts = usable.map((n) => {
     const tie = n.tied ? "{t}" : "";
     if (stringed) return `${n.fret}.${n.string}${tie}`;
-    return `${midiToScientific(n.midi)}${tie}`;
+    // Spelled for the key, not always with sharps: a cellist reading E flat
+    // minor should see E flat, not D sharp.
+    return `${spellScientific(n.midi, fifths)}${tie}`;
   });
   return `(${parts.join(" ")}).${dur}`;
 }
@@ -49,6 +52,8 @@ export interface TexOptions {
   capo?: number;
   /** e.g. "C" or "Aminor" */
   keySignature?: string;
+  /** Key signature position, -7..7. Decides how accidentals are spelled. */
+  fifths?: number;
   /** General MIDI program for playback. */
   midiProgram?: number;
   /** Staff name; defaults to the instrument's label. */
@@ -79,7 +84,7 @@ function trackBlock(sheet: Sheet, o: TexOptions, withMeta: boolean): string[] {
       head.push(`\\ts ${sheet.timeSignature[0]} ${sheet.timeSignature[1]}`);
       if (o.keySignature) head.push(`\\ks ${o.keySignature}`);
     }
-    const beats = bar.slots.map((s) => beatFor(s, stringed));
+    const beats = bar.slots.map((s) => beatFor(s, stringed, o.fifths ?? 0));
     if (!beats.length) beats.push(`r.${sheet.timeSignature[1]}`);
     return [...head, ...beats].join(" ");
   });
