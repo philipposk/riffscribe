@@ -34,7 +34,9 @@ import {
   forget, getScore, getStems, putScore, putStems, requestPersistence, songKey,
 } from "@/lib/store/cache";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
-import { channelsToAudioBuffer, toModelInput, transcribeAudio } from "@/lib/transcribe/basicPitch";
+import {
+  channelsToAudioBuffer, lastTranscriptionRanIn, toModelInput, transcribeAudio,
+} from "@/lib/transcribe/basicPitch";
 import { partsToMidi } from "@/lib/transcribe/midi";
 import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
 import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
@@ -638,11 +640,10 @@ export default function Studio() {
         keyMode: k.mode,
       });
       const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
-      setLog(
-        fromCache
-          ? `${found.length} notes • ${k.name} • ${settings.bpm} BPM • reused an earlier pass`
-          : `${found.length} notes • ${k.name} • ${settings.bpm} BPM • took ${elapsed}s`
-      );
+      const how = fromCache
+        ? "reused an earlier pass"
+        : `took ${elapsed}s${lastTranscriptionRanIn() === "worker" ? "" : " (on the page — this browser would not run it in the background)"}`;
+      setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • ${how}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "transcription failed");
     } finally {
