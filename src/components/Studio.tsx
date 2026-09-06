@@ -8,21 +8,24 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bookmark, Check, Download, FileMusic, Link as LinkIcon, Loader2, Mic, Music2, Pause, Play, Printer,
-  Repeat, RotateCcw, Scissors, Square, Target,
+  Bookmark, Check, ChevronDown, ChevronUp, Download, FileMusic, Link as LinkIcon, Loader2, Mic,
+  Music2, Pause, Play, Printer, Repeat, RotateCcw, Scissors, Square, Target, Trash2, Undo2,
   Upload, Users, Wand2,
 } from "lucide-react";
 
 import Assistant, { type AssistantActions } from "./Assistant";
 import Mixer, { type MixTrack } from "./Mixer";
 import SaveBar from "./SaveBar";
+import Tuner from "./Tuner";
 import { HANDOFF_KEY } from "./SharedChart";
 import ScoreView from "./ScoreView";
 import Transport from "./Transport";
 import Waveform from "./Waveform";
 
 import { fileToAudioBuffer, peaks as peaksOf, toMono, toStereo } from "@/lib/audio/decode";
-import { estimateKey, estimateTempo, chromaFromNotes } from "@/lib/audio/analyze";
+import {
+  estimateKey, estimateTempo, chromaFromNotes, noteName, PITCH_NAMES,
+} from "@/lib/audio/analyze";
 import { PracticeEngine, makeClickTrack, type EngineTrack } from "@/lib/audio/engine";
 import { countIn, countInSeconds } from "@/lib/audio/countin";
 import { MicRecorder, estimateLatency, placeTake, stretchOffline } from "@/lib/audio/recorder";
@@ -126,6 +129,13 @@ export default function Studio() {
 
   /** How the last take measured up against the written part. */
   const [report, setReport] = useState<TakeReport | null>(null);
+
+  /**
+   * The beat being corrected. Transcription is a first draft, and until now the
+   * only way to fix a wrong note was to export to MuseScore and never come back.
+   */
+  const [pickedBeat, setPickedBeat] = useState<number | null>(null);
+  const [undoStack, setUndoStack] = useState<Part[][]>([]);
   const [checkPart, setCheckPart] = useState<string | null>(null);
 
   /** The saved chart this session is editing, once there is one. */
@@ -233,6 +243,17 @@ export default function Studio() {
       .finally(() => clearTimeout(timer));
     return () => stop.abort();
   }, []);
+
+  /**
+   * A drone note for the key of whatever is loaded. Around A3–G#4 so it sits
+   * under a violin and over a cello without either having to reach.
+   */
+  const droneTonic = useMemo(() => {
+    const name = parts[0]?.keyName?.split(" ")[0];
+    const pc = name ? PITCH_NAMES.indexOf(name) : -1;
+    if (pc < 0) return undefined;
+    return 57 + ((pc - 9 + 12) % 12); // 57 is A3
+  }, [parts]);
 
   /* ---------------------------------------------------------------- charts */
 
@@ -726,6 +747,65 @@ export default function Studio() {
     [partSheets, settings, file]
   );
 
+  /* ------------------------------------------------------- fixing the notes */
+
+  /**
+   * Which notes of the top part sound during the selected beat.
+   *
+   * The score, the play-along highlight and this all read the same first staff,
+   * so a beat index means the same thing to all three.
+   */
+  const pickedNotes = useMemo(() => {
+    if (pickedBeat == null || !timeline[pickedBeat] || !parts[0]) return [];
+    const { start, end } = timeline[pickedBeat];
+    return parts[0].notes.filter((n) => n.startTimeSeconds >= start - 1e-3 && n.startTimeSeconds < end - 1e-3);
+  }, [pickedBeat, timeline, parts]);
+
+  function rememberForUndo() {
+    setUndoStack((s) => [...s.slice(-19), parts.map((p) => ({ ...p, notes: [...p.notes] }))]);
+  }
+
+  function undoEdit() {
+    setUndoStack((s) => {
+      if (!s.length) return s;
+      setParts(s[s.length - 1]);
+      return s.slice(0, -1);
+    });
+    setLog("Put that back.");
+  }
+
+  /** Move the selected notes by semitones, keeping them inside the instrument. */
+  function nudgePicked(semitones: number) {
+    if (!pickedNotes.length || !parts[0]) return;
+    const range = INSTRUMENTS[parts[0].instrument].range;
+    const picked = new Set(pickedNotes);
+    rememberForUndo();
+    setParts((list) =>
+      list.map((p, i) =>
+        i !== 0
+          ? p
+          : {
+              ...p,
+              notes: p.notes.map((n) =>
+                picked.has(n)
+                  ? { ...n, pitchMidi: Math.max(range[0], Math.min(range[1], n.pitchMidi + semitones)) }
+                  : n
+              ),
+            }
+      )
+    );
+    setLog(`Moved ${pickedNotes.length === 1 ? "that note" : `those ${pickedNotes.length} notes`} ${semitones > 0 ? "up" : "down"}.`);
+  }
+
+  function deletePicked() {
+    if (!pickedNotes.length || !parts[0]) return;
+    const picked = new Set(pickedNotes);
+    rememberForUndo();
+    setParts((list) => list.map((p, i) => (i !== 0 ? p : { ...p, notes: p.notes.filter((n) => !picked.has(n)) })));
+    setPickedBeat(null);
+    setLog(`Removed ${picked.size === 1 ? "a note the model imagined" : `${picked.size} notes`}.`);
+  }
+
   /* ----------------------------------------------------------------- record */
 
   async function armMic() {
@@ -1154,6 +1234,9 @@ export default function Studio() {
         onChartId={setChartId}
       />
 
+      {/* Tuning up comes before everything, so this does not wait for a song. */}
+      <Tuner suggestedTonic={droneTonic} />
+
       {audio && (
         <>
           {/* 2 — stems */}
@@ -1521,13 +1604,51 @@ export default function Studio() {
             )}
 
             {tex ? (
-              <ScoreView
-                tex={tex}
-                zoom={zoom}
-                playAlong={playAlong}
-                timeSeconds={transport.time}
-                timeline={timeline}
-              />
+              <>
+                <ScoreView
+                  tex={tex}
+                  zoom={zoom}
+                  playAlong={playAlong}
+                  timeSeconds={transport.time}
+                  timeline={timeline}
+                  onPickBeat={setPickedBeat}
+                  selectedBeat={pickedBeat}
+                />
+                <div className="no-print mt-3 flex flex-wrap items-center gap-2 text-sm">
+                  {pickedNotes.length > 0 ? (
+                    <>
+                      <span className="text-white/60">
+                        {/* Tenths matter here: two notes a beat apart both read
+                            as the same mm:ss, which is confusing when you are
+                            picking one of them to correct. */}
+                        {pickedNotes.length === 1
+                          ? `${noteName(pickedNotes[0].pitchMidi)} at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`
+                          : `${pickedNotes.length} notes at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`}
+                      </span>
+                      <button className="btn text-xs" onClick={() => nudgePicked(1)} title="Up a semitone">
+                        <ChevronUp size={14} /> semitone
+                      </button>
+                      <button className="btn text-xs" onClick={() => nudgePicked(-1)} title="Down a semitone">
+                        <ChevronDown size={14} /> semitone
+                      </button>
+                      <button className="btn text-xs" onClick={() => nudgePicked(12)}>+ octave</button>
+                      <button className="btn text-xs" onClick={() => nudgePicked(-12)}>− octave</button>
+                      <button className="btn text-xs text-red-200" onClick={deletePicked}>
+                        <Trash2 size={13} /> Remove
+                      </button>
+                    </>
+                  ) : (
+                    <span className="text-white/35">
+                      Click a note on the top staff to correct it — the model is a good first draft, not a transcriber.
+                    </span>
+                  )}
+                  {undoStack.length > 0 && (
+                    <button className="btn ml-auto text-xs" onClick={undoEdit}>
+                      <Undo2 size={13} /> Undo
+                    </button>
+                  )}
+                </div>
+              </>
             ) : (
               <p className="text-sm text-white/40">
                 Run the transcriber to see notation and tablature here. Transcribe as many parts as you

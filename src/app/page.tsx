@@ -18,6 +18,14 @@ const FEATURES = [
     body: "Record your own part over the backing track. Record it at half speed if you need to — it gets stretched back to full tempo without turning you into a chipmunk — then mix it and export a wav.",
   },
   {
+    title: "Fix what it mishears",
+    body: "Automatic transcription is a first draft. Click any note on the staff and move it a semitone or an octave, or take it out \u2014 with an undo. No round trip through MuseScore to correct one wrong note.",
+  },
+  {
+    title: "Tune up first",
+    body: "A tuner with a proper needle, and a drone you can play against, set to the key of whatever you loaded. For intonation the drone is worth more than the meter: a note a few cents out beats audibly against it long before it looks wrong on a dial.",
+  },
+  {
     title: "Tells you how it went",
     body: "Play it, then ask how you did. Your take is marked against the written part: what was clean, what you missed, what sat flat or came in late, whether you rush or drag, and which bars are weakest — with one press to loop those and go again.",
   },

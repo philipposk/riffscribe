@@ -24,11 +24,17 @@ interface Props {
   timeSeconds: number;
   /** When each written beat sounds, in song seconds. Index = beat order. */
   timeline: { start: number; end: number }[];
+  /** Click a beat to correct what the model heard. Index matches `timeline`. */
+  onPickBeat?: (index: number | null) => void;
+  /** Which beat is being edited, drawn differently from the playback highlight. */
+  selectedBeat?: number | null;
 }
 
 interface Rect { x: number; y: number; w: number; h: number }
 
-export default function ScoreView({ tex, zoom, playAlong, timeSeconds, timeline }: Props) {
+export default function ScoreView({
+  tex, zoom, playAlong, timeSeconds, timeline, onPickBeat, selectedBeat,
+}: Props) {
   const host = useRef<HTMLDivElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -38,6 +44,7 @@ export default function ScoreView({ tex, zoom, playAlong, timeSeconds, timeline 
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [cursor, setCursor] = useState<Rect | null>(null);
+  const [pick, setPick] = useState<Rect | null>(null);
   const lastIndex = useRef(-1);
 
   /** Flatten the score's beats into the order alphaTex emitted them. */
@@ -165,6 +172,54 @@ export default function ScoreView({ tex, zoom, playAlong, timeSeconds, timeline 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeSeconds, playAlong, ready, timeline]);
 
+  /**
+   * Find the beat under a click.
+   *
+   * alphaTab has getBeatAtPos, but we already know findBeat works here and the
+   * scores are small, so walk the beats we collected and take the nearest one
+   * on the same system. That also gives us the rectangle to draw.
+   */
+  const pickAt = useCallback((clientX: number, clientY: number) => {
+    const lookup = api.current?.boundsLookup;
+    const wrap = host.current;
+    if (!lookup || !wrap || !beats.current.length) return;
+    const box = wrap.getBoundingClientRect();
+    const x = clientX - box.left - 8;
+    const y = clientY - box.top - 8;
+
+    let bestIndex = -1;
+    let bestRect: Rect | null = null;
+    let bestScore = Infinity;
+    for (let i = 0; i < beats.current.length; i++) {
+      const b = lookup.findBeat(beats.current[i]);
+      if (!b) continue;
+      const v = b.visualBounds;
+      const bar = b.barBounds?.masterBarBounds?.visualBounds;
+      const top = bar ? bar.y : v.y;
+      const height = bar ? bar.h : v.h;
+      // Only beats on the system the click landed in are candidates.
+      if (y < top || y > top + height) continue;
+      const dx = Math.abs(x - (v.x + v.w / 2));
+      if (dx < bestScore) {
+        bestScore = dx;
+        bestIndex = i;
+        bestRect = { x: v.x, y: top, w: Math.max(v.w, 8), h: height };
+      }
+    }
+    if (bestIndex < 0) {
+      setPick(null);
+      onPickBeat?.(null);
+      return;
+    }
+    setPick(bestRect);
+    onPickBeat?.(bestIndex);
+  }, [onPickBeat]);
+
+  // Clear the drawn selection when the caller drops it, or the score changes.
+  useEffect(() => {
+    if (selectedBeat == null) setPick(null);
+  }, [selectedBeat, tex]);
+
   // If the score is engraved while the tab is hidden the container measures 0px
   // wide and the layout comes out unusable — re-render once it has real width.
   useEffect(() => {
@@ -200,7 +255,24 @@ export default function ScoreView({ tex, zoom, playAlong, timeSeconds, timeline 
         style={playAlong ? { height: "min(65vh, 620px)" } : undefined}
       >
         <div className="relative">
-          <div ref={host} className="at-wrap p-2 text-black" />
+          <div
+            ref={host}
+            className={`at-wrap p-2 text-black ${onPickBeat ? "cursor-pointer" : ""}`}
+            onClick={onPickBeat ? (e) => pickAt(e.clientX, e.clientY) : undefined}
+          />
+          {pick && selectedBeat != null && (
+            <div
+              className="pointer-events-none absolute rounded-sm"
+              style={{
+                left: pick.x + 8,
+                top: pick.y + 8,
+                width: pick.w,
+                height: pick.h,
+                background: "rgba(56,189,248,0.22)",
+                boxShadow: "0 0 0 1.5px rgba(56,189,248,0.9)",
+              }}
+            />
+          )}
           {playAlong && cursor && (
             <div
               className="pointer-events-none absolute rounded-sm"

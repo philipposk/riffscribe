@@ -102,7 +102,18 @@ code is "cleaned up" past them.
    pass a test that uses identical audio in each channel, so the check in
    `cache.ts` uses different tones per channel on purpose.
 
-9. **The assistant mounts on React's second effect pass, not the first.** The
+9. **TensorFlow reaches for `window` as a bare global**, so a worker throws
+   ReferenceError at import time before any of our code runs. The transcription
+   worker points `window` at `globalThis` before Basic Pitch loads. This is what
+   had made every previous attempt to get transcription off the page fail.
+
+10. **Basic Pitch's `await` per window is a microtask, not a yield.** Microtasks
+   all drain before the browser paints, so awaiting per window does not keep the
+   page alive; the main-thread fallback in `runner.ts` posts a real task between
+   windows instead. If you ever re-derive its frame arithmetic, note that
+   ANNOTATIONS_FPS is `floor(22050/256)` = 86, not 86.13.
+
+11. **The assistant mounts on React's second effect pass, not the first.** The
    widget import is async, so in development the first pass is always torn down
    before it resolves. Guarding with a "have I started?" ref blocks the second
    pass and the assistant then never appears while developing.
@@ -120,6 +131,10 @@ code is "cleaned up" past them.
   weakest bars, which can be looped in one press.
 - **Charts save and share** through Supabase, if configured. Only the writing
   travels; audio never leaves the machine.
+- **Transcription runs in a worker**, so the page no longer freezes.
+- **Notes can be corrected in place** — click one on the top staff, move it by a
+  semitone or an octave, or delete it, with an undo stack.
+- **Tuner and drone**, the drone set to the key of the loaded song.
 
 ## Verified
 
@@ -153,6 +168,17 @@ Checked against the live deployment, not just locally:
   counted faults, plus the degenerate cases.
 - Saving with no Supabase project configured: controls absent, `/c/<id>` explains
   itself, studio unchanged.
+- Transcription in a worker: the worker chunk carries basic-pitch and the model
+  is no longer fetched by the page. 24 of 24 notes from a 12-second clip in 1.7s,
+  against 10.5s for a 4-second clip on the main thread.
+- Note editing: clicking a note selects it (D4 at 0.5s), a semitone nudge makes
+  it D#4, undo restores it, and remove clears the selection.
+- Pitch detection: `scripts/verify-tuner.mjs`, 14 assertions — six open strings,
+  four deliberate detunings measured to within 6 cents, silence rejected, noise
+  survived, and a note whose second harmonic is louder than its fundamental
+  still read in the right octave.
+- The tuner in the browser against a synthetic microphone: fed A4 twenty cents
+  sharp, it read A4, 445.2 Hz, +20c, with the needle at 70%.
 - Recording and take marking end to end, with a synthetic microphone
   (`getUserMedia` stubbed with a MediaStreamDestination playing a known
   performance). Two faults injected — one note a semitone flat, one not played —
@@ -178,10 +204,6 @@ Checked against the live deployment, not just locally:
 
 ## Known limitations to be honest about
 
-- **Transcription runs on the main thread and blocks the page.** A worker version
-  existed but TensorFlow's browser bundle would not load in it. Roughly 15s for
-  an 8s clip on this Mac, so a four-minute song is minutes of frozen UI. This is
-  the single biggest thing worth fixing.
 - **Demucs is slow** — minutes per song, plus a one-time 180 MB model download.
   There is a Cancel button and a "Trim song to loop" escape hatch.
 - **A quartet cannot be extracted from a recording.** Stem separation gives
@@ -212,19 +234,20 @@ If accounts ever arrive, put this route behind a session and relax the caps.
 
 ## Next, in the order I would do them
 
-1. **Get transcription off the main thread.** Either make a worker load work
-   (import only `tfjs-core` + `tfjs-converter` + a backend rather than the union
-   bundle) or chunk the work with yields. Still the biggest usability win
-   available, and now the only slow thing left that is not cached.
-2. **Editable notes.** Transcription is a first draft and the only way to fix a
-   wrong note today is to export to MuseScore. Nudging one in place would matter
-   more than most of what is left.
-3. **Tuner and drone.** Small, and a drone on the tonic is the most useful
-   intonation tool there is for cello and violin.
-4. **Better guide sound**, if it matters — alphaTab ships a 1.3 MB Sonivox
+Everything previously listed here is done. What is left is smaller.
+
+1. **Rhythm editing.** Pitch can be corrected in place now, but a note landing
+   in the wrong bar still needs MuseScore. Dragging a note's onset, or nudging
+   the bar offset per part rather than globally, would close that.
+2. **Better guide sound**, if it matters — alphaTab ships a 1.3 MB Sonivox
    soundfont in `public/alphatab/soundfont/` and exposes `api.exportAudio()`, so
    the guide could be rendered from real samples instead of the synth in
    `guide.ts`.
+3. **Try it on a tablet.** The real use is an iPad on a music stand next to the
+   instrument, and nobody has checked the play-along view survives that.
+4. **A real song, start to finish.** Everything here was verified on synthetic
+   clips of 4 to 24 seconds. Nothing suggests a four-minute track behaves
+   differently, but nobody has sat down and done it.
 
 Deliberately **not** doing: AI-generated vocals and style transfer. They need a
 server, cost money per run, have murky output licensing, and belong to a

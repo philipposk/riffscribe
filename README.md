@@ -17,7 +17,7 @@ inference, no per-minute pricing — the audio never leaves the machine.
 | 1. Load | Drop an mp3/wav/m4a/flac/ogg. Tempo is detected from the onset envelope. | Web Audio + a small FFT |
 | 2. Split | **Instant** vocal removal (phase-based centre extraction, ~1s) or **AI** 4-stem split into vocals / drums / bass / other. | [Demucs](https://github.com/facebookresearch/demucs) via [`demucs-web`](https://www.npmjs.com/package/demucs-web) + onnxruntime-web (WebGPU, WASM fallback) |
 | 3. Slow down | 25–150% speed with the key untouched, ±12 semitone transpose with the tempo untouched, drag-to-loop, metronome that follows the speed. | [Signalsmith Stretch](https://signalsmith-audio.co.uk/code/stretch/) in an AudioWorklet |
-| 4. Transcribe | Audio → notes → quantised rhythm → standard notation **and** tablature, with the fretting chosen by a dynamic-programming pass so the hand barely moves. The part is also played back as the instrument you picked, as its own mixer row. | [Basic Pitch](https://github.com/spotify/basic-pitch-ts) (Spotify) on TensorFlow.js, rendered by [alphaTab](https://alphatab.net) |
+| 4. Transcribe | Audio → notes → quantised rhythm → standard notation **and** tablature, with the fretting chosen by a dynamic-programming pass so the hand barely moves. Runs in a worker, so the page stays usable. Notes can be corrected in place. The part is also played back as the instrument you picked, as its own mixer row. | [Basic Pitch](https://github.com/spotify/basic-pitch-ts) (Spotify) on TensorFlow.js, rendered by [alphaTab](https://alphatab.net) |
 | 4b. Play along | The score scrolls itself and highlights the beat being played, so you never touch the mouse while practising. | alphaTab's page geometry, driven by our own playback clock |
 | 5. Record | Overdub yourself against the backing track. Takes recorded at reduced speed are stretched back to full tempo without pitch damage, and nudged for speaker→mic latency. | MediaRecorder + offline Signalsmith Stretch |
 
@@ -92,6 +92,14 @@ lets anyone list rows, so an unshared chart cannot be reached or enumerated.
 - **Speed trainer** — with a loop running, every clean pass nudges the tempo up
   5% until it reaches your target, then switches itself off.
 - **Named sections** — practise "the chorus", not "somewhere around 2:14".
+- **Tuner and drone** — a needle for tuning up, and a sustained tone to play
+  against. The drone is set to the key of whatever you loaded. A note a few
+  cents out beats audibly against a drone long before it looks wrong on a
+  meter, which is why it is worth more than the needle for intonation.
+- **Fix what the model misheard** — click a note on the top staff and move it by
+  a semitone or an octave, or take it out. Transcription is a first draft, and
+  until now the only way to correct it was to export to MuseScore and not come
+  back.
 - **How did I do?** — records are marked against the written part: what was
   clean, what was missed, what sat out of tune or out of time, whether you rush
   or drag, and which bars are weakest, with one press to loop those and go
@@ -190,8 +198,9 @@ scripts/verify-*    checks for the tex writer, voice splitter and take marking
 Automatic transcription is a strong first draft, not a finished chart. It is
 very good on a solo instrument, decent on a clean stem, and messy on a dense
 full mix — so split the stems first and transcribe one at a time. Tempo, key,
-bar offset and the quantise grid are all editable, and the MusicXML export
-exists precisely so the last 10% can be fixed in a real notation editor.
+bar offset and the quantise grid are all editable, individual notes can be
+corrected by clicking them, and the MusicXML export exists so anything left can
+be finished in a real notation editor.
 
 ## Licences of the parts
 

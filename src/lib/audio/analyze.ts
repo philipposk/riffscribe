@@ -140,3 +140,9 @@ export function chromaFromNotes(notes: { pitchMidi: number; durationSeconds: num
   for (const n of notes) chroma[n.pitchMidi % 12] += n.durationSeconds * (0.5 + n.amplitude);
   return chroma;
 }
+
+/** MIDI number to how a musician would say it: 60 -> "C4". */
+export function noteName(midi: number): string {
+  const rounded = Math.round(midi);
+  return `${PITCH_NAMES[((rounded % 12) + 12) % 12]}${Math.floor(rounded / 12) - 1}`;
+}
