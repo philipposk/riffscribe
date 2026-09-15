@@ -29,7 +29,9 @@ export function Meter({ label, used, limit }: { label: string; used: number; lim
   );
 }
 
-export default function AccountMenu() {
+export default function AccountMenu({ newTab = false }: { newTab?: boolean }) {
+  // In the studio, leaving the page would drop the loaded song — open elsewhere.
+  const tab = newTab ? { target: "_blank", rel: "noopener" } : {};
   const { user, account, ready, refresh } = useAccount();
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
@@ -71,7 +73,7 @@ export default function AccountMenu() {
                   <p className="mb-3 mt-0.5 text-xs text-white/40">
                     {planLabel(account.plan)} plan
                     {account.plan === "free" && (
-                      <> · <Link className="text-[var(--color-accent)] hover:underline" href="/pricing" onClick={() => setOpen(false)}>Upgrade</Link></>
+                      <> · <Link className="text-[var(--color-accent)] hover:underline" href="/pricing" {...tab} onClick={() => setOpen(false)}>Upgrade</Link></>
                     )}
                   </p>
                   <div className="mb-4 space-y-2.5">
@@ -81,10 +83,10 @@ export default function AccountMenu() {
                 </>
               )}
               <nav className="-mx-2 flex flex-col text-sm">
-                <Link className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5" href="/songs" onClick={() => setOpen(false)}>
+                <Link className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5" href="/songs" {...tab} onClick={() => setOpen(false)}>
                   <FileMusic size={14} className="text-white/40" /> My songs
                 </Link>
-                <Link className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5" href="/account" onClick={() => setOpen(false)}>
+                <Link className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5" href="/account" {...tab} onClick={() => setOpen(false)}>
                   <Settings size={14} className="text-white/40" /> Account &amp; plan
                 </Link>
                 <button

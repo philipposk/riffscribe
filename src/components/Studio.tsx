@@ -21,6 +21,7 @@ import Tuner from "./Tuner";
 import { HANDOFF_ID_KEY, HANDOFF_KEY } from "./SharedChart";
 import AccountMenu from "./AccountMenu";
 import { useAccount } from "@/lib/store/account";
+import { lastSong, rememberSong } from "@/lib/store/lastSong";
 import { savingConfigured } from "@/lib/supabase/client";
 import ScoreView from "./ScoreView";
 import Transport from "./Transport";
@@ -173,18 +174,20 @@ export default function Studio() {
 
   /* ------------------------------------------------------------------ load */
 
-  const loadFile = useCallback(async (f: File) => {
+  /** `restoring`: bringing back the last song on return — keep whatever chart is open. */
+  const loadFile = useCallback(async (f: File, restoring = false) => {
     setError(null);
     setBusy({ label: `Decoding ${f.name}…` });
     try {
       const buf = await fileToAudioBuffer(f);
       const stereo = await toStereo(buf, DEMUCS_SAMPLE_RATE);
       setFile(f);
+      if (!restoring) void rememberSong(f);
       setAudio({ left: stereo.left, right: stereo.right });
       setWavePeaks(peaksOf(toMono(stereo.left, stereo.right), 2200));
       setStems(null);
       setStemMode("none");
-      setParts([]);
+      if (!restoring) setParts([]);
       setOverdub(null);
       setSource("mix");
       setRestored(null);
@@ -204,14 +207,33 @@ export default function Studio() {
 
       const mono = toMono(stereo.left, stereo.right);
       const tempo = estimateTempo(mono, DEMUCS_SAMPLE_RATE);
-      setSettings((s) => ({ ...s, bpm: tempo.bpm, offsetSeconds: tempo.offsetSeconds }));
-      setLog(`Detected ${tempo.bpm} BPM (confidence ${(tempo.confidence * 100).toFixed(0)}%)`);
+      if (!restoring) {
+        setSettings((s) => ({ ...s, bpm: tempo.bpm, offsetSeconds: tempo.offsetSeconds }));
+        setLog(`Detected ${tempo.bpm} BPM (confidence ${(tempo.confidence * 100).toFixed(0)}%)`);
+      } else {
+        setLog(`Brought back ${f.name} from last time.`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not read that file");
     } finally {
       setBusy(null);
     }
   }, []);
+
+  /** Coming back to the studio: reopen the song that was loaded before. */
+  useEffect(() => {
+    let cancelled = false;
+    void lastSong().then((f) => { if (f && !cancelled) void loadFile(f, true); });
+    return () => { cancelled = true; };
+  }, [loadFile]);
+
+  /** Leaving mid-job loses it — a split cannot resume halfway. Ask first. */
+  useEffect(() => {
+    if (!busy) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [busy]);
 
   /**
    * Pull a song in from a link, via the little fetcher you run on your own
@@ -1209,8 +1231,9 @@ export default function Studio() {
               ))}
             </select>
           </label>
-          <a className="btn" href="/">About</a>
-          <AccountMenu />
+          {/* New tabs: leaving this page would drop the loaded song and any split in progress. */}
+          <a className="btn" href="/" target="_blank" rel="noopener">About</a>
+          <AccountMenu newTab />
         </div>
       </header>
 
