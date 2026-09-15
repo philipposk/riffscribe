@@ -79,6 +79,16 @@ export interface PageAssistantConfig {
      * Default "device". Settings says why.
      */
     chatHistoryFallbackMode?: "device" | "off";
+    /**
+     * Offer a signed-in user the chats made in this browser while nobody was signed in, so
+     * they can move them into their account or their own device chats. Default true.
+     *
+     * Set `false` for apps used on shared computers (a kiosk, a front desk, a family laptop):
+     * whoever used the browser signed out may not be the person signed in now, so those chats
+     * are never offered, counted or moved. They stay where they are, for the next signed-out
+     * visitor. Only matters with an adapter that has `currentUserId()`.
+     */
+    offerSignedOutChats?: boolean;
     /** Failed account loads and saves, for your logs. The user sees a short note in settings. */
     onChatHistoryError?: (error: unknown) => void;
     /**
@@ -170,6 +180,12 @@ declare class PageAssistantController {
     private chatStore;
     private historyMgr;
     private activeChatId;
+    /**
+     * Goes up whenever the conversation on screen is replaced by another one: a chat opened,
+     * a new chat, or the store swapped under it. With the manager's `userGeneration` it tells a
+     * reply that was still loading whether it may land (see `turn()`).
+     */
+    private chatGen;
     private scanned;
     private listening;
     private ttsEnabled;
@@ -209,6 +225,19 @@ declare class PageAssistantController {
      */
     private reanchorChat;
     private switchChat;
+    /**
+     * Where a reply now being requested belongs: this chat, for the person signed in now.
+     * Taken before the request; `stillCurrent()` checks it when the reply comes back.
+     */
+    private turn;
+    /**
+     * False once the user left the chat the reply was for — opened another, started a new one —
+     * or once someone signed out or another account signed in. Such a reply must not be pushed,
+     * saved or shown: it would land in another conversation or in the next person's chats.
+     */
+    private stillCurrent;
+    /** A reply (or its error) that is no longer wanted: nothing saved, nothing rendered. */
+    private discardReply;
     private persistCurrentChat;
     /** History mapped for display: collapse the raw attachment dump back to a "📎 name" line. */
     private displayHistory;

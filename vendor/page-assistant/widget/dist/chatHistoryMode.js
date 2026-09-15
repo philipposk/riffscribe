@@ -89,11 +89,13 @@ export class ChatHistoryManager {
     fallback;
     locked;
     adapter;
+    offerSignedOut;
     mode;
     unavailable;
     /** `undefined` until checked; `null` = nobody signed in (or no adapter). */
     userId;
     hintUserId;
+    userGen = 0;
     sync;
     status = "idle";
     error;
@@ -109,6 +111,7 @@ export class ChatHistoryManager {
         this.fallback = opts.fallbackMode === "off" ? "off" : "device";
         this.locked = !!opts.disabled;
         this.adapter = opts.adapter;
+        this.offerSignedOut = opts.offerSignedOutChats !== false;
         // First guess, so the first render is usually already right: whoever was signed in
         // last time is usually who is here now. `start()` checks.
         if (!this.adapter) {
@@ -198,6 +201,14 @@ export class ChatHistoryManager {
             return !!this.store.get(id);
         return (await this.sync.load(id)) === "loaded";
     }
+    /**
+     * Goes up each time the signed-in user changes (sign-out, sign-in, another account), as soon
+     * as the change is noticed and before the store is swapped. Anything started for the
+     * previous person — a reply still loading — compares it to know it must not be saved.
+     */
+    get userGeneration() {
+        return this.userGen;
+    }
     /** Send any waiting account writes now. */
     flush() {
         return this.sync?.flush() ?? Promise.resolve();
@@ -205,7 +216,7 @@ export class ChatHistoryManager {
     getState() {
         const own = this.ownDeviceKey();
         const shown = this.store.persistsLocally ? this.store.localKey : null;
-        const signedOutHidden = this.userId !== undefined && own !== this.storageKey && shown !== this.storageKey;
+        const signedOutHidden = this.offerSignedOut && this.userId !== undefined && own !== this.storageKey && shown !== this.storageKey;
         return {
             mode: this.mode,
             chosen: this.chosen(),
@@ -270,6 +281,8 @@ export class ChatHistoryManager {
         const first = this.userId === undefined;
         const userChanged = !first && userId !== this.userId;
         this.userId = userId;
+        if (userChanged)
+            this.userGen++;
         if (this.adapter)
             this.rememberLastUser(userId);
         if (opts.choose)
@@ -396,8 +409,9 @@ export class ChatHistoryManager {
     async moveNow(from = "mine") {
         const none = { moved: 0, failed: 0 };
         const own = this.ownDeviceKey();
-        // "mine" is only ever the user's own slot; the signed-out slot only when it isn't theirs.
-        const source = from === "mine" ? own : own === this.storageKey ? null : this.storageKey;
+        // "mine" is only ever the user's own slot; the signed-out slot only when it isn't theirs
+        // and the host allows offering it at all.
+        const source = from === "mine" ? own : own === this.storageKey || !this.offerSignedOut ? null : this.storageKey;
         if (!source)
             return none;
         const local = ChatHistoryStore.readLocal(source).sessions.filter((s) => s.messages?.length);

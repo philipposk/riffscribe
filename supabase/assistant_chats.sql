@@ -43,7 +43,9 @@ create table if not exists public.riffscribe_assistant_chats (
   model       text,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
-  primary key (user_id, id)
+  -- A chat id is unique only within one person's chats in one app. The adapter upserts
+  -- on exactly these columns (onConflict "user_id,app,id"), so they must stay the key.
+  primary key (user_id, app, id)
 );
 
 -- The sidebar: one person's chats, newest first.

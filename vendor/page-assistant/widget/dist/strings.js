@@ -137,6 +137,7 @@ export const DEFAULT_STRINGS = {
     historySaveFailed: "Couldn't save to your account. It will try again.",
     historyRetry: "Try again",
     historyChatUnavailable: "Couldn't open that chat. Please try again.",
+    historyReplyDiscarded: "A reply arrived after the chat changed, so it was discarded.",
 };
 /**
  * Merge host overrides over the English defaults.

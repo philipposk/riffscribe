@@ -59,7 +59,8 @@ export interface ChatHistoryState {
     deviceChatCount: number;
     /**
      * Chats made in this browser while signed out, when the current view doesn't show them:
-     * a signed-in user may choose to move them, told plainly whose they may be.
+     * a signed-in user may choose to move them, told plainly whose they may be. Always 0 when
+     * the host set `offerSignedOutChats: false`.
      */
     signedOutDeviceChatCount: number;
     /** An adapter exists and someone is signed in, so their saved chats can be deleted. */
@@ -106,6 +107,12 @@ export interface ChatHistoryManagerOptions {
     /** `disableChatHistory`: always "off", nothing to choose. */
     disabled?: boolean;
     adapter?: ChatHistoryAdapter;
+    /**
+     * Offer a signed-in user the chats made in this browser while nobody was signed in.
+     * Default true. `false`: they are never offered, counted or moved (into the account or into
+     * the user's own device chats) — for apps used on shared computers.
+     */
+    offerSignedOutChats?: boolean;
     debounceMs?: number;
     retryDelaysMs?: number[];
     onError?: (error: unknown) => void;
@@ -123,11 +130,13 @@ export declare class ChatHistoryManager implements ChatHistoryControls {
     private fallback;
     private locked;
     private adapter?;
+    private offerSignedOut;
     private mode;
     private unavailable?;
     /** `undefined` until checked; `null` = nobody signed in (or no adapter). */
     private userId;
     private hintUserId;
+    private userGen;
     private sync?;
     private status;
     private error?;
@@ -156,6 +165,12 @@ export declare class ChatHistoryManager implements ChatHistoryControls {
     needsLoad(id: string): boolean;
     /** Make sure a chat's messages are here before it is opened or copied. False if it is gone. */
     ensureLoaded(id: string): Promise<boolean>;
+    /**
+     * Goes up each time the signed-in user changes (sign-out, sign-in, another account), as soon
+     * as the change is noticed and before the store is swapped. Anything started for the
+     * previous person — a reply still loading — compares it to know it must not be saved.
+     */
+    get userGeneration(): number;
     /** Send any waiting account writes now. */
     flush(): Promise<void>;
     getState(): ChatHistoryState;

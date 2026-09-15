@@ -126,6 +126,7 @@ export const GREEK_STRINGS: Record<string, string> = {
   historySaveFailed: "Δεν ήταν δυνατή η αποθήκευση στον λογαριασμό σας. Θα ξαναδοκιμάσει.",
   historyRetry: "Δοκιμή ξανά",
   historyChatUnavailable: "Δεν ήταν δυνατό το άνοιγμα αυτής της συνομιλίας. Δοκιμάστε ξανά.",
+  historyReplyDiscarded: "Μια απάντηση έφτασε αφού άλλαξε η συνομιλία, οπότε απορρίφθηκε.",
 };
 
 /** Added to the persona so replies come back in the right language. */

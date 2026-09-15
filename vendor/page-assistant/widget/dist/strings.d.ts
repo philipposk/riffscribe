@@ -156,6 +156,12 @@ export interface WidgetStrings {
     historyRetry: string;
     /** Toast when a saved chat could not be fetched to open it. */
     historyChatUnavailable: string;
+    /**
+     * Toast when a reply arrives after the chat it was for was left: another chat opened, or
+     * someone signed out or in. The reply is not shown or saved. Seen by whoever is at the page
+     * now, so it says nothing about the question.
+     */
+    historyReplyDiscarded: string;
 }
 export declare const DEFAULT_STRINGS: WidgetStrings;
 /**

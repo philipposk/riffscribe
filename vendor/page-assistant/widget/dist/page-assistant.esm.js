@@ -1714,7 +1714,8 @@ var DEFAULT_STRINGS = {
   historyLoadFailed: "Couldn't load your saved chats.",
   historySaveFailed: "Couldn't save to your account. It will try again.",
   historyRetry: "Try again",
-  historyChatUnavailable: "Couldn't open that chat. Please try again."
+  historyChatUnavailable: "Couldn't open that chat. Please try again.",
+  historyReplyDiscarded: "A reply arrived after the chat changed, so it was discarded."
 };
 function resolveStrings(overrides) {
   if (!overrides) return { ...DEFAULT_STRINGS };
@@ -4071,11 +4072,13 @@ var ChatHistoryManager = class {
     __publicField(this, "fallback");
     __publicField(this, "locked");
     __publicField(this, "adapter");
+    __publicField(this, "offerSignedOut");
     __publicField(this, "mode");
     __publicField(this, "unavailable");
     /** `undefined` until checked; `null` = nobody signed in (or no adapter). */
     __publicField(this, "userId");
     __publicField(this, "hintUserId");
+    __publicField(this, "userGen", 0);
     __publicField(this, "sync");
     __publicField(this, "status", "idle");
     __publicField(this, "error");
@@ -4089,6 +4092,7 @@ var ChatHistoryManager = class {
     this.fallback = opts.fallbackMode === "off" ? "off" : "device";
     this.locked = !!opts.disabled;
     this.adapter = opts.adapter;
+    this.offerSignedOut = opts.offerSignedOutChats !== false;
     if (!this.adapter) {
       this.userId = null;
     } else {
@@ -4162,6 +4166,14 @@ var ChatHistoryManager = class {
     if (!this.sync?.needsLoad(id)) return !!this.store.get(id);
     return await this.sync.load(id) === "loaded";
   }
+  /**
+   * Goes up each time the signed-in user changes (sign-out, sign-in, another account), as soon
+   * as the change is noticed and before the store is swapped. Anything started for the
+   * previous person — a reply still loading — compares it to know it must not be saved.
+   */
+  get userGeneration() {
+    return this.userGen;
+  }
   /** Send any waiting account writes now. */
   flush() {
     return this.sync?.flush() ?? Promise.resolve();
@@ -4169,7 +4181,7 @@ var ChatHistoryManager = class {
   getState() {
     const own = this.ownDeviceKey();
     const shown = this.store.persistsLocally ? this.store.localKey : null;
-    const signedOutHidden = this.userId !== void 0 && own !== this.storageKey && shown !== this.storageKey;
+    const signedOutHidden = this.offerSignedOut && this.userId !== void 0 && own !== this.storageKey && shown !== this.storageKey;
     return {
       mode: this.mode,
       chosen: this.chosen(),
@@ -4228,6 +4240,7 @@ var ChatHistoryManager = class {
     const first = this.userId === void 0;
     const userChanged = !first && userId !== this.userId;
     this.userId = userId;
+    if (userChanged) this.userGen++;
     if (this.adapter) this.rememberLastUser(userId);
     if (opts.choose) setStoredChatHistoryMode(opts.choose, this.adapter ? userId : null, this.modeKey);
     const { mode: next, unavailable } = resolveChatHistoryMode({
@@ -4327,7 +4340,7 @@ var ChatHistoryManager = class {
   async moveNow(from = "mine") {
     const none = { moved: 0, failed: 0 };
     const own = this.ownDeviceKey();
-    const source = from === "mine" ? own : own === this.storageKey ? null : this.storageKey;
+    const source = from === "mine" ? own : own === this.storageKey || !this.offerSignedOut ? null : this.storageKey;
     if (!source) return none;
     const local = ChatHistoryStore.readLocal(source).sessions.filter((s) => s.messages?.length);
     if (!local.length) return none;
@@ -4447,6 +4460,7 @@ function capability(c) {
 
 // src/adapters/supabase.ts
 var LIST_COLUMNS = "id,title,pinned,archived,group_id,model,created_at,updated_at";
+var CONFLICT_KEY = "user_id,app,id";
 function fromRow(r) {
   const out = {
     id: String(r.id),
@@ -4533,12 +4547,12 @@ function supabaseChatHistoryAdapter(client, opts = {}) {
     },
     async save(chat) {
       const uid3 = await requireUser();
-      await run(client.from(table).upsert(toRow(chat, uid3), { onConflict: "user_id,id" }));
+      await run(client.from(table).upsert(toRow(chat, uid3), { onConflict: CONFLICT_KEY }));
     },
     async saveMany(chats) {
       if (!chats.length) return;
       const uid3 = await requireUser();
-      await run(client.from(table).upsert(chats.map((c) => toRow(c, uid3)), { onConflict: "user_id,id" }));
+      await run(client.from(table).upsert(chats.map((c) => toRow(c, uid3)), { onConflict: CONFLICT_KEY }));
     },
     async delete(id) {
       const uid3 = await requireUser();
@@ -4563,6 +4577,12 @@ var PageAssistantController = class {
     __publicField(this, "chatStore");
     __publicField(this, "historyMgr");
     __publicField(this, "activeChatId", null);
+    /**
+     * Goes up whenever the conversation on screen is replaced by another one: a chat opened,
+     * a new chat, or the store swapped under it. With the manager's `userGeneration` it tells a
+     * reply that was still loading whether it may land (see `turn()`).
+     */
+    __publicField(this, "chatGen", 0);
     __publicField(this, "scanned", false);
     __publicField(this, "listening", false);
     __publicField(this, "ttsEnabled");
@@ -4593,6 +4613,7 @@ var PageAssistantController = class {
       fallbackMode: cfg.chatHistoryFallbackMode,
       disabled: cfg.disableChatHistory,
       adapter: cfg.chatHistoryAdapter,
+      offerSignedOutChats: cfg.offerSignedOutChats,
       onError: cfg.onChatHistoryError
     });
     this.chatStore = this.historyMgr.store;
@@ -4750,6 +4771,7 @@ var PageAssistantController = class {
     const model = getAssistantSettings(this.assistantSettingsKey).model;
     const session = this.chatStore.create({ model });
     this.activeChatId = session.id;
+    this.chatGen++;
     this.history = [];
     this.clearPending();
     this.ui.clearLog();
@@ -4840,6 +4862,7 @@ var PageAssistantController = class {
       this.ui.setActiveChat(kept.id);
       return;
     }
+    this.chatGen++;
     this.clearPending();
     const next = this.chatStore.getActive();
     if (next) {
@@ -4863,6 +4886,7 @@ var PageAssistantController = class {
     const session = this.chatStore.get(id);
     if (!session) return;
     this.persistCurrentChat();
+    if (id !== this.activeChatId) this.chatGen++;
     this.activeChatId = id;
     this.chatStore.setActive(id);
     this.history = [...session.messages];
@@ -4871,6 +4895,28 @@ var PageAssistantController = class {
     this.ui.loadMessages(this.displayHistory());
     this.ui.setActiveChat(id);
     this.track("chat_switch", { id });
+  }
+  /**
+   * Where a reply now being requested belongs: this chat, for the person signed in now.
+   * Taken before the request; `stillCurrent()` checks it when the reply comes back.
+   */
+  turn() {
+    return { chatId: this.activeChatId, chatGen: this.chatGen, userGen: this.historyMgr.userGeneration };
+  }
+  /**
+   * False once the user left the chat the reply was for — opened another, started a new one —
+   * or once someone signed out or another account signed in. Such a reply must not be pushed,
+   * saved or shown: it would land in another conversation or in the next person's chats.
+   */
+  stillCurrent(t) {
+    return !this.destroyed && t.chatId === this.activeChatId && t.chatGen === this.chatGen && t.userGen === this.historyMgr.userGeneration;
+  }
+  /** A reply (or its error) that is no longer wanted: nothing saved, nothing rendered. */
+  discardReply() {
+    if (this.destroyed) return;
+    this.ui.setBusy(false);
+    this.ui.setState("idle");
+    this.ui.toast(this.strings.historyReplyDiscarded);
   }
   persistCurrentChat() {
     if (!this.activeChatId || this.cfg.disableChatHistory) return;
@@ -4956,8 +5002,10 @@ var PageAssistantController = class {
 \u{1F4CE} ${attachments.map((a) => a.name).join(", ")}` : ""));
     this.ui.setState("thinking");
     this.ui.setBusy(true);
+    const turn = this.turn();
     try {
       const res = await this.assistant.chat({ message, page: this.pageContext(), history: this.history });
+      if (!this.stillCurrent(turn)) return this.discardReply();
       this.history.push({ role: "user", content: message }, { role: "assistant", content: res.message });
       this.persistCurrentChat();
       if (res.pendingConfirmation) {
@@ -4974,6 +5022,7 @@ var PageAssistantController = class {
       await this.say(res.message);
       this.track("message_sent", { len: message.length });
     } catch (e) {
+      if (!this.stillCurrent(turn)) return this.discardReply();
       this.ui.setBusy(false);
       this.ui.setState("idle");
       this.showFriendlyError(e, () => this.retryLastTurn());
@@ -5033,14 +5082,17 @@ var PageAssistantController = class {
     const pending = this.pending;
     this.ui.setState("thinking");
     this.ui.setBusy(true);
+    const turn = this.turn();
     try {
       const res = await this.assistant.confirmAndRun(pending.name, pending.args, this.pageContext());
+      if (!this.stillCurrent(turn)) return this.discardReply();
       this.history.push({ role: "assistant", content: res.message });
       this.persistCurrentChat();
       this.ui.setBusy(false);
       this.ui.addMessage("assistant", res.message);
       await this.say(res.message);
     } catch (e) {
+      if (!this.stillCurrent(turn)) return this.discardReply();
       this.ui.setBusy(false);
       this.ui.setState("idle");
       this.showFriendlyError(e, () => {

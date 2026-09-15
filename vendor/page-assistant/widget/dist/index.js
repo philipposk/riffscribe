@@ -41,6 +41,12 @@ class PageAssistantController {
     chatStore;
     historyMgr;
     activeChatId = null;
+    /**
+     * Goes up whenever the conversation on screen is replaced by another one: a chat opened,
+     * a new chat, or the store swapped under it. With the manager's `userGeneration` it tells a
+     * reply that was still loading whether it may land (see `turn()`).
+     */
+    chatGen = 0;
     scanned = false;
     listening = false;
     ttsEnabled;
@@ -77,6 +83,7 @@ class PageAssistantController {
             fallbackMode: cfg.chatHistoryFallbackMode,
             disabled: cfg.disableChatHistory,
             adapter: cfg.chatHistoryAdapter,
+            offerSignedOutChats: cfg.offerSignedOutChats,
             onError: cfg.onChatHistoryError,
         });
         this.chatStore = this.historyMgr.store;
@@ -245,6 +252,7 @@ class PageAssistantController {
         const model = getAssistantSettings(this.assistantSettingsKey).model;
         const session = this.chatStore.create({ model });
         this.activeChatId = session.id;
+        this.chatGen++;
         this.history = [];
         this.clearPending();
         this.ui.clearLog();
@@ -351,6 +359,7 @@ class PageAssistantController {
             this.ui.setActiveChat(kept.id);
             return;
         }
+        this.chatGen++;
         this.clearPending();
         const next = this.chatStore.getActive();
         if (next) {
@@ -378,6 +387,8 @@ class PageAssistantController {
         if (!session)
             return;
         this.persistCurrentChat();
+        if (id !== this.activeChatId)
+            this.chatGen++;
         this.activeChatId = id;
         this.chatStore.setActive(id);
         this.history = [...session.messages];
@@ -386,6 +397,32 @@ class PageAssistantController {
         this.ui.loadMessages(this.displayHistory());
         this.ui.setActiveChat(id);
         this.track("chat_switch", { id });
+    }
+    /**
+     * Where a reply now being requested belongs: this chat, for the person signed in now.
+     * Taken before the request; `stillCurrent()` checks it when the reply comes back.
+     */
+    turn() {
+        return { chatId: this.activeChatId, chatGen: this.chatGen, userGen: this.historyMgr.userGeneration };
+    }
+    /**
+     * False once the user left the chat the reply was for — opened another, started a new one —
+     * or once someone signed out or another account signed in. Such a reply must not be pushed,
+     * saved or shown: it would land in another conversation or in the next person's chats.
+     */
+    stillCurrent(t) {
+        return (!this.destroyed &&
+            t.chatId === this.activeChatId &&
+            t.chatGen === this.chatGen &&
+            t.userGen === this.historyMgr.userGeneration);
+    }
+    /** A reply (or its error) that is no longer wanted: nothing saved, nothing rendered. */
+    discardReply() {
+        if (this.destroyed)
+            return;
+        this.ui.setBusy(false);
+        this.ui.setState("idle");
+        this.ui.toast(this.strings.historyReplyDiscarded);
     }
     persistCurrentChat() {
         if (!this.activeChatId || this.cfg.disableChatHistory)
@@ -488,8 +525,11 @@ class PageAssistantController {
         this.ui.addMessage("user", text + (attachments?.length ? `\n📎 ${attachments.map((a) => a.name).join(", ")}` : ""));
         this.ui.setState("thinking");
         this.ui.setBusy(true);
+        const turn = this.turn();
         try {
             const res = await this.assistant.chat({ message, page: this.pageContext(), history: this.history });
+            if (!this.stillCurrent(turn))
+                return this.discardReply();
             this.history.push({ role: "user", content: message }, { role: "assistant", content: res.message });
             this.persistCurrentChat();
             if (res.pendingConfirmation) {
@@ -513,6 +553,9 @@ class PageAssistantController {
             this.track("message_sent", { len: message.length });
         }
         catch (e) {
+            // No retry offered to whoever is here now: it would resend the previous person's question.
+            if (!this.stillCurrent(turn))
+                return this.discardReply();
             this.ui.setBusy(false);
             this.ui.setState("idle");
             this.showFriendlyError(e, () => this.retryLastTurn());
@@ -578,8 +621,12 @@ class PageAssistantController {
         const pending = this.pending;
         this.ui.setState("thinking");
         this.ui.setBusy(true);
+        const turn = this.turn();
         try {
             const res = await this.assistant.confirmAndRun(pending.name, pending.args, this.pageContext());
+            // The action ran; its result is only written where it was asked for.
+            if (!this.stillCurrent(turn))
+                return this.discardReply();
             this.history.push({ role: "assistant", content: res.message });
             this.persistCurrentChat();
             this.ui.setBusy(false);
@@ -587,6 +634,9 @@ class PageAssistantController {
             await this.say(res.message);
         }
         catch (e) {
+            // Retrying would run the previous person's action again.
+            if (!this.stillCurrent(turn))
+                return this.discardReply();
             this.ui.setBusy(false);
             this.ui.setState("idle");
             this.showFriendlyError(e, () => {
