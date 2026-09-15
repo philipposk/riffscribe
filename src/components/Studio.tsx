@@ -35,12 +35,13 @@ import { PracticeEngine, makeClickTrack, type EngineTrack } from "@/lib/audio/en
 import { countIn, countInSeconds } from "@/lib/audio/countin";
 import { MicRecorder, estimateLatency, placeTake, stretchOffline } from "@/lib/audio/recorder";
 import {
-  DEMUCS_SAMPLE_RATE, mixStems, separateInstantAsync, separateWithDemucs, type StemSet,
+  DEMUCS_SAMPLE_RATE, SPLIT_PAUSED, mixStems, partialKey, separateInstantAsync, separateResumable, type StemSet,
 } from "@/lib/audio/stems";
 import { synthesizeGuide } from "@/lib/audio/guide";
 import {
   forget, getScore, getStems, putScore, putStems, requestPersistence, songKey,
 } from "@/lib/store/cache";
+import { clearBlocks, doneBlocks, getBlock, putBlock } from "@/lib/store/partialSplit";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
 import {
   channelsToAudioBuffer, lastTranscriptionRanIn, toModelInput, transcribeAudio,
@@ -207,6 +208,14 @@ export default function Studio() {
         setStemMode(cached.mode as StemMode);
         setSource("other");
         setRestored(cached.mode === "ai" ? "Stems restored from this device — no need to split again." : "Instant split restored from this device.");
+      } else {
+        const partial = await doneBlocks(partialKey(id, stereo.left.length));
+        if (partial.size) {
+          setRestored(
+            `An AI split of this song stopped partway — ${partial.size} ${partial.size === 1 ? "part is" : "parts are"} kept. ` +
+              "Press the AI split to carry on from there."
+          );
+        }
       }
 
       const mono = toMono(stereo.left, stereo.right);
@@ -552,9 +561,13 @@ export default function Studio() {
     setError(null);
     setBusy({ label: "Loading the separation model…" });
     try {
-      const { promise, cancel } = separateWithDemucs(
-        Float32Array.from(audio.left),
-        Float32Array.from(audio.right),
+      // Without a song key (should not happen once loaded) blocks are simply not reused.
+      const pkey = partialKey(key ?? `unsaved-${Date.now()}`, audio.left.length);
+      const { promise, cancel } = separateResumable(
+        pkey,
+        audio.left,
+        audio.right,
+        { done: doneBlocks, get: getBlock, put: putBlock, clear: clearBlocks },
         (p) => {
           if (p.phase === "download") setBusy({ label: `Downloading model (one time, ~180 MB) ${p.message ?? ""}`, value: p.value });
           else if (p.phase === "prepare") setBusy({ label: "Preparing the model — this takes a moment…" });
@@ -574,6 +587,7 @@ export default function Studio() {
         void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "ai");
       }
     } catch (e) {
+      if (e instanceof Error && e.message === SPLIT_PAUSED) return;
       setError(e instanceof Error ? e.message : "stem separation failed");
     } finally {
       cancelSplitRef.current = null;
@@ -585,7 +599,7 @@ export default function Studio() {
     cancelSplitRef.current?.();
     cancelSplitRef.current = null;
     setBusy(null);
-    setLog("Separation cancelled. Whatever downloaded is kept.");
+    setLog("Separation paused. Finished parts are kept — press the AI split again to carry on from there.");
   }
 
   /** Cut the song down to the looped section — separation is slow, so this helps. */

@@ -36,7 +36,7 @@ export interface Track {
   right: Float32Array;
 }
 
-interface EncodedTrack {
+export interface EncodedTrack {
   codec: "opus" | "pcm16" | "silence";
   /** Frames at `rate` — what the caller originally handed us. */
   frames: number;
@@ -133,7 +133,7 @@ async function opusSupported(rate: number): Promise<boolean> {
   }
 }
 
-function encodePcm16(track: Track, rate: number): EncodedTrack {
+export function encodePcm16(track: Track, rate: number): EncodedTrack {
   const n = track.left.length;
   const out = new Int16Array(n * 2);
   for (let i = 0; i < n; i++) {
@@ -145,7 +145,7 @@ function encodePcm16(track: Track, rate: number): EncodedTrack {
   return { codec: "pcm16", frames: n, rate, data: new Uint8Array(out.buffer) };
 }
 
-function decodePcm16(enc: EncodedTrack): Track {
+export function decodePcm16(enc: EncodedTrack): Track {
   const pcm = new Int16Array(enc.data.buffer, enc.data.byteOffset, enc.data.byteLength / 2);
   const n = enc.frames;
   const left = new Float32Array(n);
