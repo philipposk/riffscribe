@@ -124,6 +124,26 @@ appear and everything else works as before. The proxy route is unauthenticated,
 so it is deliberately spend-limited — a fixed small model, a hard token ceiling,
 capped context and a per-IP budget.
 
+### Its chat history
+
+Signed in, your chats with the assistant are saved to your account, so they are
+there on any device you sign in on. Signed out, or on a deployment without
+Supabase, they stay in this browser. The assistant's settings (Data tab) switch
+between *Save to my account*, *Save on this device* and *Don't save*, offer to
+move chats already in this browser to your account, and have *Delete all my
+chats*; a single chat is deleted from the sidebar.
+
+What is saved is the text of the conversation — its title, messages and model —
+in `riffscribe_assistant_chats`, in the same Supabase project as charts. Never
+audio. Row-level security lets each person read and change only their own chats.
+Saved chats with no activity for 12 months are deleted automatically.
+
+```bash
+# after schema.sql. Enable pg_cron first (Database → Extensions) and the daily
+# 12-month clean-up is scheduled by the same file.
+supabase db execute -f supabase/assistant_chats.sql   # or paste it into the SQL editor
+```
+
 ## Loading from a link
 
 There is an optional helper that fetches audio from a URL:
@@ -190,7 +210,9 @@ src/lib/supabase/   the optional client
 src/lib/workers/    demucs stem-separation worker
 src/components/     studio UI (mixer, transport, waveform, score, save bar)
 supabase/schema.sql the charts table and its row-level security
-scripts/verify-*    checks for the tex writer, voice splitter and take marking
+supabase/assistant_chats.sql  the assistant's saved chats, their RLS and retention
+scripts/verify-*    checks for the tex writer, voice splitter, take marking and
+                    the assistant's chat history wiring
 ```
 
 ## Honest limits
