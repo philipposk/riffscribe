@@ -6,6 +6,7 @@ import { openAssistantSettingsModal, closeAssistantSettingsModal, mountAssistant
 import { type ChatHistoryMode } from "./chatHistoryMode.js";
 import type { ChatHistoryAdapter } from "./chatHistoryAccount.js";
 import { type WidgetStrings } from "./strings.js";
+import * as widgetExports from "./index.js";
 export interface PageAssistantConfig {
     serverUrl: string;
     appName?: string;

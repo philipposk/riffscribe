@@ -13,6 +13,8 @@ import { ChatHistoryManager } from "./chatHistoryMode.js";
 import { formatAttachmentsForPrompt } from "./fileUpload.js";
 import { trackEvent } from "./analytics.js";
 import { DEFAULT_STRINGS, resolveStrings } from "./strings.js";
+// This module's own exports, so the script-tag global can carry all of them (see the end).
+import * as widgetExports from "./index.js";
 /** Set when a reply link starts a full page load on a wide screen; the next page reopens the panel. */
 const REOPEN_KEY = "page-assistant:reopen-after-link";
 const REOPEN_WINDOW_MS = 30_000;
@@ -853,5 +855,9 @@ function stripAttachmentDump(content) {
         names.push(m[1] ?? m[2]);
     return head + (names.length ? `\n📎 ${names.join(", ")}` : "");
 }
+// The script-tag build's handle is `window.PageAssistant`, so it carries every export of this
+// module, not a hand-kept subset. 0.6.0's subset lacked `supabaseChatHistoryAdapter`, so an app
+// that vendors the bundle had no adapter to pass, and without one the widget quietly keeps chats
+// on the device. On a name clash the controller's own methods win.
 if (typeof window !== "undefined")
-    window.PageAssistant = PageAssistant;
+    window.PageAssistant = { ...widgetExports, ...PageAssistant };

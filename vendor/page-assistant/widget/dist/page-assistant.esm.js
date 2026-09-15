@@ -77,6 +77,70 @@ var init_fileUpload = __esm({
   }
 });
 
+// src/index.ts
+var index_exports = {};
+__export(index_exports, {
+  ASSISTANT_SETTINGS_STORAGE_KEY: () => ASSISTANT_SETTINGS_STORAGE_KEY,
+  AccountHistorySync: () => AccountHistorySync,
+  CHAT_HISTORY_CHANGE_EVENT: () => CHAT_HISTORY_CHANGE_EVENT,
+  CHAT_HISTORY_MODES: () => CHAT_HISTORY_MODES,
+  CHAT_HISTORY_MODE_STORAGE_KEY: () => CHAT_HISTORY_MODE_STORAGE_KEY,
+  CHAT_HISTORY_STORAGE_KEY: () => CHAT_HISTORY_STORAGE_KEY,
+  ChatHistoryManager: () => ChatHistoryManager,
+  ChatHistoryStore: () => ChatHistoryStore,
+  DEFAULT_MODELS: () => DEFAULT_MODELS,
+  DEFAULT_SCRUB_RULES: () => DEFAULT_SCRUB_RULES,
+  DEFAULT_STRINGS: () => DEFAULT_STRINGS,
+  ELEVENLABS_VOICES: () => ELEVENLABS_VOICES,
+  LocalMemoryStore: () => LocalMemoryStore,
+  OPENAI_VOICES: () => OPENAI_VOICES,
+  PLAIN_TEXT_SCRUB_RULES: () => PLAIN_TEXT_SCRUB_RULES,
+  PageAssistant: () => PageAssistant,
+  VOICE_SETTINGS_CHANGE_EVENT: () => VOICE_SETTINGS_CHANGE_EVENT,
+  VOICE_SETTINGS_STORAGE_KEY: () => VOICE_SETTINGS_STORAGE_KEY,
+  capability: () => capability,
+  closeAssistantSettingsModal: () => closeAssistantSettingsModal,
+  closeVoiceSettingsModal: () => closeVoiceSettingsModal,
+  deviceStorageKey: () => deviceStorageKey,
+  escapeLinkText: () => escapeLinkText,
+  exportAnalyticsMarkdown: () => exportAnalyticsMarkdown,
+  fetchModelCatalog: () => fetchModelCatalog,
+  followLink: () => followLink,
+  formatAttachmentsForPrompt: () => formatAttachmentsForPrompt,
+  fromAccountChat: () => fromAccountChat,
+  fullScan: () => fullScan,
+  getAssistantSettings: () => getAssistantSettings,
+  getLocalAnalytics: () => getLocalAnalytics,
+  getStoredChatHistoryMode: () => getStoredChatHistoryMode,
+  getVoiceDefaults: () => getVoiceDefaults,
+  getVoiceSettings: () => getVoiceSettings,
+  historyMoveOffers: () => historyMoveOffers,
+  linkText: () => linkText,
+  markdownLink: () => markdownLink,
+  mountAssistantSettingsPanel: () => mountAssistantSettingsPanel,
+  mountVoiceSettingsPanel: () => mountVoiceSettingsPanel,
+  openAssistantSettingsModal: () => openAssistantSettingsModal,
+  openVoiceSettingsModal: () => openVoiceSettingsModal,
+  pageActionCapabilities: () => pageActionCapabilities,
+  parseLinks: () => parseLinks,
+  readFileAttachment: () => readFileAttachment,
+  renderReply: () => renderReply,
+  resolveChatHistoryMode: () => resolveChatHistoryMode,
+  resolveStrings: () => resolveStrings,
+  resolveVoiceLang: () => resolveVoiceLang,
+  safeLinkHref: () => safeLinkHref,
+  scanPage: () => scanPage,
+  setAssistantSettings: () => setAssistantSettings,
+  setStoredChatHistoryMode: () => setStoredChatHistoryMode,
+  setVoiceDefaults: () => setVoiceDefaults,
+  setVoiceSettings: () => setVoiceSettings,
+  supabaseChatHistoryAdapter: () => supabaseChatHistoryAdapter,
+  toAccountChat: () => toAccountChat,
+  trackEvent: () => trackEvent,
+  voiceInputAvailable: () => voiceInputAvailable,
+  voiceOptionsFromSettings: () => voiceOptionsFromSettings
+});
+
 // ../core/dist/registry.js
 var TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 var DATA_KEYS = /* @__PURE__ */ new Set(["enum", "const", "default", "examples"]);
@@ -5529,7 +5593,7 @@ function stripAttachmentDump(content) {
   return head + (names.length ? `
 \u{1F4CE} ${names.join(", ")}` : "");
 }
-if (typeof window !== "undefined") window.PageAssistant = PageAssistant;
+if (typeof window !== "undefined") window.PageAssistant = { ...index_exports, ...PageAssistant };
 export {
   ASSISTANT_SETTINGS_STORAGE_KEY,
   AccountHistorySync,
