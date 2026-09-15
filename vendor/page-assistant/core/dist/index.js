@@ -3,6 +3,7 @@ export { Assistant, forcedFactualTool, validateFactualText, stripUnknownKeys, va
 export { validateCapabilities, capabilitySchemaProblems, CapabilitySchemaError, isCapabilityEnabled } from "./registry.js";
 export { generateLlmTxt, generateActionsJson } from "./llmtxt.js";
 export { scrubText, DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "./scrub.js";
+export { parseLinks, linkText, safeLinkHref, markdownLink, escapeLinkText, rewriteAroundLinks } from "./links.js";
 export { renderVocabulary, VocabularyResolver } from "./vocabulary.js";
 export { InMemoryStore } from "./memory.js";
 export { rememberFactCapability } from "./builtins.js";

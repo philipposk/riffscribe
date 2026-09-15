@@ -38,6 +38,14 @@ export interface UIOptions {
     micAvailable?: boolean;
     /** BCP-47 language, set on the widget host so assistive tech pronounces it correctly. */
     lang?: string;
+    /** False when the host turned voice off: no mic and no read-aloud button. */
+    voiceEnabled?: boolean;
+    /** Absolute origins links in replies may point at, besides same-origin paths. */
+    linkOrigins?: string[];
+    /** How a link in a reply navigates (an SPA router). Default: `location.assign`. */
+    onNavigate?: (href: string) => void | Promise<unknown>;
+    /** A link in a reply was followed on a wide screen, where the panel stays open. */
+    onLinkFollowed?: (href: string) => void;
 }
 export declare class WidgetUI {
     private title;

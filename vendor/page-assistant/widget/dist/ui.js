@@ -3,6 +3,7 @@
 import { ChatSidebar } from "./chatSidebar.js";
 import { themeCssVars } from "./themes.js";
 import { DEFAULT_STRINGS, fmt } from "./strings.js";
+import { renderReply } from "./replyLinks.js";
 /**
  * The read-aloud toggle. It used to be a telephone (☎), which reads as "call support"
  * rather than "speak this reply" — and the launcher's telephone was already removed for
@@ -54,6 +55,9 @@ const CSS = `
 .msg.user { align-self: flex-end; background: var(--pa-bg-msg-user); color: #fff; }
 .msg.assistant { align-self: flex-start; background: var(--pa-bg-msg-asst); border: 1px solid var(--pa-border); }
 .msg.system { align-self: center; font-size: 12px; opacity: .75; background: transparent; }
+.msg a { color: var(--pa-link, var(--pa-accent)); text-decoration: underline; text-underline-offset: 2px; border-radius: 3px; cursor: pointer; }
+.msg a:hover { text-decoration-thickness: 2px; }
+.msg a:focus-visible { outline: 2px solid var(--pa-link, var(--pa-accent)); outline-offset: 1px; }
 .msg.error {
   align-self: center; background: var(--pa-error-bg); color: var(--pa-error-text);
   border: 1px solid var(--pa-error-border); font-size: 13px; opacity: 1; max-width: 92%;
@@ -166,8 +170,7 @@ export class WidgetUI {
         this.opts = opts;
         // On phones the sidebar overlays the chat, so defaulting it open hides the conversation
         // behind it on first open. Default it CLOSED at ≤520px regardless of the stored setting.
-        const isNarrow = typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
-        this.sidebarOpen = isNarrow ? false : opts.sidebarOpen ?? true;
+        this.sidebarOpen = isNarrow() ? false : opts.sidebarOpen ?? true;
         this.theme = opts.theme ?? "dark";
         this.s = opts.strings ?? DEFAULT_STRINGS;
         this.host = document.createElement("div");
@@ -319,7 +322,11 @@ export class WidgetUI {
         this.sendBtn = el("button", "send");
         this.sendBtn.textContent = "➤";
         this.sendBtn.setAttribute("aria-label", this.s.send);
-        foot.append(attachBtn, this.input, this.ttsBtn, this.micBtn, this.sendBtn);
+        // `voice: false`: both buttons could only ever answer "voice is off", so leave them out.
+        if (this.opts.voiceEnabled === false)
+            foot.append(attachBtn, this.input, this.sendBtn);
+        else
+            foot.append(attachBtn, this.input, this.ttsBtn, this.micBtn, this.sendBtn);
         body.append(head, this.log, this.attachPreview, foot);
         this.panel.appendChild(body);
         this.panelWrap.appendChild(this.panel);
@@ -560,7 +567,24 @@ export class WidgetUI {
     }
     addMessage(role, text) {
         const m = el("div", `msg ${role}`);
-        m.textContent = text;
+        // Only the assistant's replies carry links; what the user typed stays as typed.
+        if (role === "assistant") {
+            renderReply(m, text, {
+                linkOrigins: this.opts.linkOrigins,
+                onNavigate: this.opts.onNavigate,
+                onFollowed: (href) => {
+                    // On a phone the panel covers the page the link just opened: get out of the way.
+                    // Reopening shows the same conversation.
+                    if (isNarrow())
+                        this.toggle(false);
+                    else
+                        this.opts.onLinkFollowed?.(href);
+                },
+            });
+        }
+        else {
+            m.textContent = text;
+        }
         this.log.appendChild(m);
         this.log.scrollTop = this.log.scrollHeight;
         return m;
@@ -757,6 +781,10 @@ export class WidgetUI {
         this.clearHighlight();
         this.host.remove();
     }
+}
+/** The phone layout: the panel fills the screen (same breakpoint as the CSS). */
+function isNarrow() {
+    return typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
 }
 function el(tag, cls) {
     const e = document.createElement(tag);

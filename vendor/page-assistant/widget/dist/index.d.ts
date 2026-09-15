@@ -35,7 +35,8 @@ export interface PageAssistantConfig {
      *
      * `"auto"` (the default) asks the server: `GET /v1/models` reports whether the model is
      * fixed server-side and which models it actually holds keys for, and the picker is
-     * hidden unless there is a real choice to make.
+     * hidden unless there is a real choice to make. A server that doesn't answer (your own
+     * proxy route, usually) gets no picker — since 0.6.0; before, it got the built-in list.
      *
      * `false` hides it outright — use it when your own server pins the model and ignores
      * what the client asks (so a visitor cannot upgrade themselves onto a costlier one).
@@ -150,10 +151,27 @@ export interface PageAssistantConfig {
     scrub?: ScrubRule[] | false;
     /** `false` turns keyword-forced routing off; a function replaces it. */
     forcedRouting?: false | ForcedRouter;
+    /**
+     * Replies may contain markdown links, `[label](href)`, from a capability's render() or the
+     * model. A link becomes clickable only when its href is a same-origin path ("/places/12",
+     * never "//host" or a scheme). List origins here to also allow absolute http(s) links to
+     * them, e.g. `["https://maps.example.com"]`. Any other link shows as its label only.
+     */
+    linkOrigins?: string[];
+    /**
+     * Called when the user clicks a link in a reply, with its href (a path, or an absolute
+     * URL on a `linkOrigins` origin). Pass your SPA router so the page changes without a
+     * reload and the conversation stays on screen: `(href) => router.push(href)`. Without it
+     * the widget calls `window.location.assign(href)`; if it throws or rejects, it does too.
+     * On phones the panel closes after the click so the page is visible.
+     */
+    onNavigate?: (href: string) => void | Promise<unknown>;
 }
 export { capability } from "./capability.js";
 export type { Capability, ScrubRule, Vocabulary, VocabularyOption } from "@page-assistant/core";
 export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
+export { markdownLink, parseLinks, linkText, safeLinkHref, escapeLinkText, type ReplySegment, type LinkPolicy } from "@page-assistant/core";
+export { renderReply, followLink, type ReplyLinkOptions } from "./replyLinks.js";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
@@ -203,6 +221,8 @@ declare class PageAssistantController {
     /** English defaults merged with whatever the host translated. */
     private strings;
     constructor(cfg: PageAssistantConfig);
+    /** Reopen the panel on the page a reply link just loaded, so the conversation carries on. */
+    private reopenAfterLink;
     dispose(): void;
     /** Full teardown for SPA/React strict-mode remounts: listeners, timers, voice, DOM. */
     destroy(): void;

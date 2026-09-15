@@ -1,4 +1,4 @@
-import { Assistant, InMemoryStore, rememberFactCapability, DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES, } from "@page-assistant/core";
+import { Assistant, InMemoryStore, rememberFactCapability, DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES, linkText, } from "@page-assistant/core";
 import { proxyProvider, ProxyError } from "./llmProxy.js";
 import { Voice, VoiceError, voiceInputAvailable } from "./voice.js";
 import { WidgetUI } from "./ui.js";
@@ -13,8 +13,13 @@ import { ChatHistoryManager } from "./chatHistoryMode.js";
 import { formatAttachmentsForPrompt } from "./fileUpload.js";
 import { trackEvent } from "./analytics.js";
 import { DEFAULT_STRINGS, resolveStrings } from "./strings.js";
+/** Set when a reply link starts a full page load on a wide screen; the next page reopens the panel. */
+const REOPEN_KEY = "page-assistant:reopen-after-link";
+const REOPEN_WINDOW_MS = 30_000;
 export { capability } from "./capability.js";
 export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
+export { markdownLink, parseLinks, linkText, safeLinkHref, escapeLinkText } from "@page-assistant/core";
+export { renderReply, followLink } from "./replyLinks.js";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
@@ -144,6 +149,7 @@ class PageAssistantController {
             authToken: cfg.authToken,
             modelPicker: cfg.showModelPicker,
             modelFixedNote: cfg.modelFixedNote,
+            voice: cfg.voice !== false,
             // Both settings surfaces get the same translations as the widget chrome; leaving
             // them English beside a translated panel reads as broken, not as untranslated.
             strings: cfg.strings,
@@ -155,7 +161,13 @@ class PageAssistantController {
             onToggle: (open) => this.handleToggle(open),
             onSettings: () => cfg.onSettings?.() ??
                 (cfg.useExtendedSettings !== false
-                    ? openAssistantSettingsModal(settingsUiOpts)
+                    ? // The extended modal keeps two stores apart. It used to get the voice key as its
+                        // `storageKey`, so theme, model and analytics were saved where nothing read them.
+                        openAssistantSettingsModal({
+                            ...settingsUiOpts,
+                            storageKey: this.assistantSettingsKey,
+                            voiceStorageKey: this.settingsKey,
+                        })
                     : openVoiceSettingsModal(settingsUiOpts)),
             onTtsToggle: (on) => {
                 this.ttsEnabled = on;
@@ -177,6 +189,20 @@ class PageAssistantController {
             // Don't render a mic that can only ever do nothing. Only relevant when voice is on
             // at all — `voice: false` keeps the existing "Voice is off for this app." message.
             micAvailable: cfg.voice === false ? undefined : voiceInputAvailable(cfg.serverUrl),
+            voiceEnabled: cfg.voice !== false,
+            linkOrigins: cfg.linkOrigins,
+            onNavigate: cfg.onNavigate,
+            // A full page load closes the panel even on a wide screen, where it should stay open.
+            onLinkFollowed: () => {
+                if (cfg.onNavigate)
+                    return;
+                try {
+                    sessionStorage.setItem(REOPEN_KEY, String(Date.now()));
+                }
+                catch {
+                    /* storage blocked: the panel just starts closed */
+                }
+            },
         });
         if (this.activeChatId && this.history.length) {
             this.ui.loadMessages(this.displayHistory());
@@ -206,6 +232,21 @@ class PageAssistantController {
         // Guard the async HEAD probe: if the widget is destroyed before it resolves, don't
         // append <link>/<meta> to a torn-down page.
         injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl, () => !this.destroyed);
+        this.reopenAfterLink();
+    }
+    /** Reopen the panel on the page a reply link just loaded, so the conversation carries on. */
+    reopenAfterLink() {
+        let at = 0;
+        try {
+            at = Number(sessionStorage.getItem(REOPEN_KEY));
+            sessionStorage.removeItem(REOPEN_KEY);
+        }
+        catch {
+            return;
+        }
+        const narrow = typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
+        if (at && Date.now() - at < REOPEN_WINDOW_MS && !narrow)
+            this.ui.toggle(true);
     }
     dispose() {
         window.removeEventListener(VOICE_SETTINGS_CHANGE_EVENT, this.onSettingsChange);
@@ -655,7 +696,8 @@ class PageAssistantController {
         }
         this.ui.setState("talking");
         try {
-            await this.voice.speak(text);
+            // Read the link labels, never the URLs.
+            await this.voice.speak(linkText(text));
         }
         catch {
             /* TTS failure must not freeze mascot */

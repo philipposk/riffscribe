@@ -5,7 +5,7 @@ import { VOICE_SETTINGS_CHANGE_EVENT, VOICE_SETTINGS_STORAGE_KEY, getVoiceSettin
 import { BROWSER_ONLY_CAPABILITIES, ELEVENLABS_VOICES, OPENAI_VOICES, fetchVoiceCapabilities, } from "./settings.js";
 import { DEFAULT_STRINGS, fmt, resolveStrings } from "./strings.js";
 import { fetchModelCatalog } from "./models.js";
-const TABS = ["General", "Voice", "Data"];
+const ALL_TABS = ["General", "Voice", "Data"];
 export function mountAssistantSettingsPanel(container, opts = {}) {
     const storageKey = opts.storageKey ?? ASSISTANT_SETTINGS_STORAGE_KEY;
     const voiceKey = opts.voiceStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
@@ -23,6 +23,8 @@ export function mountAssistantSettingsPanel(container, opts = {}) {
     shadow.appendChild(style);
     const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : undefined;
     media?.addEventListener?.("change", applyTheme);
+    // With voice off, every control on the Voice tab would change nothing.
+    const TABS = ALL_TABS.filter((t) => t !== "Voice" || opts.voice !== false);
     let activeTab = "General";
     const root = el("div", "wrap");
     shadow.appendChild(root);
