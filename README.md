@@ -96,6 +96,13 @@ lets anyone list rows, so an unshared chart cannot be reached or enumerated.
   against. The drone is set to the key of whatever you loaded. A note a few
   cents out beats audibly against a drone long before it looks wrong on a
   meter, which is why it is worth more than the needle for intonation.
+- **Choose the key** — pick the key the part should be written in and the notes
+  and the key signature move together. Transposing instruments are handled: a
+  B flat clarinet or trumpet part comes out a tone above concert pitch, an
+  E flat alto sax a major sixth above, as those players expect to read.
+- **Notes spelled for the key** — E flat in a flat key, D sharp in a sharp one.
+  Spelling is chosen on the line of fifths rather than always defaulting to
+  sharps, which is what made flat keys read wrongly before.
 - **Fix what the model misheard** — click a note on the top staff and move it by
   a semitone or an octave, or take it out. Transcription is a first draft, and
   until now the only way to correct it was to export to MuseScore and not come

@@ -5,12 +5,14 @@
  * assistant's capabilities execute against the real studio and their results are
  * never round-tripped through the model.
  *
- * Riffscribe has no accounts, so this endpoint is spend-limited rather than
- * auth-gated: a small model, a hard token ceiling, a cap on how much context a
- * caller can push, and a per-IP request budget. If it is ever opened up further,
- * put it behind a session first.
+ * The caller must be signed in, and each round spends one request from their
+ * plan's monthly allowance (riffscribe_use_assistant, enforced in the
+ * database). The spend guards stay too: a small model, a hard token ceiling, a
+ * cap on how much context a caller can push, and a per-IP request budget.
  */
 import { NextResponse } from "next/server";
+
+import { caller } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,6 +72,22 @@ export async function POST(req: Request) {
       { error: "too many assistant requests from this address — try again later" },
       { status: 429 }
     );
+  }
+
+  // Deployments without Supabase have no accounts; they keep only the IP budget.
+  if (process.env.NEXT_PUBLIC_SUPABASE_URL) {
+    const who = await caller(req);
+    if (!who) {
+      return NextResponse.json({ error: "sign in to use the assistant" }, { status: 401 });
+    }
+    const { data: allowed, error } = await who.db.rpc("riffscribe_use_assistant");
+    if (error) return NextResponse.json({ error: "could not check your plan" }, { status: 502 });
+    if (!allowed) {
+      return NextResponse.json(
+        { error: "this month's assistant requests are used up — upgrade on /pricing" },
+        { status: 429 }
+      );
+    }
   }
 
   let body: {

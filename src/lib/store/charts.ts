@@ -118,6 +118,9 @@ export async function saveChart(chart: Chart, id?: string): Promise<string> {
     .insert({ owner, title: chart.title, data: chart })
     .select("id")
     .single();
+  if (error?.message?.includes("riffscribe_song_limit")) {
+    throw new Error("Your plan's song limit is reached — delete an old song or upgrade to Pro.");
+  }
   if (error) throw error;
   return (data as { id: string }).id;
 }

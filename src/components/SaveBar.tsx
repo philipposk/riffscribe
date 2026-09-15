@@ -7,53 +7,44 @@
  * an arranger sends one link to three players and each opens the same parts
  * against their own copy of the song.
  *
+ * The full list of saved songs lives at /songs, reached from the account menu.
+ *
  * Everything here is optional. With no Supabase project configured, this
  * renders nothing and the studio works exactly as it did before.
  */
 import { useCallback, useEffect, useState } from "react";
-import { Check, Link2, Loader2, LogOut, Save, Share2, Trash2, User } from "lucide-react";
+import Link from "next/link";
+import { Check, Link2, Loader2, Save, Share2 } from "lucide-react";
 
+import SignIn from "./SignIn";
 import { savingConfigured } from "@/lib/supabase/client";
-import {
-  currentUser, deleteChart, listCharts, loadChart, onAuthChange, saveChart, setShared,
-  shareLink, signInWithEmail, signInWithGoogle, signOut, type Chart, type ChartRow,
-} from "@/lib/store/charts";
+import { listCharts, saveChart, setShared, shareLink, type Chart, type ChartRow } from "@/lib/store/charts";
+import { accountChanged, useAccount } from "@/lib/store/account";
 
 interface Props {
   /** Built lazily — no point serialising the parts on every render. */
   buildChart: () => Chart | null;
-  onOpen: (chart: Chart) => void;
   /** Set once a chart has been saved, so Save updates rather than duplicating. */
   chartId: string | null;
   onChartId: (id: string | null) => void;
 }
 
-export default function SaveBar({ buildChart, onOpen, chartId, onChartId }: Props) {
-  const [user, setUser] = useState<{ id: string; email?: string } | null>(null);
-  const [ready, setReady] = useState(false);
+export default function SaveBar({ buildChart, chartId, onChartId }: Props) {
+  const { user } = useAccount();
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<ChartRow[] | null>(null);
-  const [email, setEmail] = useState("");
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    if (!savingConfigured) return;
-    void currentUser().then((u) => { setUser(u); setReady(true); });
-    return onAuthChange(setUser);
-  }, []);
-
   const refresh = useCallback(async () => {
-    if (!user) return;
-    try {
-      setRows(await listCharts());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "could not list your charts");
-    }
+    if (!user) { setRows(null); return; }
+    try { setRows(await listCharts()); } catch { /* only used for the shared flag */ }
   }, [user]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  // Signing out drops the link to the chart that was open.
+  useEffect(() => { if (!user) onChartId(null); }, [user, onChartId]);
 
   if (!savingConfigured) return null;
 
@@ -79,35 +70,7 @@ export default function SaveBar({ buildChart, onOpen, chartId, onChartId }: Prop
           the link so they open the same chart. The audio stays on your machine either way; only the
           notes travel.
         </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <button className="btn" disabled={!ready || !!busy} onClick={() => void run("google", signInWithGoogle)}>
-            {busy === "google" ? <Loader2 className="animate-spin" size={15} /> : <User size={15} />}
-            Continue with Google
-          </button>
-          <span className="text-xs text-white/30">or</span>
-          <input
-            type="email"
-            className="min-w-0 flex-1 text-sm"
-            placeholder="you@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <button
-            className="btn"
-            disabled={!email.includes("@") || !!busy}
-            onClick={() =>
-              void run("email", async () => {
-                await signInWithEmail(email.trim());
-                setNote("Check your email — the link signs you in.");
-              })
-            }
-          >
-            {busy === "email" ? <Loader2 className="animate-spin" size={15} /> : null}
-            Email me a link
-          </button>
-        </div>
-        {note && <p className="mt-3 text-xs text-emerald-300/80">{note}</p>}
-        {error && <p className="mt-3 text-xs text-red-300">{error}</p>}
+        <SignIn />
       </section>
     );
   }
@@ -116,18 +79,7 @@ export default function SaveBar({ buildChart, onOpen, chartId, onChartId }: Prop
 
   return (
     <section className="panel no-print mb-5 p-5">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <h2 className="text-base font-medium">Your charts</h2>
-        <span className="text-xs text-white/35">{user.email}</span>
-        <button
-          className="ml-auto text-xs text-white/40 hover:text-white/80"
-          onClick={() => void run("out", async () => { await signOut(); setRows(null); onChartId(null); })}
-        >
-          <LogOut size={12} className="mr-1 inline" /> Sign out
-        </button>
-      </div>
-
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           className="btn btn-primary"
           disabled={!!busy}
@@ -137,8 +89,9 @@ export default function SaveBar({ buildChart, onOpen, chartId, onChartId }: Prop
               if (!chart) throw new Error("There is nothing to save yet — transcribe a part first.");
               const id = await saveChart(chart, chartId ?? undefined);
               onChartId(id);
-              setNote(chartId ? "Saved." : "Saved. It will be here next time.");
+              setNote(chartId ? "Saved." : "Saved. It's in My songs.");
               await refresh();
+              accountChanged();
             })
           }
         >
@@ -177,49 +130,10 @@ export default function SaveBar({ buildChart, onOpen, chartId, onChartId }: Prop
             )}
           </>
         )}
+        <Link className="ml-auto text-xs text-white/40 hover:text-white/80" href="/songs">
+          My songs →
+        </Link>
       </div>
-
-      {rows && rows.length > 0 && (
-        <ul className="divide-y divide-white/5 text-sm">
-          {rows.map((r) => (
-            <li key={r.id} className="flex items-center gap-2 py-2">
-              <button
-                className={`flex-1 truncate text-left hover:text-white ${r.id === chartId ? "text-white" : "text-white/60"}`}
-                onClick={() =>
-                  void run("open", async () => {
-                    const chart = await loadChart(r.id);
-                    if (!chart) throw new Error("that chart has gone");
-                    onOpen(chart);
-                    onChartId(r.id);
-                    setNote(`Opened "${r.title}". Load the song itself to hear it.`);
-                  })
-                }
-              >
-                {r.title}
-              </button>
-              {r.shared && <span className="text-[10px] uppercase tracking-wide text-emerald-300/70">shared</span>}
-              <span className="text-xs text-white/25">{new Date(r.updated_at).toLocaleDateString()}</span>
-              <button
-                className="text-white/25 hover:text-red-300"
-                aria-label={`Delete ${r.title}`}
-                onClick={() =>
-                  void run("delete", async () => {
-                    await deleteChart(r.id);
-                    if (chartId === r.id) onChartId(null);
-                    await refresh();
-                  })
-                }
-              >
-                <Trash2 size={14} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {rows && rows.length === 0 && (
-        <p className="text-xs text-white/35">Nothing saved yet.</p>
-      )}
       {note && <p className="mt-3 text-xs text-emerald-300/80">{note}</p>}
       {error && <p className="mt-3 text-xs text-red-300">{error}</p>}
     </section>

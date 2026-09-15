@@ -16,6 +16,8 @@ import { INSTRUMENTS } from "@/lib/types";
 
 /** Where the studio looks for a chart handed over from this page. */
 export const HANDOFF_KEY = "riffscribe:chart";
+/** Set alongside it only when the chart is the reader's own, so Save updates it in place. */
+export const HANDOFF_ID_KEY = "riffscribe:chart-id";
 
 export default function SharedChart({ id }: { id: string }) {
   const router = useRouter();

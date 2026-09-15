@@ -54,6 +54,15 @@ export interface Instrument {
   gm: number;
   /** Written pitch = sounding pitch + this (guitar/bass are transposing). */
   transposeOctaves: number;
+  /**
+   * Semitones a transposing instrument is written above what it sounds.
+   *
+   * A B flat clarinet reading a written C sounds a B flat, so its part is
+   * written a tone higher than concert pitch. Handing such a player a
+   * concert-pitch part means everything they play comes out a tone flat, which
+   * is why this is not cosmetic.
+   */
+  writtenSemitones?: number;
   /** Sensible MIDI range for the transcriber to clamp to. */
   range: [number, number];
 }
@@ -122,19 +131,19 @@ export const INSTRUMENTS: Record<InstrumentId, Instrument> = {
     range: [59, 96],
   },
   clarinet: {
-    id: "clarinet", label: "Clarinet", clef: "treble", transposeOctaves: 0, timbre: "reed", gm: 71,
+    id: "clarinet", label: "Clarinet", clef: "treble", transposeOctaves: 0, writtenSemitones: 2, timbre: "reed", gm: 71,
     range: [50, 91],
   },
   "alto-sax": {
-    id: "alto-sax", label: "Alto sax", clef: "treble", transposeOctaves: 0, timbre: "reed", gm: 65,
+    id: "alto-sax", label: "Alto sax", clef: "treble", transposeOctaves: 0, writtenSemitones: 9, timbre: "reed", gm: 65,
     range: [49, 84],
   },
   "tenor-sax": {
-    id: "tenor-sax", label: "Tenor sax", clef: "treble", transposeOctaves: 0, timbre: "reed", gm: 66,
+    id: "tenor-sax", label: "Tenor sax", clef: "treble", transposeOctaves: 0, writtenSemitones: 14, timbre: "reed", gm: 66,
     range: [44, 79],
   },
   trumpet: {
-    id: "trumpet", label: "Trumpet", clef: "treble", transposeOctaves: 0, timbre: "brass", gm: 56,
+    id: "trumpet", label: "Trumpet", clef: "treble", transposeOctaves: 0, writtenSemitones: 2, timbre: "brass", gm: 56,
     range: [52, 84],
   },
   trombone: {
@@ -188,6 +197,8 @@ export interface Part {
   source: string;
   instrument: InstrumentId;
   notes: NoteEvent[];
+  /** Tonic of the detected key, 0-11. Needed to transpose into another key. */
+  tonicPc?: number;
   /** Key signature position on the circle of fifths, -7..7. */
   fifths: number;
   keyName: string;
