@@ -27,6 +27,13 @@ export interface Chart {
   parts: Part[];
   sections: { name: string; from: number; to: number }[];
   loop: [number, number] | null;
+  /**
+   * Which recording this was written from: its content hash (see cache.ts)
+   * and file name. The audio never travels, but on the machine that has it,
+   * opening the chart brings the song and its stems straight back.
+   */
+  songKey?: string;
+  fileName?: string;
 }
 
 export interface ChartRow {

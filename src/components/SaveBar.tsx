@@ -30,7 +30,7 @@ interface Props {
 }
 
 export default function SaveBar({ buildChart, chartId, onChartId }: Props) {
-  const { user } = useAccount();
+  const { user, ready } = useAccount();
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,8 +43,10 @@ export default function SaveBar({ buildChart, chartId, onChartId }: Props) {
   }, [user]);
 
   useEffect(() => { void refresh(); }, [refresh]);
-  // Signing out drops the link to the chart that was open.
-  useEffect(() => { if (!user) onChartId(null); }, [user, onChartId]);
+  // Signing out drops the link to the chart that was open. Only once the
+  // session is known — this bar remounts when a song loads, and must not
+  // forget the open chart in the moment before the session is read.
+  useEffect(() => { if (ready && !user) onChartId(null); }, [ready, user, onChartId]);
 
   if (!savingConfigured) return null;
 

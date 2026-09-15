@@ -21,7 +21,7 @@ import Tuner from "./Tuner";
 import { HANDOFF_ID_KEY, HANDOFF_KEY } from "./SharedChart";
 import AccountMenu from "./AccountMenu";
 import { useAccount } from "@/lib/store/account";
-import { lastSong, rememberSong } from "@/lib/store/lastSong";
+import { findSong, lastSong, rememberSong } from "@/lib/store/lastSong";
 import { savingConfigured } from "@/lib/supabase/client";
 import ScoreView from "./ScoreView";
 import Transport from "./Transport";
@@ -115,6 +115,9 @@ export default function Studio() {
   const [helperUp, setHelperUp] = useState<boolean | null>(null);
   /** Content hash of the loaded file — the cache key for its stems and parts. */
   const [key, setKey] = useState<string | null>(null);
+  /** A saved chart was opened but this device lacks its recording: the file to ask for. */
+  const [wantedSong, setWantedSong] = useState<string | null>(null);
+  const handedOff = useRef(false);
   const [restored, setRestored] = useState<string | null>(null);
 
   /** Bars of clicks before playback and before a take. 0 turns it off. */
@@ -182,7 +185,6 @@ export default function Studio() {
       const buf = await fileToAudioBuffer(f);
       const stereo = await toStereo(buf, DEMUCS_SAMPLE_RATE);
       setFile(f);
-      if (!restoring) void rememberSong(f);
       setAudio({ left: stereo.left, right: stereo.right });
       setWavePeaks(peaksOf(toMono(stereo.left, stereo.right), 2200));
       setStems(null);
@@ -196,6 +198,8 @@ export default function Studio() {
       // is worth a moment's hashing to find out.
       const id = await songKey(f);
       setKey(id);
+      setWantedSong(null);
+      if (!restoring) void rememberSong(id, f);
       setBusy({ label: "Looking for work you have already done…" });
       const cached = await getStems(id, DEMUCS_SAMPLE_RATE);
       if (cached) {
@@ -223,7 +227,8 @@ export default function Studio() {
   /** Coming back to the studio: reopen the song that was loaded before. */
   useEffect(() => {
     let cancelled = false;
-    void lastSong().then((f) => { if (f && !cancelled) void loadFile(f, true); });
+    // A chart handed over from My songs brings its own recording — don't race it.
+    void lastSong().then((f) => { if (f && !cancelled && !handedOff.current) void loadFile(f, true); });
     return () => { cancelled = true; };
   }, [loadFile]);
 
@@ -301,8 +306,10 @@ export default function Studio() {
       parts,
       sections,
       loop,
+      songKey: key ?? undefined,
+      fileName: file?.name,
     };
-  }, [parts, settings, sections, loop, file]);
+  }, [parts, settings, sections, loop, file, key]);
 
   const openChart = useCallback((chart: Chart) => {
     setSettings(chart.settings);
@@ -310,11 +317,20 @@ export default function Studio() {
     setSections(chart.sections ?? []);
     setLoop(chart.loop ?? null);
     setReport(null);
-    setLog(
-      `Opened "${chart.title}" — ${chart.parts.length} ${chart.parts.length === 1 ? "part" : "parts"}. ` +
-        "Load the song itself to play along."
-    );
-  }, []);
+    const title = `"${chart.title}" — ${chart.parts.length} ${chart.parts.length === 1 ? "part" : "parts"}`;
+    // The recording stayed on the machine that made the chart. If that is this
+    // one, bring it back — stems and all — rather than ask for the file again.
+    void (async () => {
+      const f = await findSong(chart.songKey, chart.title);
+      if (f) {
+        await loadFile(f, true);
+        setLog(`Opened ${title}, with the song and its stems from this device.`);
+      } else {
+        setWantedSong(chart.fileName ?? chart.title);
+        setLog(`Opened ${title}.`);
+      }
+    })();
+  }, [loadFile]);
 
   /** A chart arriving from a shared link, handed over through session storage. */
   useEffect(() => {
@@ -329,6 +345,7 @@ export default function Studio() {
       return;
     }
     if (!raw) return;
+    handedOff.current = true;
     try {
       openChart(JSON.parse(raw) as Chart);
       if (id) setChartId(id);
@@ -1284,6 +1301,12 @@ export default function Studio() {
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadFile(f); }}
           />
         </label>
+        {wantedSong && !audio && (
+          <p className="mt-4 rounded-lg border border-[var(--color-accent)]/40 bg-[#1a1608] px-4 py-3 text-sm">
+            Your notes are open. Drop <b>{wantedSong}</b> above to hear it with its stems — the recording
+            isn&rsquo;t on this device, and it never leaves the one it was made on.
+          </p>
+        )}
         {helperUp && (
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <input
@@ -1307,15 +1330,13 @@ export default function Studio() {
       </section>
 
       {/*
-        Outside the "a song is loaded" block on purpose: someone coming back to
-        pick up a chart, or arriving from a shared link, has no audio yet and
-        still needs to reach their own work.
+        With a song loaded, saving sits under the notes it saves (after step 4).
+        Without one — a chart opened on a device that lacks the recording — it
+        stays up here so the work is still reachable.
       */}
-      <SaveBar
-        buildChart={buildChart}
-        chartId={chartId}
-        onChartId={setChartId}
-      />
+      {!audio && (
+        <SaveBar buildChart={buildChart} chartId={chartId} onChartId={setChartId} />
+      )}
 
       {/* Tuning up comes before everything, so this does not wait for a song. */}
       <Tuner suggestedTonic={droneTonic} />
@@ -1769,6 +1790,8 @@ export default function Studio() {
               </p>
             )}
           </section>
+
+          <SaveBar buildChart={buildChart} chartId={chartId} onChartId={setChartId} />
 
           {/* 5 — record */}
           <section className="panel no-print mb-5 p-5">
