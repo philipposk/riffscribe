@@ -28,6 +28,10 @@ loop a section, adjust the mixer, and export files. It cannot load a song for
 you — pick the file yourself, because the browser only gives a page access to a
 file you chose.
 
+It can also list the songs you have saved, or search them by title. Each song in
+its answer is a link that opens it in the studio, and when there are more than
+it names, "…and N more" opens My songs searched for the same words.
+
 ## Instruments
 
 Guitar (6 and 7 string), bass (4 and 5 string), ukulele, mandolin, banjo, piano,

@@ -32,12 +32,23 @@ export function loadLang(): AssistantLang {
   return "auto";
 }
 
+const CHANGED = "riffscribe:assistant-lang-changed";
+
 export function saveLang(v: AssistantLang): void {
   try {
     localStorage.setItem(KEY, v);
   } catch {
     /* private mode — the choice just will not persist */
   }
+  // The picker is in the studio; the assistant is mounted above the pages.
+  window.dispatchEvent(new CustomEvent<AssistantLang>(CHANGED, { detail: v }));
+}
+
+/** Hear about a new choice as it is made. Returns the unsubscribe. */
+export function onLangChange(fn: (v: AssistantLang) => void): () => void {
+  const handler = (e: Event) => fn((e as CustomEvent<AssistantLang>).detail);
+  window.addEventListener(CHANGED, handler);
+  return () => window.removeEventListener(CHANGED, handler);
 }
 
 /** BCP-47 for the widget. `undefined` lets it work the language out itself. */

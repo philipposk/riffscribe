@@ -1,6 +1,7 @@
 "use client";
 /**
- * App-wide wiring: the auth cookie the server routes read, and analytics.
+ * App-wide wiring: the auth cookie the server routes read, analytics, and the
+ * page assistant (mounted here so it outlives a change of page — AssistantHost).
  *
  * Analytics is PostHog with the privacy switches on — no session recording
  * (it would capture the score and the song title), no autocapture, profiles
@@ -11,6 +12,7 @@ import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import posthog from "posthog-js";
 
+import AssistantHost from "./AssistantHost";
 import { syncAuthCookie } from "@/lib/store/account";
 import { onAuthChange } from "@/lib/store/charts";
 
@@ -39,5 +41,10 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     if (started && pathname) posthog.capture("$pageview", { $current_url: location.origin + pathname });
   }, [pathname]);
 
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      <AssistantHost />
+    </>
+  );
 }

@@ -14,7 +14,9 @@ import {
   Upload, Users, Wand2,
 } from "lucide-react";
 
-import Assistant, { type AssistantActions } from "./Assistant";
+import { useSearchParams } from "next/navigation";
+import type { AssistantActions } from "./Assistant";
+import { lendStudio } from "@/lib/assistantBridge";
 import Mixer, { type MixTrack } from "./Mixer";
 import SaveBar from "./SaveBar";
 import Tuner from "./Tuner";
@@ -22,7 +24,6 @@ import { HANDOFF_ID_KEY, HANDOFF_KEY } from "./SharedChart";
 import AccountMenu from "./AccountMenu";
 import { useAccount } from "@/lib/store/account";
 import { findSong, lastSong, rememberSong } from "@/lib/store/lastSong";
-import { savingConfigured } from "@/lib/supabase/client";
 import ScoreView from "./ScoreView";
 import Transport from "./Transport";
 import Waveform from "./Waveform";
@@ -51,7 +52,7 @@ import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcribe/compare";
 import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
 import { keyChoices, keyName, shortestShift } from "@/lib/transcribe/spelling";
-import { CHART_VERSION, type Chart } from "@/lib/store/charts";
+import { CHART_VERSION, loadChart, type Chart } from "@/lib/store/charts";
 import { LANG_OPTIONS, loadLang, saveLang, type AssistantLang } from "@/lib/assistantLang";
 import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
@@ -150,7 +151,7 @@ export default function Studio() {
 
   /** The saved chart this session is editing, once there is one. */
   const [chartId, setChartId] = useState<string | null>(null);
-  // The assistant spends from the signed-in person's plan, so it waits for a sign-in.
+  // Signed in, there are saved songs the assistant can point to.
   const { user: signedIn } = useAccount();
 
   /** What the assistant listens and speaks in. Remembered per device. */
@@ -326,6 +327,16 @@ export default function Studio() {
         await loadFile(f, true);
         setLog(`Opened ${title}, with the song and its stems from this device.`);
       } else {
+        // Whatever is loaded belongs to another song (a saved song opened from
+        // a link while the studio was in use), so it must not play under these notes.
+        void engineRef.current?.pause();
+        setAudio(null);
+        setFile(null);
+        setWavePeaks(null);
+        setStems(null);
+        setStemMode("none");
+        setOverdub(null);
+        setKey(null);
         setWantedSong(chart.fileName ?? chart.title);
         setLog(`Opened ${title}.`);
       }
@@ -353,6 +364,36 @@ export default function Studio() {
       /* a chart we cannot read is not worth an error message */
     }
   }, [openChart]);
+
+  /**
+   * A saved song opened from its address, /studio?song=<id> — where the
+   * assistant links each song it lists. Also works with the studio already
+   * open: the address changes, the page stays.
+   */
+  const songParam = useSearchParams().get("song");
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  useEffect(() => {
+    if (!songParam) return;
+    handedOff.current = true; // set before lastSong() resolves, so it does not load over this
+    let cancelled = false;
+    void (async () => {
+      try {
+        const job = busyRef.current;
+        if (job) throw new Error(`Wait for “${job.label}” to finish, then open the song again.`);
+        const chart = await loadChart(songParam);
+        if (cancelled) return;
+        if (!chart) throw new Error("That song has gone — it may have been deleted.");
+        openChart(chart);
+        setChartId(songParam);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "could not open that song");
+      }
+      // Consumed, like the handoff above: a reload must not reopen it over whatever came next.
+      if (!cancelled) window.history.replaceState(null, "", "/studio");
+    })();
+    return () => { cancelled = true; };
+  }, [songParam, openChart]);
 
   /* --------------------------------------------------------------- engine  */
 
@@ -1065,7 +1106,10 @@ export default function Studio() {
   // assistant component keeps a ref to the latest copy.
   const assistantActions: AssistantActions = {
     describe: () => {
-      if (!audio) return "No song is loaded yet — drop a file into step 1 first.";
+      if (!audio) {
+        return "No song is loaded yet — drop a file into step 1 first." +
+          (signedIn ? " Or open one of [your saved songs](/songs)." : "");
+      }
       const lines: string[] = [
         `${file?.name ?? "A song"}, ${fmtTime(transport.duration)} long, at ${settings.bpm} BPM.`,
         stems
@@ -1218,6 +1262,11 @@ export default function Studio() {
       busy: busy?.label ?? null,
     }),
   };
+
+  // The assistant is mounted above the pages; it borrows these while the studio is open.
+  const actionsRef = useRef(assistantActions);
+  actionsRef.current = assistantActions;
+  useEffect(() => lendStudio(() => actionsRef.current), []);
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
@@ -1975,8 +2024,6 @@ export default function Studio() {
         </div>
       )}
       {audio && <div className="no-print h-16" aria-hidden />}
-
-      {(signedIn || !savingConfigured) && <Assistant actions={assistantActions} lang={assistantLang} />}
 
       <footer className="no-print pb-10 pt-4 text-center text-xs text-white/30">
         Basic Pitch (Spotify, Apache-2.0) · Demucs (Meta, MIT) · alphaTab (MPL-2.0) · Signalsmith Stretch (MIT)
