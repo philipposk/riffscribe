@@ -1,4 +1,4 @@
-import { Assistant, InMemoryStore, rememberFactCapability, } from "@page-assistant/core";
+import { Assistant, InMemoryStore, rememberFactCapability, DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES, } from "@page-assistant/core";
 import { proxyProvider, ProxyError } from "./llmProxy.js";
 import { Voice, VoiceError, voiceInputAvailable } from "./voice.js";
 import { WidgetUI } from "./ui.js";
@@ -9,23 +9,28 @@ import { VOICE_SETTINGS_CHANGE_EVENT, VOICE_SETTINGS_STORAGE_KEY, getVoiceSettin
 import { openVoiceSettingsModal, mountVoiceSettingsPanel, closeVoiceSettingsModal } from "./settings-ui.js";
 import { ASSISTANT_SETTINGS_CHANGE_EVENT, ASSISTANT_SETTINGS_STORAGE_KEY, getAssistantSettings, } from "./assistant-settings.js";
 import { openAssistantSettingsModal, closeAssistantSettingsModal, mountAssistantSettingsPanel, } from "./assistant-settings-ui.js";
-import { ChatHistoryStore } from "./chatHistory.js";
+import { ChatHistoryManager } from "./chatHistoryMode.js";
 import { formatAttachmentsForPrompt } from "./fileUpload.js";
 import { trackEvent } from "./analytics.js";
 import { DEFAULT_STRINGS, resolveStrings } from "./strings.js";
 export { capability } from "./capability.js";
+export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
-export { ChatHistoryStore, CHAT_HISTORY_STORAGE_KEY } from "./chatHistory.js";
+export { ChatHistoryStore, CHAT_HISTORY_STORAGE_KEY, CHAT_HISTORY_CHANGE_EVENT, } from "./chatHistory.js";
+export { ChatHistoryManager, resolveChatHistoryMode, getStoredChatHistoryMode, setStoredChatHistoryMode, deviceStorageKey, CHAT_HISTORY_MODES, CHAT_HISTORY_MODE_STORAGE_KEY, } from "./chatHistoryMode.js";
+export { AccountHistorySync, toAccountChat, fromAccountChat, } from "./chatHistoryAccount.js";
+export { supabaseChatHistoryAdapter, } from "./adapters/supabase.js";
 export { getAssistantSettings, setAssistantSettings, DEFAULT_MODELS, ASSISTANT_SETTINGS_STORAGE_KEY, } from "./assistant-settings.js";
 export { getVoiceSettings, setVoiceSettings, voiceOptionsFromSettings, ELEVENLABS_VOICES, OPENAI_VOICES, VOICE_SETTINGS_STORAGE_KEY, VOICE_SETTINGS_CHANGE_EVENT, } from "./settings.js";
 export { mountVoiceSettingsPanel, openVoiceSettingsModal, closeVoiceSettingsModal, } from "./settings-ui.js";
-export { mountAssistantSettingsPanel, openAssistantSettingsModal, closeAssistantSettingsModal, } from "./assistant-settings-ui.js";
+export { mountAssistantSettingsPanel, openAssistantSettingsModal, closeAssistantSettingsModal, historyMoveOffers, } from "./assistant-settings-ui.js";
 export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analytics.js";
 export { readFileAttachment, formatAttachmentsForPrompt } from "./fileUpload.js";
 export { DEFAULT_STRINGS, resolveStrings } from "./strings.js";
 export { setVoiceDefaults, getVoiceDefaults } from "./settings.js";
+export { fetchModelCatalog } from "./models.js";
 export { resolveVoiceLang, voiceInputAvailable } from "./voice.js";
 class PageAssistantController {
     cfg;
@@ -34,6 +39,7 @@ class PageAssistantController {
     voice;
     history = [];
     chatStore;
+    historyMgr;
     activeChatId = null;
     scanned = false;
     listening = false;
@@ -62,7 +68,18 @@ class PageAssistantController {
         const stored = getVoiceSettings(this.settingsKey);
         const useStored = cfg.useVoiceSettings !== false;
         this.ttsEnabled = cfg.autoSpeak ?? (useStored ? stored.autoSpeak : false);
-        this.chatStore = new ChatHistoryStore(cfg.chatHistoryStorageKey);
+        // Owns the store and where it keeps chats. Device mode (the default) is decided here,
+        // synchronously, exactly as before — unless the adapter names users, in which case the
+        // user's own device chats, like account chats, load in start() below.
+        this.historyMgr = new ChatHistoryManager({
+            storageKey: cfg.chatHistoryStorageKey,
+            defaultMode: cfg.chatHistoryMode,
+            fallbackMode: cfg.chatHistoryFallbackMode,
+            disabled: cfg.disableChatHistory,
+            adapter: cfg.chatHistoryAdapter,
+            onError: cfg.onChatHistoryError,
+        });
+        this.chatStore = this.historyMgr.store;
         if (!cfg.disableChatHistory) {
             const active = this.chatStore.getActive();
             if (active) {
@@ -87,9 +104,13 @@ class PageAssistantController {
             llm: proxyProvider(cfg.serverUrl, cfg.authToken, () => getAssistantSettings(this.assistantSettingsKey).model, cfg.requestTimeoutMs),
             memory,
             appName: cfg.appName,
+            assistantName: cfg.assistantName,
             persona: cfg.persona,
             knowledge: cfg.knowledge,
             suggestions: cfg.suggestions,
+            vocabulary: cfg.vocabulary,
+            scrub: cfg.scrub ?? [...DEFAULT_SCRUB_RULES, ...PLAIN_TEXT_SCRUB_RULES],
+            forcedRouting: cfg.forcedRouting,
         });
         if (cfg.voice !== false) {
             let vo;
@@ -109,14 +130,18 @@ class PageAssistantController {
         const settingsUiOpts = {
             storageKey: this.settingsKey,
             settingsPageUrl: cfg.settingsPageUrl,
-            title: cfg.appName ? `${cfg.appName} assistant` : "Page assistant",
+            title: cfg.assistantName ?? (cfg.appName ? `${cfg.appName} assistant` : "Page assistant"),
             chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
+            history: cfg.disableChatHistory ? undefined : this.historyMgr,
             serverUrl: cfg.serverUrl,
             authToken: cfg.authToken,
-            showModel: cfg.showModelPicker,
+            modelPicker: cfg.showModelPicker,
             modelFixedNote: cfg.modelFixedNote,
+            // Both settings surfaces get the same translations as the widget chrome; leaving
+            // them English beside a translated panel reads as broken, not as untranslated.
+            strings: cfg.strings,
         };
-        this.ui = new WidgetUI(cfg.appName ?? "Assistant", {
+        this.ui = new WidgetUI(cfg.assistantName ?? cfg.appName ?? "Assistant", {
             onSend: (t, attachments) => this.handleUser(t, attachments),
             onMic: () => this.toggleMic(),
             onConfirm: (ok) => this.handleConfirm(ok),
@@ -133,6 +158,7 @@ class PageAssistantController {
             onExportChat: () => this.exportCurrentChat(),
             onDeleteChat: (id) => this.deleteChat(id),
             onArchiveChat: (id) => this.archiveChat(id),
+            onForkChat: (id) => void this.forkChat(id),
         }, {
             launcherIcon: cfg.launcherIcon,
             chatStore: cfg.disableChatHistory ? undefined : this.chatStore,
@@ -150,6 +176,9 @@ class PageAssistantController {
             this.ui.setActiveChat(this.activeChatId);
             this.greetedChatId = this.activeChatId; // don't greet over a restored conversation
         }
+        // A mode switch, a sign-out or "delete all" swaps the store's contents under the UI.
+        this.historyMgr.onReplaced(() => this.reanchorChat());
+        this.historyMgr.start().catch((e) => cfg.onChatHistoryError?.(e));
         this.ui.setTtsEnabled(this.ttsEnabled);
         this.onSettingsChange = () => {
             if (cfg.useVoiceSettings === false || cfg.voice === false)
@@ -179,6 +208,7 @@ class PageAssistantController {
     destroy() {
         this.destroyed = true;
         this.dispose();
+        this.historyMgr.dispose(); // sends any waiting account writes, then stops
         this.voice?.cancelListen(); // stop a hot mic (in-flight listen) before dropping the ref
         this.voice?.stop();
         this.voice = undefined;
@@ -277,7 +307,73 @@ class PageAssistantController {
             }
         }
     }
-    switchChat(id) {
+    /** Re-check who is signed in. Call it after your app signs a user in or out. */
+    refreshChatHistory() {
+        return this.historyMgr.refresh();
+    }
+    /** An account chat listed without its messages is fetched first. False if it can't be. */
+    async loadChat(id) {
+        if (!this.historyMgr.needsLoad(id))
+            return !!this.chatStore.get(id);
+        try {
+            if (await this.historyMgr.ensureLoaded(id))
+                return true;
+        }
+        catch (e) {
+            this.cfg.onChatHistoryError?.(e);
+        }
+        this.ui.toast(this.strings.historyChatUnavailable);
+        return false;
+    }
+    async forkChat(id) {
+        if (!(await this.loadChat(id)))
+            return;
+        const forked = this.chatStore.fork(id);
+        if (forked)
+            await this.switchChat(forked.id);
+    }
+    /**
+     * The store's contents were swapped. Keep the open conversation if the new contents still
+     * have it (carried into "off", or moved into the account); otherwise open what the new
+     * mode has, or a fresh chat.
+     */
+    reanchorChat() {
+        if (this.cfg.disableChatHistory || this.destroyed)
+            return;
+        const kept = this.activeChatId ? this.chatStore.get(this.activeChatId) : undefined;
+        if (kept) {
+            this.chatStore.setActive(kept.id);
+            if (kept.messages.length !== this.history.length) {
+                this.history = [...kept.messages];
+                this.ui.clearLog();
+                this.ui.loadMessages(this.displayHistory());
+            }
+            this.ui.setActiveChat(kept.id);
+            return;
+        }
+        this.clearPending();
+        const next = this.chatStore.getActive();
+        if (next) {
+            this.activeChatId = next.id;
+            this.history = [...next.messages];
+        }
+        else {
+            const created = this.chatStore.create({ model: getAssistantSettings(this.assistantSettingsKey).model });
+            this.activeChatId = created.id;
+            this.history = [];
+        }
+        this.ui.clearLog();
+        if (this.history.length) {
+            this.ui.loadMessages(this.displayHistory());
+            this.greetedChatId = this.activeChatId;
+        }
+        this.ui.setActiveChat(this.activeChatId);
+        if (this.scanned)
+            this.showGreeting();
+    }
+    async switchChat(id) {
+        if (!(await this.loadChat(id)))
+            return;
         const session = this.chatStore.get(id);
         if (!session)
             return;
@@ -341,7 +437,7 @@ class PageAssistantController {
             try {
                 const url = new URL(this.cfg.knowledgeUrl, location.href);
                 if (url.origin !== location.origin) {
-                    this.ui.addMessage("system", "Skipped knowledge fetch: cross-origin URLs are not allowed.");
+                    this.ui.addMessage("system", this.strings.knowledgeCrossOriginSkipped);
                 }
                 else {
                     const res = await fetch(url.href);
@@ -383,7 +479,7 @@ class PageAssistantController {
         if (this.pending) {
             // A new message supersedes a stale pending confirmation — clear its live buttons.
             this.clearPending();
-            this.ui.addMessage("system", "Previous pending action cancelled.");
+            this.ui.addMessage("system", this.strings.pendingActionCancelled);
         }
         const message = formatAttachmentsForPrompt(text, attachments ?? []);
         if (!message.trim())
@@ -476,7 +572,7 @@ class PageAssistantController {
         this.ui.clearHighlight();
         if (!approved || !this.pending) {
             this.pending = undefined;
-            this.ui.addMessage("system", "Cancelled.");
+            this.ui.addMessage("system", this.strings.actionCancelled);
             return;
         }
         const pending = this.pending;
@@ -585,6 +681,13 @@ export const PageAssistant = {
     },
     configure(patch) {
         instance?.updateConfig(patch);
+    },
+    /**
+     * Re-check who is signed in and apply the chat-history mode that follows. Call it after
+     * your app signs a user in or out; signing out drops account chats from the page.
+     */
+    refreshChatHistory() {
+        return instance?.refreshChatHistory() ?? Promise.resolve();
     },
     /** Tear down the widget entirely (listeners, timers, shadow host, injected nodes). */
     destroy() {

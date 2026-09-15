@@ -1,8 +1,10 @@
-import { type Capability } from "@page-assistant/core";
+import { type Capability, type ForcedRouter, type ScrubRule, type VocabularyOption } from "@page-assistant/core";
 import { type VoiceOptions } from "./voice.js";
 import { type VoiceSettings } from "./settings.js";
 import { openVoiceSettingsModal, mountVoiceSettingsPanel, closeVoiceSettingsModal } from "./settings-ui.js";
 import { openAssistantSettingsModal, closeAssistantSettingsModal, mountAssistantSettingsPanel } from "./assistant-settings-ui.js";
+import { type ChatHistoryMode } from "./chatHistoryMode.js";
+import type { ChatHistoryAdapter } from "./chatHistoryAccount.js";
 import { type WidgetStrings } from "./strings.js";
 export interface PageAssistantConfig {
     serverUrl: string;
@@ -29,10 +31,19 @@ export interface PageAssistantConfig {
     /** Use extended settings modal (model, theme, chat export). Default true. */
     useExtendedSettings?: boolean;
     /**
-     * Show the model picker in settings. Set false where the server fixes the
-     * model — a dropdown that silently does nothing is worse than none.
+     * Whether the user may choose the LLM model in the settings panel.
+     *
+     * `"auto"` (the default) asks the server: `GET /v1/models` reports whether the model is
+     * fixed server-side and which models it actually holds keys for, and the picker is
+     * hidden unless there is a real choice to make.
+     *
+     * `false` hides it outright — use it when your own server pins the model and ignores
+     * what the client asks (so a visitor cannot upgrade themselves onto a costlier one).
+     * A dropdown that silently changes nothing is worse than none.
+     *
+     * `true` always shows it. Was `boolean` before 0.5.1; `true`/`false` mean what they did.
      */
-    showModelPicker?: boolean;
+    showModelPicker?: boolean | "auto";
     /** What to say instead, when the picker is hidden. */
     modelFixedNote?: string;
     onSettings?: () => void;
@@ -43,8 +54,33 @@ export interface PageAssistantConfig {
     useVoiceSettings?: boolean;
     authToken?: string;
     memory?: "persistent" | "session";
-    /** Disable chat history sidebar. Default false (enabled). */
+    /**
+     * Turn chat history off entirely: no sidebar, nothing saved, and no choice in settings.
+     * Wins over `chatHistoryMode`. Default false.
+     */
     disableChatHistory?: boolean;
+    /**
+     * Where chats are kept until the user picks otherwise in settings (their pick is
+     * remembered in this browser, per signed-in user):
+     * - `"device"` (default): this browser only — what every earlier version did;
+     * - `"account"`: the user's account, through `chatHistoryAdapter`, so chats follow them
+     *   to other devices;
+     * - `"off"`: this page only; nothing is saved.
+     */
+    chatHistoryMode?: ChatHistoryMode;
+    /**
+     * Your backend for "account" mode: list, get, save, delete and delete-all for the signed-in
+     * user. The widget never talks to a database itself. `supabaseChatHistoryAdapter()` is a
+     * reference implementation.
+     */
+    chatHistoryAdapter?: ChatHistoryAdapter;
+    /**
+     * Used while "account" is chosen but can't be used — no adapter, or nobody signed in.
+     * Default "device". Settings says why.
+     */
+    chatHistoryFallbackMode?: "device" | "off";
+    /** Failed account loads and saves, for your logs. The user sees a short note in settings. */
+    onChatHistoryError?: (error: unknown) => void;
     /**
      * Enable image attachments. OFF by default: core has no vision plumbing, so accepting
      * images without a vision-capable backend would be a placebo (the model never sees them).
@@ -85,21 +121,45 @@ export interface PageAssistantConfig {
      * this keeps the settings UI and its change listener working.
      */
     voiceDefaults?: Partial<VoiceSettings>;
+    /**
+     * The assistant's own name ("Ada"). It introduces itself by it, answers "who are you"
+     * with it, and it replaces `appName` as the panel title. `appName` stays the product.
+     */
+    assistantName?: string;
+    /**
+     * The real values in the user's workspace (tags, statuses, projects) and what their
+     * words mean here. Fixed, or `{ load, ttlMs, timeoutMs }`; see `AssistantOptions.vocabulary`.
+     */
+    vocabulary?: VocabularyOption;
+    /**
+     * Rewrites applied to every reply. Default: `DEFAULT_SCRUB_RULES` plus
+     * `PLAIN_TEXT_SCRUB_RULES` — replies render as plain text here, so markdown `**` would
+     * show literally. A list replaces the default (spread both in to extend it); `false`
+     * turns scrubbing off.
+     */
+    scrub?: ScrubRule[] | false;
+    /** `false` turns keyword-forced routing off; a function replaces it. */
+    forcedRouting?: false | ForcedRouter;
 }
 export { capability } from "./capability.js";
-export type { Capability } from "@page-assistant/core";
+export type { Capability, ScrubRule, Vocabulary, VocabularyOption } from "@page-assistant/core";
+export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
-export { ChatHistoryStore, CHAT_HISTORY_STORAGE_KEY } from "./chatHistory.js";
+export { ChatHistoryStore, CHAT_HISTORY_STORAGE_KEY, CHAT_HISTORY_CHANGE_EVENT, type ChatSession, type ChatGroup, type ChatStoreChange, } from "./chatHistory.js";
+export { ChatHistoryManager, resolveChatHistoryMode, getStoredChatHistoryMode, setStoredChatHistoryMode, deviceStorageKey, CHAT_HISTORY_MODES, CHAT_HISTORY_MODE_STORAGE_KEY, type ChatHistoryMode, type DeviceChatSource, type ChatHistoryState, type ChatHistoryControls, type AccountUnavailableReason, } from "./chatHistoryMode.js";
+export { AccountHistorySync, toAccountChat, fromAccountChat, type AccountChat, type AccountChatSummary, type ChatHistoryAdapter, } from "./chatHistoryAccount.js";
+export { supabaseChatHistoryAdapter, type SupabaseChatHistoryOptions, type SupabaseClientLike, } from "./adapters/supabase.js";
 export { getAssistantSettings, setAssistantSettings, DEFAULT_MODELS, ASSISTANT_SETTINGS_STORAGE_KEY, type AssistantSettings, type ThemeMode, } from "./assistant-settings.js";
 export { getVoiceSettings, setVoiceSettings, voiceOptionsFromSettings, ELEVENLABS_VOICES, OPENAI_VOICES, VOICE_SETTINGS_STORAGE_KEY, VOICE_SETTINGS_CHANGE_EVENT, type VoiceSettings, type TtsMode, type TtsProvider, type SttMode, } from "./settings.js";
 export { mountVoiceSettingsPanel, openVoiceSettingsModal, closeVoiceSettingsModal, type VoiceSettingsUIOptions, } from "./settings-ui.js";
-export { mountAssistantSettingsPanel, openAssistantSettingsModal, closeAssistantSettingsModal, type AssistantSettingsUIOptions, } from "./assistant-settings-ui.js";
+export { mountAssistantSettingsPanel, openAssistantSettingsModal, closeAssistantSettingsModal, historyMoveOffers, type AssistantSettingsUIOptions, type HistoryMoveOffer, } from "./assistant-settings-ui.js";
 export { trackEvent, getLocalAnalytics, exportAnalyticsMarkdown } from "./analytics.js";
 export { readFileAttachment, formatAttachmentsForPrompt, type FileAttachment } from "./fileUpload.js";
 export { DEFAULT_STRINGS, resolveStrings, type WidgetStrings } from "./strings.js";
 export { setVoiceDefaults, getVoiceDefaults } from "./settings.js";
+export { fetchModelCatalog, type ModelCatalog, type ModelChoice } from "./models.js";
 export { resolveVoiceLang, voiceInputAvailable } from "./voice.js";
 declare class PageAssistantController {
     private cfg;
@@ -108,6 +168,7 @@ declare class PageAssistantController {
     private voice?;
     private history;
     private chatStore;
+    private historyMgr;
     private activeChatId;
     private scanned;
     private listening;
@@ -136,6 +197,17 @@ declare class PageAssistantController {
     private clearPending;
     private deleteChat;
     private archiveChat;
+    /** Re-check who is signed in. Call it after your app signs a user in or out. */
+    refreshChatHistory(): Promise<void>;
+    /** An account chat listed without its messages is fetched first. False if it can't be. */
+    private loadChat;
+    private forkChat;
+    /**
+     * The store's contents were swapped. Keep the open conversation if the new contents still
+     * have it (carried into "off", or moved into the account); otherwise open what the new
+     * mode has, or a fresh chat.
+     */
+    private reanchorChat;
     private switchChat;
     private persistCurrentChat;
     /** History mapped for display: collapse the raw attachment dump back to a "📎 name" line. */
@@ -160,6 +232,11 @@ declare class PageAssistantController {
 export declare const PageAssistant: {
     init(cfg: PageAssistantConfig): PageAssistantController;
     configure(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>): void;
+    /**
+     * Re-check who is signed in and apply the chat-history mode that follows. Call it after
+     * your app signs a user in or out; signing out drops account chats from the page.
+     */
+    refreshChatHistory(): Promise<void>;
     /** Tear down the widget entirely (listeners, timers, shadow host, injected nodes). */
     destroy(): void;
     openVoiceSettings: typeof openVoiceSettingsModal;

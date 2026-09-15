@@ -1,6 +1,9 @@
 export * from "./types.js";
 export { Assistant, forcedFactualTool, validateFactualText, stripUnknownKeys, validateArgs, coerceArgTypes } from "./grounding.js";
+export { validateCapabilities, capabilitySchemaProblems, CapabilitySchemaError, isCapabilityEnabled } from "./registry.js";
 export { generateLlmTxt, generateActionsJson } from "./llmtxt.js";
+export { scrubText, DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "./scrub.js";
+export { renderVocabulary, VocabularyResolver } from "./vocabulary.js";
 export { InMemoryStore } from "./memory.js";
 export { rememberFactCapability } from "./builtins.js";
 export { MemoryTicketStore, normalizeTicket, ticketsFromRun, feedbackWellKnown, sendTicket, makeTicketFloodGuard, } from "./feedback.js";

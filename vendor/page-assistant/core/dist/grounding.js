@@ -1,3 +1,7 @@
+import { isCapabilityEnabled, validateCapabilities } from "./registry.js";
+import { oneLine } from "./text.js";
+import { DEFAULT_SCRUB_RULES, scrubText } from "./scrub.js";
+import { VocabularyResolver } from "./vocabulary.js";
 const MAX_TOOL_ROUNDS = 6;
 // Keep the last N history+working messages sent to the model. Prevents unbounded prompts
 // (cost + latency + context-window overflow) on long conversations. Tunable via env.
@@ -31,9 +35,14 @@ function genToolCallId() {
 export class Assistant {
     opts;
     caps;
+    vocabulary;
     constructor(opts) {
         this.opts = opts;
+        // Fail at registration, once, with the capability's name — not on every chat turn.
+        validateCapabilities(opts.capabilities);
         this.caps = new Map(opts.capabilities.map((c) => [c.name, c]));
+        if (opts.vocabulary)
+            this.vocabulary = new VocabularyResolver(opts.vocabulary);
     }
     get capabilities() {
         return [...this.caps.values()];
@@ -42,16 +51,19 @@ export class Assistant {
     setKnowledge(text) {
         this.opts.knowledge = [this.opts.knowledge, text].filter(Boolean).join("\n\n").slice(0, 6000);
     }
-    systemPrompt(page, recalled = []) {
+    systemPrompt(page, recalled = [], vocabulary = "") {
         const app = this.opts.appName ?? "this app";
+        const name = oneLine(this.opts.assistantName, 60);
         const lines = [
-            `You are the in-app assistant for ${app}. You help the user by calling the app's real capabilities.`,
+            `You are ${name ? `${name}, ` : ""}the in-app assistant for ${app}. You help the user by calling the app's real capabilities.`,
             `RULES:`,
+            ...(name ? [`- If asked who or what you are, you are ${name}, the assistant built into ${app}.`] : []),
             `- You can only do things by calling a listed capability. Never claim you did something you did not call.`,
             `- Never invent numbers, names, or results. If a capability returns data, report exactly what it returned.`,
             `- If you lack a capability for the request, say so plainly and suggest what the user can do.`,
             `- For capabilities marked confirm, describe what will happen and wait for the user to approve before calling.`,
             `- Be concise. Prefer doing the action over describing it.`,
+            `- Never mention environment variables, API routes, internal system names or capability names to the user; describe things in the user's terms.`,
             `Current page: ${page.title ?? page.path} (${page.path}).`,
         ];
         if (page.state && Object.keys(page.state).length) {
@@ -67,14 +79,34 @@ export class Assistant {
             lines.push(this.opts.persona);
         if (recalled.length)
             lines.push(`Things you remember about this user (from earlier sessions):\n${recalled.map((r) => `- ${r}`).join("\n")}`);
+        if (vocabulary)
+            lines.push(vocabulary);
         if (this.opts.knowledge)
             lines.push(`\nWhat this app is (background — use it to understand requests, not as facts to quote verbatim):\n${this.opts.knowledge.slice(0, 4000)}`);
         if (this.opts.suggestions?.length)
             lines.push(`If the user seems unsure what to do, offer one of: ${this.opts.suggestions.slice(0, 6).join("; ")}.`);
         return lines.join("\n");
     }
+    /** Last step before text reaches the user (or goes back to the model as an error). */
+    say(text) {
+        const rules = this.opts.scrub ?? DEFAULT_SCRUB_RULES;
+        return rules === false ? text : scrubText(text, rules);
+    }
+    /** Capabilities switched on right now — the only ones the model is told about. */
+    available() {
+        return this.capabilities.filter(isCapabilityEnabled);
+    }
+    route(message) {
+        const router = this.opts.forcedRouting;
+        if (router === false)
+            return undefined;
+        const available = this.available();
+        const name = (router ?? forcedFactualTool)(message, available);
+        // Forcing a tool the provider was not given fails the whole turn.
+        return name && available.some((c) => c.name === name) ? name : undefined;
+    }
     toolSpecs() {
-        return this.capabilities.map((c) => ({
+        return this.available().map((c) => ({
             name: c.name,
             description: c.description + (c.confirm ? " (requires user confirmation)" : ""),
             parameters: { ...c.parameters, additionalProperties: false },
@@ -84,7 +116,7 @@ export class Assistant {
         const caller = req.caller ?? "user";
         const messages = [...(req.history ?? []), { role: "user", content: req.message }];
         const invocations = [];
-        const forced = forcedFactualTool(req.message, this.capabilities);
+        const forced = this.route(req.message);
         let corrected = false;
         const usage = { promptTokens: 0, completionTokens: 0, provider: undefined };
         const window = historyWindow();
@@ -95,6 +127,17 @@ export class Assistant {
         }
         catch {
             /* memory must never break a chat */
+        }
+        // Workspace vocabulary, once per turn. The resolver already swallows loader failures;
+        // this also covers a host `key` or option that throws.
+        let vocabulary = "";
+        if (this.vocabulary) {
+            try {
+                vocabulary = await this.vocabulary.resolve({ page: req.page, caller });
+            }
+            catch {
+                /* nor must the vocabulary */
+            }
         }
         const accUsage = (u, provider) => {
             if (u?.promptTokens)
@@ -107,7 +150,7 @@ export class Assistant {
         const finalUsage = () => usage.promptTokens || usage.completionTokens || usage.provider ? { ...usage } : undefined;
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
             const out = await this.opts.llm.complete({
-                system: this.systemPrompt(req.page, recalled),
+                system: this.systemPrompt(req.page, recalled, vocabulary),
                 messages: windowMessages(messages, window),
                 tools: this.toolSpecs(),
                 forceTool: round === 0 ? forced : undefined,
@@ -118,7 +161,7 @@ export class Assistant {
                 // Final text. Validate against everything the tools actually returned.
                 const { text, wasCorrected } = validateFactualText(out.text, invocations);
                 corrected = corrected || wasCorrected;
-                return { message: text, invocations, corrected, usage: finalUsage() };
+                return { message: this.say(text), invocations, corrected, usage: finalUsage() };
             }
             // Record the model's OWN tool-call turn verbatim (with stable ids) so the next round
             // sees a coherent call→result pairing. Without this the model gets results for calls
@@ -132,11 +175,22 @@ export class Assistant {
                     messages.push({ role: "tool", toolName: call.name, toolCallId: call.id, content: `ERROR: no such capability` });
                     continue;
                 }
+                // Switched off since the model last saw it (or named from history): refuse, never run.
+                if (!isCapabilityEnabled(cap)) {
+                    invocations.push({ name: cap.name, args: call.args, ok: false, error: "capability is not available right now" });
+                    messages.push({
+                        role: "tool",
+                        toolName: cap.name,
+                        toolCallId: call.id,
+                        content: `ERROR: this capability is not available right now. Tell the user plainly; do not offer it.`,
+                    });
+                    continue;
+                }
                 // Confirm gate: stage instead of executing (user UI or external agent must approve).
                 // `preview` spells out the action + args so a UI can show exactly what will happen.
                 if (cap.confirm) {
                     return {
-                        message: `Confirm this action? ${cap.description}`,
+                        message: this.say(`Confirm this action? ${cap.description}`),
                         invocations,
                         pendingConfirmation: {
                             name: cap.name,
@@ -161,14 +215,14 @@ export class Assistant {
                     role: "tool",
                     toolName: cap.name,
                     toolCallId: call.id,
-                    content: inv.ok ? inv.rendered ?? JSON.stringify(inv.result) : `ERROR: ${inv.error}`,
+                    content: inv.ok ? inv.rendered ?? JSON.stringify(inv.result) : `ERROR: ${this.say(inv.error ?? "")}`,
                 });
             }
         }
         // Ran out of rounds — return the last trusted rendered result rather than guessing.
         const last = [...invocations].reverse().find((i) => i.ok && i.rendered);
         return {
-            message: last?.rendered ?? "I could not complete that. Please try rephrasing.",
+            message: this.say(last?.rendered ?? "I could not complete that. Please try rephrasing."),
             invocations,
             corrected,
             usage: finalUsage(),
@@ -177,10 +231,10 @@ export class Assistant {
     /** Execute a confirmed capability (called after user approves a pendingConfirmation). */
     async confirmAndRun(name, args, page) {
         const cap = this.caps.get(name);
-        if (!cap)
+        if (!cap || !isCapabilityEnabled(cap))
             return { message: "That action is no longer available.", invocations: [] };
         const inv = await this.execute(cap, args, page, "user");
-        return { message: inv.ok ? inv.rendered ?? "Done." : `That failed: ${inv.error}`, invocations: [inv] };
+        return { message: this.say(inv.ok ? inv.rendered ?? "Done." : `That failed: ${inv.error}`), invocations: [inv] };
     }
     async execute(cap, rawArgs, page, caller) {
         const args = coerceArgTypes(stripUnknownKeys(rawArgs, cap.parameters), cap.parameters);
@@ -280,6 +334,10 @@ function typeMatches(want, got) {
  * intents we force the matching capability so the model can't answer from memory.
  * Heuristic and conservative: only fires on a confident keyword + a single
  * obviously-matching capability.
+ *
+ * Never picks a confirm-gated capability: forcing exists to answer factual questions from
+ * real data, and a question that happens to share words with a write ("how many orders
+ * would archiving touch?") must not come back as a confirmation card for that write.
  */
 export function forcedFactualTool(message, caps) {
     const m = message.toLowerCase();
@@ -288,6 +346,7 @@ export function forcedFactualTool(message, caps) {
         return undefined;
     // Score capabilities by name/description keyword overlap with the message.
     const scored = caps
+        .filter((c) => !c.confirm)
         .map((c) => ({ c, score: overlapScore(m, `${c.name} ${c.description}`.toLowerCase()) }))
         .filter((s) => s.score >= 2)
         .sort((a, b) => b.score - a.score);
@@ -295,11 +354,18 @@ export function forcedFactualTool(message, caps) {
         return scored[0].c.name;
     return undefined;
 }
+/**
+ * How many of the message's words start a word in `b`. Matching at a word start keeps
+ * plurals and inflections ("order" → "orders", "match" → "matching") but stops a word
+ * counting because it sits inside an unrelated one ("rate" in "generate", "late" in
+ * "template"), which forced the wrong capability.
+ */
 function overlapScore(a, b) {
     const words = new Set(a.replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 3));
+    const target = ` ${b.replace(/[^a-z0-9]+/g, " ")}`;
     let s = 0;
     for (const w of words)
-        if (b.includes(w))
+        if (target.includes(` ${w}`))
             s++;
     return s;
 }

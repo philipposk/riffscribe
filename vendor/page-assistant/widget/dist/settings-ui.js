@@ -1,46 +1,13 @@
 // Self-contained voice settings panel + modal (shadow DOM, no host CSS required).
 import { ELEVENLABS_VOICES, OPENAI_VOICES, VOICE_SETTINGS_CHANGE_EVENT, VOICE_SETTINGS_STORAGE_KEY, getVoiceSettings, setVoiceSettings, } from "./settings.js";
-const CSS = `
-* { box-sizing: border-box; font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; }
-.wrap { color: #e7f5ec; font-size: 14px; line-height: 1.45; }
-.hint { margin: 0 0 14px; font-size: 13px; color: #9ab4a6; }
-.row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-.label { width: 140px; flex-shrink: 0; color: #9ab4a6; font-size: 13px; }
-.field { flex: 1; min-width: 180px; }
-select, label.field { display: block; width: 100%; max-width: 320px; }
-select {
-  background: #0b1310; border: 1px solid #244234; color: #e7f5ec;
-  border-radius: 8px; padding: 8px 10px; font-size: 14px;
-}
-.check { display: flex; align-items: center; gap: 8px; cursor: pointer; max-width: 320px; }
-.modal-backdrop {
-  position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,.55);
-  display: flex; align-items: center; justify-content: center; padding: 16px;
-}
-.modal {
-  width: min(480px, 100%); max-height: 90vh; overflow: auto;
-  background: #0f1715; border: 1px solid #1f3a2c; border-radius: 16px;
-  padding: 18px 20px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
-}
-.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.modal-head h2 { margin: 0; font-size: 18px; font-weight: 600; }
-.modal-foot { margin-top: 16px; display: flex; justify-content: flex-end; gap: 10px; align-items: center; }
-.btn {
-  border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 14px; font-weight: 500;
-}
-.btn-ghost { background: transparent; color: #9ab4a6; }
-.btn-ghost:hover { color: #e7f5ec; }
-.btn-primary { background: #16a34a; color: #fff; }
-.btn-primary:hover { background: #15803d; }
-.link { color: #9ab4a6; font-size: 13px; text-decoration: none; }
-.link:hover { color: #e7f5ec; }
-`;
-function renderForm(root, storageKey) {
+import { DEFAULT_STRINGS, resolveStrings } from "./strings.js";
+import { panelStyle } from "./settings-ui-shared.js";
+import { ASSISTANT_SETTINGS_CHANGE_EVENT, ASSISTANT_SETTINGS_STORAGE_KEY, getAssistantSettings } from "./assistant-settings.js";
+function renderForm(root, storageKey, s = DEFAULT_STRINGS) {
     root.innerHTML = "";
     const wrap = el("div", "wrap");
     const hint = el("p", "hint");
-    hint.textContent =
-        "Text replies are free. Read-aloud uses your browser or the server (ElevenLabs / OpenAI). Mic defaults to the free browser recognizer; server Whisper costs per minute.";
+    hint.textContent = s.settingsVoiceHintLong;
     wrap.appendChild(hint);
     const addRow = (label, field) => {
         const row = el("div", "row");
@@ -54,9 +21,9 @@ function renderForm(root, storageKey) {
     speakCb.type = "checkbox";
     const speakText = el("span");
     const refreshSpeak = () => {
-        const s = getVoiceSettings(storageKey);
-        speakCb.checked = s.autoSpeak;
-        speakText.textContent = s.autoSpeak ? "On (🔊 in assistant)" : "Off — text only (default)";
+        const vs = getVoiceSettings(storageKey);
+        speakCb.checked = vs.autoSpeak;
+        speakText.textContent = vs.autoSpeak ? s.settingsReadAloudOn : s.settingsReadAloudOff;
     };
     speakCb.onchange = () => {
         setVoiceSettings({ autoSpeak: speakCb.checked }, storageKey);
@@ -64,23 +31,27 @@ function renderForm(root, storageKey) {
     };
     speakLabel.append(speakCb, speakText);
     refreshSpeak();
-    addRow("Read aloud", speakLabel);
+    addRow(s.settingsReadAloud, speakLabel);
     const ttsSel = el("select", "field");
-    ttsSel.innerHTML = `<option value="browser">Browser (free, robotic)</option><option value="server">Server — ElevenLabs / OpenAI</option>`;
-    addRow("Speech engine", ttsSel);
+    ttsSel.innerHTML =
+        `<option value="browser">${escapeHtml(s.optionBrowserRobotic)}</option>` +
+            `<option value="server">${escapeHtml(s.optionServerTtsNamed)}</option>`;
+    addRow(s.settingsSpeechEngine, ttsSel);
     const serverBlock = el("div");
     wrap.appendChild(serverBlock);
     const renderServerRows = () => {
-        const s = getVoiceSettings(storageKey);
-        ttsSel.value = s.ttsMode;
+        const vs = getVoiceSettings(storageKey);
+        ttsSel.value = vs.ttsMode;
         serverBlock.innerHTML = "";
-        if (s.ttsMode !== "server")
+        if (vs.ttsMode !== "server")
             return;
         const provRow = el("div", "row");
-        provRow.innerHTML = `<span class="label">Provider</span>`;
+        provRow.innerHTML = `<span class="label">${escapeHtml(s.settingsTtsProvider)}</span>`;
         const provSel = el("select", "field");
-        provSel.innerHTML = `<option value="elevenlabs">ElevenLabs (recommended)</option><option value="openai">OpenAI TTS</option>`;
-        provSel.value = s.ttsProvider;
+        provSel.innerHTML =
+            `<option value="elevenlabs">${escapeHtml(s.providerElevenLabsRecommended)}</option>` +
+                `<option value="openai">${escapeHtml(s.providerOpenAiTts)}</option>`;
+        provSel.value = vs.ttsProvider;
         provSel.onchange = () => {
             setVoiceSettings({ ttsProvider: provSel.value }, storageKey);
             renderServerRows();
@@ -88,11 +59,11 @@ function renderForm(root, storageKey) {
         provRow.appendChild(provSel);
         serverBlock.appendChild(provRow);
         const voiceRow = el("div", "row");
-        voiceRow.innerHTML = `<span class="label">Voice</span>`;
+        voiceRow.innerHTML = `<span class="label">${escapeHtml(s.settingsVoiceName)}</span>`;
         const voiceSel = el("select", "field");
-        const list = s.ttsProvider === "elevenlabs" ? ELEVENLABS_VOICES : OPENAI_VOICES;
+        const list = vs.ttsProvider === "elevenlabs" ? ELEVENLABS_VOICES : OPENAI_VOICES;
         voiceSel.innerHTML = list.map((v) => `<option value="${v.id}">${escapeHtml(v.label)}</option>`).join("");
-        voiceSel.value = s.ttsProvider === "elevenlabs" ? s.elevenLabsVoiceId : s.openaiVoice;
+        voiceSel.value = vs.ttsProvider === "elevenlabs" ? vs.elevenLabsVoiceId : vs.openaiVoice;
         voiceSel.onchange = () => {
             if (getVoiceSettings(storageKey).ttsProvider === "elevenlabs") {
                 setVoiceSettings({ elevenLabsVoiceId: voiceSel.value }, storageKey);
@@ -110,12 +81,14 @@ function renderForm(root, storageKey) {
     };
     renderServerRows();
     const sttSel = el("select", "field");
-    sttSel.innerHTML = `<option value="browser">Browser (free)</option><option value="server">Server — Whisper</option>`;
+    sttSel.innerHTML =
+        `<option value="browser">${escapeHtml(s.optionBrowserFree)}</option>` +
+            `<option value="server">${escapeHtml(s.optionServerWhisperNamed)}</option>`;
     sttSel.value = getVoiceSettings(storageKey).sttMode;
     sttSel.onchange = () => {
         setVoiceSettings({ sttMode: sttSel.value }, storageKey);
     };
-    addRow("Mic input", sttSel);
+    addRow(s.settingsMicInput, sttSel);
     root.appendChild(wrap);
     const onExternal = () => {
         refreshSpeak();
@@ -128,17 +101,27 @@ function renderForm(root, storageKey) {
 /** Embed the voice settings form in a host container (e.g. app settings page). Returns cleanup. */
 export function mountVoiceSettingsPanel(container, opts = {}) {
     const storageKey = opts.storageKey ?? VOICE_SETTINGS_STORAGE_KEY;
+    const strings = resolveStrings(opts.strings);
     const host = document.createElement("div");
     container.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = CSS;
+    const applyTheme = () => {
+        style.textContent = panelStyle(getAssistantSettings(ASSISTANT_SETTINGS_STORAGE_KEY).theme);
+    };
+    applyTheme();
     shadow.appendChild(style);
+    // Follow the host's light/dark choice live, including a "system" flip.
+    window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, applyTheme);
+    const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : undefined;
+    media?.addEventListener?.("change", applyTheme);
     const formRoot = el("div");
     shadow.appendChild(formRoot);
-    const cleanupForm = renderForm(formRoot, storageKey);
+    const cleanupForm = renderForm(formRoot, storageKey, strings);
     return () => {
         cleanupForm();
+        window.removeEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, applyTheme);
+        media?.removeEventListener?.("change", applyTheme);
         host.remove();
     };
 }
@@ -147,13 +130,20 @@ let modalHost;
 export function openVoiceSettingsModal(opts = {}) {
     closeVoiceSettingsModal();
     const storageKey = opts.storageKey ?? VOICE_SETTINGS_STORAGE_KEY;
+    const s = resolveStrings(opts.strings);
     const title = opts.title ?? "Page assistant";
     modalHost = document.createElement("div");
     document.body.appendChild(modalHost);
     const shadow = modalHost.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = CSS;
+    const applyTheme = () => {
+        style.textContent = panelStyle(getAssistantSettings(ASSISTANT_SETTINGS_STORAGE_KEY).theme);
+    };
+    applyTheme();
     shadow.appendChild(style);
+    window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, applyTheme);
+    const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : undefined;
+    media?.addEventListener?.("change", applyTheme);
     const backdrop = el("div", "modal-backdrop");
     backdrop.setAttribute("role", "dialog");
     backdrop.setAttribute("aria-label", title);
@@ -168,21 +158,21 @@ export function openVoiceSettingsModal(opts = {}) {
     h2.textContent = title;
     const closeBtn = el("button", "btn btn-ghost");
     closeBtn.textContent = "×";
-    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.setAttribute("aria-label", s.close);
     closeBtn.onclick = () => closeVoiceSettingsModal();
     head.append(h2, closeBtn);
     const formRoot = el("div");
-    const cleanupForm = renderForm(formRoot, storageKey);
+    const cleanupForm = renderForm(formRoot, storageKey, s);
     const foot = el("div", "modal-foot");
     if (opts.settingsPageUrl) {
         const link = el("a", "link");
         link.href = opts.settingsPageUrl;
-        link.textContent = "All settings →";
+        link.textContent = s.settingsAllSettingsLink;
         link.onclick = () => closeVoiceSettingsModal();
         foot.appendChild(link);
     }
     const done = el("button", "btn btn-primary");
-    done.textContent = "Done";
+    done.textContent = s.settingsDone;
     done.onclick = () => closeVoiceSettingsModal();
     foot.appendChild(done);
     modal.append(head, formRoot, foot);
@@ -191,6 +181,8 @@ export function openVoiceSettingsModal(opts = {}) {
     const prevCleanup = modalHost._cleanup;
     modalHost._cleanup = () => {
         cleanupForm();
+        window.removeEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, applyTheme);
+        media?.removeEventListener?.("change", applyTheme);
         prevCleanup?.();
     };
 }

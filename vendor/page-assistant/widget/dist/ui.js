@@ -212,6 +212,8 @@ export class WidgetUI {
                 onPin: (id, pinned) => this.opts.chatStore.pin(id, pinned),
                 onRename: (id, title) => this.opts.chatStore.rename(id, title),
                 onFork: (id) => {
+                    if (this.handlers.onForkChat)
+                        return this.handlers.onForkChat(id);
                     this.opts.chatStore.fork(id);
                     this.handlers.onSelectChat?.(this.opts.chatStore.getActiveId());
                 },
@@ -226,7 +228,7 @@ export class WidgetUI {
                 onToggle: (open) => this.setSidebarOpen(open),
             };
             this.opts.onSidebarHandlers?.(handlers);
-            this.sidebar = new ChatSidebar(this.opts.chatStore, handlers, this.opts.chatStore.getActiveId());
+            this.sidebar = new ChatSidebar(this.opts.chatStore, handlers, this.opts.chatStore.getActiveId(), this.s);
             this.sidebarEl = this.sidebar.render();
             if (!this.sidebarOpen)
                 this.sidebar.setCollapsed(true);

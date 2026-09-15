@@ -1,30 +1,68 @@
 // Extended assistant settings: model, theme, export/import chats, analytics toggle.
 import { ASSISTANT_SETTINGS_CHANGE_EVENT, ASSISTANT_SETTINGS_STORAGE_KEY, DEFAULT_MODELS, getAssistantSettings, setAssistantSettings, } from "./assistant-settings.js";
-import { CSS as VOICE_CSS } from "./settings-ui-shared.js";
+import { panelStyle } from "./settings-ui-shared.js";
 import { VOICE_SETTINGS_CHANGE_EVENT, VOICE_SETTINGS_STORAGE_KEY, getVoiceSettings, setVoiceSettings, } from "./settings.js";
 import { BROWSER_ONLY_CAPABILITIES, ELEVENLABS_VOICES, OPENAI_VOICES, fetchVoiceCapabilities, } from "./settings.js";
+import { DEFAULT_STRINGS, fmt, resolveStrings } from "./strings.js";
+import { fetchModelCatalog } from "./models.js";
 const TABS = ["General", "Voice", "Data"];
 export function mountAssistantSettingsPanel(container, opts = {}) {
     const storageKey = opts.storageKey ?? ASSISTANT_SETTINGS_STORAGE_KEY;
     const voiceKey = opts.voiceStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
+    const str = resolveStrings(opts.strings);
     const host = document.createElement("div");
     container.appendChild(host);
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = VOICE_CSS + EXTRA_CSS;
+    // Themed, and re-themed live: the panel used to hardcode the dark palette, so a
+    // light-themed app opened a black-green modal beside its own chrome.
+    const applyTheme = () => {
+        style.textContent = panelStyle(getAssistantSettings(storageKey).theme, EXTRA_CSS);
+    };
+    applyTheme();
     shadow.appendChild(style);
+    const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : undefined;
+    media?.addEventListener?.("change", applyTheme);
     let activeTab = "General";
     const root = el("div", "wrap");
     shadow.appendChild(root);
     // Server voice capabilities: unknown until the fetch resolves. Start browser-only so
     // nothing is falsely offered before we hear back; a re-render swaps in real values.
     let caps = BROWSER_ONLY_CAPABILITIES;
+    // Model catalogue: unknown until the probe resolves. Until then assume the model IS
+    // fixed, so a picker never flashes up on a deployment that pins it.
+    let catalog;
+    // Chat-history section state that must survive a re-render.
+    const historyCtx = {
+        busy: false,
+        flash: undefined,
+        run: async (fn) => {
+            historyCtx.busy = true;
+            historyCtx.flash = undefined;
+            render();
+            try {
+                historyCtx.flash = await fn();
+            }
+            catch {
+                /* the manager reports failures through its state */
+            }
+            finally {
+                historyCtx.busy = false;
+                render();
+            }
+        },
+    };
     const render = () => {
         root.innerHTML = "";
         const tabs = el("div", "tabs");
+        const tabLabel = {
+            General: str.settingsTabGeneral,
+            Voice: str.settingsTabVoice,
+            Data: str.settingsTabData,
+        };
         for (const t of TABS) {
             const btn = el("button", `tab${activeTab === t ? " active" : ""}`);
-            btn.textContent = t;
+            btn.textContent = tabLabel[t];
             btn.onclick = () => {
                 activeTab = t;
                 render();
@@ -34,11 +72,11 @@ export function mountAssistantSettingsPanel(container, opts = {}) {
         root.appendChild(tabs);
         const body = el("div", "tab-body");
         if (activeTab === "General")
-            renderGeneral(body, storageKey, opts);
+            renderGeneral(body, storageKey, opts, str, catalog);
         else if (activeTab === "Voice")
-            renderVoice(body, voiceKey, caps);
+            renderVoice(body, voiceKey, caps, str);
         else
-            renderData(body, opts.chatStore);
+            renderData(body, opts.chatStore, str, opts.history, historyCtx);
         root.appendChild(body);
     };
     render();
@@ -49,110 +87,161 @@ export function mountAssistantSettingsPanel(container, opts = {}) {
         if (activeTab === "Voice")
             render();
     });
-    const onChange = () => render();
+    // Ask what the server will actually honour for `model`, unless the host already decided.
+    if (opts.modelPicker === undefined || opts.modelPicker === "auto") {
+        fetchModelCatalog(opts.serverUrl, abort.signal, opts.authToken).then((c) => {
+            catalog = c;
+            if (activeTab === "General")
+                render();
+        });
+    }
+    const onChange = () => {
+        applyTheme();
+        render();
+    };
     // The extended modal previously re-rendered only on ASSISTANT_SETTINGS_CHANGE_EVENT,
     // but changing the speech engine fires VOICE_SETTINGS_CHANGE_EVENT — so the Provider/
     // Voice rows never appeared until the modal was reopened. Listen to both.
     window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, onChange);
     window.addEventListener(VOICE_SETTINGS_CHANGE_EVENT, onChange);
+    const unsubscribeHistory = opts.history?.subscribe(() => {
+        if (activeTab === "Data")
+            render();
+    });
+    // Opening settings is a natural moment to notice a sign-in or sign-out.
+    opts.history?.refresh().catch(() => { });
     return () => {
+        unsubscribeHistory?.();
         abort.abort();
+        media?.removeEventListener?.("change", applyTheme);
         window.removeEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, onChange);
         window.removeEventListener(VOICE_SETTINGS_CHANGE_EVENT, onChange);
         host.remove();
     };
 }
-function renderGeneral(root, storageKey, opts = {}) {
+/**
+ * Should the model picker be rendered at all?
+ *
+ * A picker that changes nothing is worse than no picker: a host whose server pins its own
+ * model (so a visitor cannot upgrade themselves onto a costlier one) was still shown a
+ * dropdown that silently did nothing. `modelPicker` decides, and `"auto"` asks the server.
+ */
+export function modelPickerVisible(opts, catalog) {
+    if (opts.showModel === false || opts.modelPicker === false)
+        return false;
+    if (opts.modelPicker === true)
+        return true;
+    // "auto" (the default): hide until the probe answers, so it never flashes up and
+    // disappears on a deployment that pins the model.
+    if (!catalog)
+        return false;
+    return !catalog.fixed && catalog.models.length > 1;
+}
+function renderGeneral(root, storageKey, opts = {}, str = DEFAULT_STRINGS, catalog) {
     const s = getAssistantSettings(storageKey);
-    if (opts.showModel === false) {
+    if (!modelPickerVisible(opts, catalog)) {
         const note = el("p", "hint");
         note.style.margin = "0 0 12px";
-        note.textContent = opts.modelFixedNote ?? "The model is chosen by this site and cannot be changed here.";
+        note.textContent = opts.modelFixedNote ?? catalog?.reason ?? str.modelFixedNote;
         root.appendChild(note);
     }
     else {
-        addRow(root, "Model", () => {
+        // Only offer models the server said it can actually serve; fall back to the built-in
+        // list when the probe found nothing to go on.
+        const models = catalog?.models?.length ? catalog.models : DEFAULT_MODELS;
+        addRow(root, str.settingsModel, () => {
             const sel = el("select", "field");
-            sel.innerHTML = DEFAULT_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
+            sel.innerHTML =
+                `<option value="">${escapeHtml(str.modelServerDefault)}</option>` +
+                    models.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.label)}</option>`).join("");
             sel.value = s.model;
+            // A stored model this server no longer offers would otherwise select nothing and
+            // read as blank; fall back to the server default rather than showing an empty box.
+            if (sel.selectedIndex < 0)
+                sel.value = "";
             sel.onchange = () => setAssistantSettings({ model: sel.value }, storageKey);
             return sel;
         });
-        // The list is static; a model only works if the server's LLM router has a key/route
-        // for its provider. Say so instead of letting a bad pick fail silently at chat time.
         const modelNote = el("p", "hint");
         modelNote.style.margin = "-6px 0 12px 152px";
-        modelNote.textContent = "Models depend on the server's configured providers — an unsupported one will error when you send.";
+        modelNote.textContent = str.modelProviderNote;
         root.appendChild(modelNote);
     }
-    addRow(root, "Theme", () => {
+    addRow(root, str.settingsTheme, () => {
         const sel = el("select", "field");
-        sel.innerHTML = `<option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option>`;
+        sel.innerHTML =
+            `<option value="dark">${escapeHtml(str.themeDark)}</option>` +
+                `<option value="light">${escapeHtml(str.themeLight)}</option>` +
+                `<option value="system">${escapeHtml(str.themeSystem)}</option>`;
         sel.value = s.theme;
         sel.onchange = () => setAssistantSettings({ theme: sel.value }, storageKey);
         return sel;
     });
-    addRow(root, "Chat sidebar", () => {
+    addRow(root, str.settingsSidebar, () => {
         const lab = el("label", "check field");
         const cb = el("input");
         cb.type = "checkbox";
         cb.checked = s.sidebarOpen;
         cb.onchange = () => setAssistantSettings({ sidebarOpen: cb.checked }, storageKey);
-        lab.append(cb, el("span", undefined, "Show history sidebar by default"));
+        lab.append(cb, el("span", undefined, str.settingsSidebarDefaultOpen));
         return lab;
     });
-    addRow(root, "Analytics", () => {
+    addRow(root, str.settingsAnalytics, () => {
         const lab = el("label", "check field");
         const cb = el("input");
         cb.type = "checkbox";
         cb.checked = s.analyticsEnabled;
         cb.onchange = () => setAssistantSettings({ analyticsEnabled: cb.checked }, storageKey);
-        lab.append(cb, el("span", undefined, "Send anonymous usage events to server"));
+        lab.append(cb, el("span", undefined, str.settingsAnalyticsOptIn));
         return lab;
     });
 }
-function renderVoice(root, voiceKey, caps) {
+function renderVoice(root, voiceKey, caps, s = DEFAULT_STRINGS) {
     const hint = el("p", "hint");
-    hint.textContent = "Voice settings apply to read-aloud and microphone input.";
+    hint.textContent = s.settingsVoiceHint;
     root.appendChild(hint);
     const speakLabel = el("label", "check field");
     const speakCb = el("input");
     speakCb.type = "checkbox";
     speakCb.checked = getVoiceSettings(voiceKey).autoSpeak;
     speakCb.onchange = () => setVoiceSettings({ autoSpeak: speakCb.checked }, voiceKey);
-    speakLabel.append(speakCb, el("span", undefined, "Read replies aloud"));
-    addRow(root, "Read aloud", () => speakLabel);
+    speakLabel.append(speakCb, el("span", undefined, s.readAloud));
+    addRow(root, s.settingsReadAloud, () => speakLabel);
     const vs = getVoiceSettings(voiceKey);
     const serverTts = caps.tts.server;
     const serverStt = caps.stt.server;
     const ttsSel = el("select", "field");
-    ttsSel.innerHTML = `<option value="browser">Browser (free)</option><option value="server"${serverTts ? "" : " disabled"}>Server TTS${serverTts ? "" : " (not configured)"}</option>`;
+    ttsSel.innerHTML =
+        `<option value="browser">${escapeHtml(s.optionBrowserFree)}</option>` +
+            `<option value="server"${serverTts ? "" : " disabled"}>${escapeHtml(s.optionServerTts + (serverTts ? "" : s.suffixNotConfigured))}</option>`;
     ttsSel.value = vs.ttsMode;
     ttsSel.onchange = () => setVoiceSettings({ ttsMode: ttsSel.value }, voiceKey);
-    addRow(root, "Speech engine", () => ttsSel);
+    addRow(root, s.settingsSpeechEngine, () => ttsSel);
     const sttSel = el("select", "field");
-    sttSel.innerHTML = `<option value="browser">Browser mic</option><option value="server"${serverStt ? "" : " disabled"}>Server Whisper${serverStt ? "" : " (not configured)"}</option>`;
+    sttSel.innerHTML =
+        `<option value="browser">${escapeHtml(s.optionBrowserFree)}</option>` +
+            `<option value="server"${serverStt ? "" : " disabled"}>${escapeHtml(s.optionServerWhisper + (serverStt ? "" : s.suffixNotConfigured))}</option>`;
     sttSel.value = vs.sttMode;
     sttSel.onchange = () => setVoiceSettings({ sttMode: sttSel.value }, voiceKey);
-    addRow(root, "Mic input", () => sttSel);
+    addRow(root, s.settingsMicInput, () => sttSel);
     if (vs.ttsMode === "server") {
         const provSel = el("select", "field");
         const provOpts = [
-            ["elevenlabs", "ElevenLabs"],
-            ["openai", "OpenAI"],
+            ["elevenlabs", s.providerElevenLabs],
+            ["openai", s.providerOpenAiTts],
         ];
         provSel.innerHTML = provOpts
             .map(([id, label]) => {
             const ok = !serverTts || caps.tts.providers.length === 0 || caps.tts.providers.includes(id);
-            return `<option value="${id}"${ok ? "" : " disabled"}>${label}${ok ? "" : " (no server key)"}</option>`;
+            return `<option value="${id}"${ok ? "" : " disabled"}>${escapeHtml(label + (ok ? "" : s.suffixNoServerKey))}</option>`;
         })
             .join("");
         provSel.value = vs.ttsProvider;
         provSel.onchange = () => setVoiceSettings({ ttsProvider: provSel.value }, voiceKey);
-        addRow(root, "TTS provider", () => provSel);
+        addRow(root, s.settingsTtsProvider, () => provSel);
         const voiceSel = el("select", "field");
         const list = vs.ttsProvider === "elevenlabs" ? ELEVENLABS_VOICES : OPENAI_VOICES;
-        voiceSel.innerHTML = list.map((v) => `<option value="${v.id}">${v.label}</option>`).join("");
+        voiceSel.innerHTML = list.map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.label)}</option>`).join("");
         voiceSel.value = vs.ttsProvider === "elevenlabs" ? vs.elevenLabsVoiceId : vs.openaiVoice;
         voiceSel.onchange = () => {
             if (getVoiceSettings(voiceKey).ttsProvider === "elevenlabs") {
@@ -162,32 +251,149 @@ function renderVoice(root, voiceKey, caps) {
                 setVoiceSettings({ openaiVoice: voiceSel.value }, voiceKey);
             }
         };
-        addRow(root, "Voice", () => voiceSel);
+        addRow(root, s.settingsVoiceName, () => voiceSel);
     }
     // Explain any greyed-out options + warn if a stored preference can't be honored.
     const note = el("p", "hint");
     note.style.marginTop = "12px";
     if (!serverTts && !serverStt) {
-        note.textContent =
-            "This server has no voice keys configured, so only the free browser voice and mic are available. Server TTS/STT (ElevenLabs · OpenAI · Whisper) are greyed out.";
+        note.textContent = s.voiceNoteNoServerKeys;
         root.appendChild(note);
     }
     else if ((vs.ttsMode === "server" && !serverTts) || (vs.sttMode === "server" && !serverStt)) {
-        note.textContent =
-            "A saved option isn't available on this server and will fall back to the browser. Greyed-out choices need a server API key.";
+        note.textContent = s.voiceNoteSavedUnavailable;
         root.appendChild(note);
     }
     else if (!serverTts || !serverStt) {
-        note.textContent = "Greyed-out server options aren't configured on this server; the browser handles them for free.";
+        note.textContent = s.voiceNoteSomeGreyed;
         root.appendChild(note);
     }
 }
-function renderData(root, chatStore) {
+/**
+ * The "move chats" offers the Data tab shows. The user's own device chats are offered as
+ * theirs; chats made while signed out are offered only with wording that says so.
+ */
+export function historyMoveOffers(st, s = DEFAULT_STRINGS) {
+    if (st.locked)
+        return [];
+    const offers = [];
+    if (st.mode === "account" && st.deviceChatCount > 0) {
+        offers.push({
+            from: "mine",
+            text: fmt(s.historyMoveOffer, { count: String(st.deviceChatCount) }),
+            button: s.historyMoveButton,
+            done: s.historyMoveDone,
+        });
+    }
+    if ((st.mode === "account" || st.mode === "device") && st.signedOutDeviceChatCount > 0) {
+        const toAccount = st.mode === "account";
+        offers.push({
+            from: "signed-out",
+            text: fmt(s.historyMoveSignedOutOffer, { count: String(st.signedOutDeviceChatCount) }),
+            button: toAccount ? s.historyMoveButton : s.historyMoveSignedOutToDeviceButton,
+            done: toAccount ? s.historyMoveDone : s.historyMoveSignedOutToDeviceDone,
+        });
+    }
+    return offers;
+}
+function renderHistory(root, h, s, ctx) {
+    const st = h.getState();
+    if (st.locked)
+        return;
+    const section = el("div", "history");
+    section.appendChild(el("h3", "section-title", s.settingsHistory));
+    const group = el("div", "choices");
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-label", s.settingsHistory);
+    const options = [
+        ["account", s.historyModeAccount, s.historyModeAccountHint],
+        ["device", s.historyModeDevice, s.historyModeDeviceHint],
+        ["off", s.historyModeOff, s.historyModeOffHint],
+    ];
+    const choose = (mode) => ctx.run(async () => {
+        const now = h.getState();
+        let move = false;
+        if (mode === "account" && now.mode !== "account" && now.deviceChatCount > 0 && typeof confirm === "function") {
+            move = confirm(fmt(s.historyMovePrompt, { count: String(now.deviceChatCount) }));
+        }
+        await h.setMode(mode, { moveDeviceChats: move });
+        return undefined;
+    });
+    for (const [mode, label, hint] of options) {
+        const unavailable = mode === "account" && !!st.accountUnavailable;
+        const lab = el("label", `choice${unavailable ? " disabled" : ""}`);
+        const input = el("input");
+        input.type = "radio";
+        input.name = "pa-history-mode";
+        input.value = mode;
+        input.checked = st.mode === mode;
+        input.disabled = unavailable || ctx.busy;
+        input.onchange = () => void choose(mode);
+        const text = el("span", "choice-text");
+        text.append(el("span", "choice-label", label), el("span", "choice-hint", hint));
+        if (mode === "account" && st.accountUnavailable) {
+            const why = st.accountUnavailable === "signed-out" ? s.historyAccountSignedOut : s.historyAccountNoAdapter;
+            text.appendChild(el("span", "choice-hint choice-note", why));
+        }
+        else if (mode === "account" && st.retentionMonths) {
+            text.appendChild(el("span", "choice-hint", fmt(s.historyRetention, { months: String(st.retentionMonths) })));
+        }
+        lab.append(input, text);
+        group.appendChild(lab);
+    }
+    section.appendChild(group);
+    if (st.status === "loading") {
+        section.appendChild(el("p", "hint", s.historyLoading));
+    }
+    else if (st.status === "error") {
+        const p = el("p", "hint choice-note", st.error === "load" ? s.historyLoadFailed : s.historySaveFailed);
+        const retry = el("button", "btn btn-ghost btn-inline", s.historyRetry);
+        retry.disabled = ctx.busy;
+        retry.onclick = () => void ctx.run(async () => {
+            await h.retry();
+            return undefined;
+        });
+        p.append(" ", retry);
+        section.appendChild(p);
+    }
+    for (const offer of historyMoveOffers(st, s)) {
+        const p = el("p", "hint", offer.text);
+        const move = el("button", "btn btn-ghost btn-inline", offer.button);
+        move.disabled = ctx.busy;
+        move.onclick = () => void ctx.run(async () => {
+            const r = await h.moveDeviceChats({ from: offer.from });
+            return r.failed ? s.historyMoveFailed : fmt(offer.done, { count: String(r.moved) });
+        });
+        p.append(" ", move);
+        section.appendChild(p);
+    }
+    if (st.mode !== "account" && st.canDeleteAccountChats) {
+        section.appendChild(el("p", "hint", s.historyAccountKept));
+    }
+    const del = el("button", "btn btn-danger", s.historyDeleteAll);
+    del.disabled = ctx.busy;
+    del.onclick = () => {
+        const question = st.canDeleteAccountChats ? s.historyDeleteAllConfirmAccount : s.historyDeleteAllConfirm;
+        if (typeof confirm === "function" && !confirm(question))
+            return;
+        void ctx.run(async () => ((await h.deleteAll()).ok ? s.historyDeleteDone : s.historyDeleteFailed));
+    };
+    section.appendChild(del);
+    if (ctx.flash) {
+        const flash = el("p", "hint flash", ctx.flash);
+        flash.setAttribute("role", "status");
+        section.appendChild(flash);
+    }
+    root.appendChild(section);
+}
+function renderData(root, chatStore, s = DEFAULT_STRINGS, history, historyCtx) {
+    if (history && historyCtx)
+        renderHistory(root, history, s, historyCtx);
     const hint = el("p", "hint");
-    hint.textContent = "Export or import your chat history. Data stays in your browser unless you share it.";
+    hint.textContent = s.settingsDataHint;
     root.appendChild(hint);
     const exportBtn = el("button", "btn btn-primary");
-    exportBtn.textContent = "Export all chats (JSON)";
+    exportBtn.textContent = s.settingsExportChats;
     exportBtn.onclick = () => {
         if (!chatStore)
             return;
@@ -195,7 +401,7 @@ function renderData(root, chatStore) {
     };
     root.appendChild(exportBtn);
     const importLabel = el("label", "btn btn-ghost");
-    importLabel.textContent = "Import chats…";
+    importLabel.textContent = s.settingsImportChats;
     const importInput = el("input");
     importInput.type = "file";
     importInput.accept = ".json";
@@ -205,7 +411,7 @@ function renderData(root, chatStore) {
         if (!file || !chatStore)
             return;
         const ok = chatStore.importAll(await file.text());
-        alert(ok ? "Imported successfully" : "Invalid backup file");
+        alert(ok ? s.settingsImportOk : s.settingsImportFailed);
         importInput.value = "";
     };
     importLabel.appendChild(importInput);
@@ -217,10 +423,18 @@ export function openAssistantSettingsModal(opts = {}) {
     closeAssistantSettingsModal();
     modalHost = document.createElement("div");
     document.body.appendChild(modalHost);
+    const str = resolveStrings(opts.strings);
+    const storageKey = opts.storageKey ?? ASSISTANT_SETTINGS_STORAGE_KEY;
     const shadow = modalHost.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = VOICE_CSS + EXTRA_CSS;
+    const applyTheme = () => {
+        style.textContent = panelStyle(getAssistantSettings(storageKey).theme, EXTRA_CSS);
+    };
+    applyTheme();
     shadow.appendChild(style);
+    window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, applyTheme);
+    const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : undefined;
+    media?.addEventListener?.("change", applyTheme);
     const backdrop = el("div", "modal-backdrop");
     backdrop.onclick = (e) => {
         if (e.target === backdrop)
@@ -230,9 +444,10 @@ export function openAssistantSettingsModal(opts = {}) {
     modal.onclick = (e) => e.stopPropagation();
     const head = el("div", "modal-head");
     const h2 = el("h2");
-    h2.textContent = opts.title ?? "Assistant settings";
+    h2.textContent = opts.title ?? str.settingsTitle;
     const closeBtn = el("button", "btn btn-ghost");
     closeBtn.textContent = "×";
+    closeBtn.setAttribute("aria-label", str.close);
     closeBtn.onclick = () => closeAssistantSettingsModal();
     head.append(h2, closeBtn);
     const mount = el("div");
@@ -240,7 +455,11 @@ export function openAssistantSettingsModal(opts = {}) {
     backdrop.appendChild(modal);
     shadow.appendChild(backdrop);
     const cleanup = mountAssistantSettingsPanel(mount, opts);
-    modalHost._cleanup = cleanup;
+    modalHost._cleanup = () => {
+        window.removeEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, applyTheme);
+        media?.removeEventListener?.("change", applyTheme);
+        cleanup();
+    };
 }
 export function closeAssistantSettingsModal() {
     if (!modalHost)
@@ -250,12 +469,31 @@ export function closeAssistantSettingsModal() {
     modalHost = undefined;
 }
 const EXTRA_CSS = `
-.tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid #244234; padding-bottom: 8px; }
-.tab { background: none; border: none; color: #9ab4a6; padding: 6px 12px; cursor: pointer; border-radius: 6px; font-size: 13px; }
-.tab.active { background: #1d3328; color: #e7f5ec; }
+.tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--pa-border); padding-bottom: 8px; }
+.tab { background: none; border: none; color: var(--pa-text-muted); padding: 6px 12px; cursor: pointer; border-radius: 6px; font-size: 13px; }
+.tab.active { background: var(--pa-bg-elevated); color: var(--pa-text); }
 .tab-body { min-height: 200px; }
 .btn { margin-top: 8px; display: inline-block; }
+.btn:disabled { opacity: .5; cursor: default; }
+.history { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--pa-border); }
+.section-title { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--pa-text); }
+.choices { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.choice {
+  display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; cursor: pointer;
+  border: 1px solid var(--pa-border); border-radius: 8px;
+}
+.choice.disabled { opacity: .65; cursor: default; }
+.choice input { margin-top: 3px; }
+.choice-label { display: block; color: var(--pa-text); }
+.choice-hint { display: block; margin-top: 2px; font-size: 12px; color: var(--pa-text-muted); }
+.choice-note { color: var(--pa-danger, #f87171); }
+.btn-inline { margin-top: 0; padding: 2px 6px; text-decoration: underline; }
+.btn-danger { background: transparent; color: var(--pa-danger, #f87171); border: 1px solid currentColor; }
+.flash { margin-top: 10px; }
 `;
+function escapeHtml(v) {
+    return v.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
 function addRow(root, label, fieldFn) {
     const row = el("div", "row");
     const lab = el("span", "label");

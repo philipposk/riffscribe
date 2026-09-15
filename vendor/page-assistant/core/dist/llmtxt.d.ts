@@ -7,6 +7,8 @@ export interface LlmTxtMeta {
     agentEndpoint: string;
     /** Optional: where agents should POST improvement tickets after using the app. */
     feedbackEndpoint?: string;
+    /** Optional: the assistant's own name, so a client can show it instead of hard-coding one. */
+    assistantName?: string;
 }
 /**
  * Generate an llm.txt describing the live assistant + every capability an external
@@ -18,6 +20,7 @@ export declare function generateLlmTxt(meta: LlmTxtMeta, caps: Capability[]): st
 export declare function generateActionsJson(meta: LlmTxtMeta, caps: Capability[]): {
     schemaVersion: string;
     app: {
+        assistantName?: string | undefined;
         name: string;
         url: string;
         description: string;

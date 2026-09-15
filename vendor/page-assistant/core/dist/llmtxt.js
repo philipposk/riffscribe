@@ -1,16 +1,21 @@
+import { isCapabilityEnabled } from "./registry.js";
+import { oneLine } from "./text.js";
+/** What other agents may see: exposed to agents, and available right now. */
+const advertised = (caps) => caps.filter((c) => c.exposeToAgents !== false && isCapabilityEnabled(c));
 /**
  * Generate an llm.txt describing the live assistant + every capability an external
  * agent may invoke. This is the machine-readable contract that lets OTHER agents
  * both understand the app and talk to the assistant living on it.
  */
 export function generateLlmTxt(meta, caps) {
-    const exposed = caps.filter((c) => c.exposeToAgents !== false);
+    const exposed = advertised(caps);
     const lines = [];
     lines.push(`# ${meta.appName}`);
     lines.push("");
     lines.push(`> ${meta.description}`);
     lines.push("");
-    lines.push(`This app ships a grounded in-page assistant. Other agents can drive it.`);
+    const assistantName = oneLine(meta.assistantName, 60);
+    lines.push(`This app ships a grounded in-page assistant${assistantName ? `, ${assistantName}` : ""}. Other agents can drive it.`);
     lines.push("");
     lines.push(`## Talk to the assistant`);
     lines.push("");
@@ -55,10 +60,14 @@ export function generateLlmTxt(meta, caps) {
 export function generateActionsJson(meta, caps) {
     return {
         schemaVersion: "1.0",
-        app: { name: meta.appName, url: meta.appUrl, description: meta.description },
+        app: {
+            name: meta.appName,
+            url: meta.appUrl,
+            description: meta.description,
+            ...(meta.assistantName ? { assistantName: oneLine(meta.assistantName, 60) } : {}),
+        },
         agentEndpoint: meta.agentEndpoint,
-        capabilities: caps
-            .filter((c) => c.exposeToAgents !== false)
+        capabilities: advertised(caps)
             .map((c) => ({ name: c.name, description: c.description, parameters: c.parameters, confirm: !!c.confirm })),
     };
 }
