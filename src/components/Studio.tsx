@@ -18,7 +18,10 @@ import Assistant, { type AssistantActions } from "./Assistant";
 import Mixer, { type MixTrack } from "./Mixer";
 import SaveBar from "./SaveBar";
 import Tuner from "./Tuner";
-import { HANDOFF_KEY } from "./SharedChart";
+import { HANDOFF_ID_KEY, HANDOFF_KEY } from "./SharedChart";
+import AccountMenu from "./AccountMenu";
+import { useAccount } from "@/lib/store/account";
+import { savingConfigured } from "@/lib/supabase/client";
 import ScoreView from "./ScoreView";
 import Transport from "./Transport";
 import Waveform from "./Waveform";
@@ -143,6 +146,8 @@ export default function Studio() {
 
   /** The saved chart this session is editing, once there is one. */
   const [chartId, setChartId] = useState<string | null>(null);
+  // The assistant spends from the signed-in person's plan, so it waits for a sign-in.
+  const { user: signedIn } = useAccount();
 
   /** What the assistant listens and speaks in. Remembered per device. */
   const [assistantLang, setAssistantLang] = useState<AssistantLang>("auto");
@@ -292,15 +297,19 @@ export default function Studio() {
   /** A chart arriving from a shared link, handed over through session storage. */
   useEffect(() => {
     let raw: string | null = null;
+    let id: string | null = null;
     try {
       raw = sessionStorage.getItem(HANDOFF_KEY);
-      if (raw) sessionStorage.removeItem(HANDOFF_KEY);
+      id = sessionStorage.getItem(HANDOFF_ID_KEY);
+      sessionStorage.removeItem(HANDOFF_KEY);
+      sessionStorage.removeItem(HANDOFF_ID_KEY);
     } catch {
       return;
     }
     if (!raw) return;
     try {
       openChart(JSON.parse(raw) as Chart);
+      if (id) setChartId(id);
     } catch {
       /* a chart we cannot read is not worth an error message */
     }
@@ -1201,6 +1210,7 @@ export default function Studio() {
             </select>
           </label>
           <a className="btn" href="/">About</a>
+          <AccountMenu />
         </div>
       </header>
 
@@ -1280,7 +1290,6 @@ export default function Studio() {
       */}
       <SaveBar
         buildChart={buildChart}
-        onOpen={openChart}
         chartId={chartId}
         onChartId={setChartId}
       />
@@ -1921,7 +1930,7 @@ export default function Studio() {
       )}
       {audio && <div className="no-print h-16" aria-hidden />}
 
-      <Assistant actions={assistantActions} lang={assistantLang} />
+      {(signedIn || !savingConfigured) && <Assistant actions={assistantActions} lang={assistantLang} />}
 
       <footer className="no-print pb-10 pt-4 text-center text-xs text-white/30">
         Basic Pitch (Spotify, Apache-2.0) · Demucs (Meta, MIT) · alphaTab (MPL-2.0) · Signalsmith Stretch (MIT)

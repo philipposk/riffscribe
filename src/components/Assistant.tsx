@@ -298,13 +298,12 @@ export default function Assistant({
         launcherIcon: "sparkle",
         // The tag reaches the microphone, the spoken reply, and Whisper and
         // ElevenLabs where a server voice is configured.
-        // Riffscribe's proxy fixes the model on purpose — the route is
-        // unauthenticated, so a visitor picking a costlier one would be
-        // spending someone else's money. Hiding the picker keeps the settings
-        // honest rather than offering a choice that is quietly ignored.
+        // Riffscribe's proxy fixes the model on purpose — every plan gets the
+        // same small one, and a picker whose choice is quietly ignored would
+        // not be honest.
         showModelPicker: false,
         modelFixedNote:
-          "Riffscribe runs one small model for everyone, chosen on the server. There is no account here, so the choice is not yours to make — and nothing you type is billed to you.",
+          "Riffscribe runs one small model for everyone, chosen on the server. Your plan sets how many requests you get each month — see Account & plan.",
         lang: bcp47(lang),
         strings: lang === "el" ? GREEK_STRINGS : undefined,
         persona:

@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import SiteHeader, { SiteFooter } from "@/components/SiteHeader";
+
 const FEATURES = [
   {
     title: "Hear it, read it",
@@ -63,13 +65,15 @@ const FEATURES = [
   },
   {
     title: "Nothing leaves the room",
-    body: "No upload, no account, no queue, no per-minute pricing. The models run inside the browser tab, so the song stays on your machine.",
+    body: "No upload, no queue, no per-minute pricing, and no account needed to transcribe. The models run inside the browser tab, so the song stays on your machine.",
   },
 ];
 
 export default function Home() {
   return (
-    <main className="mx-auto max-w-5xl px-5 py-16 sm:px-8">
+    <>
+    <SiteHeader />
+    <main className="mx-auto max-w-5xl px-5 py-12 sm:px-8">
       <p className="mb-4 text-xs uppercase tracking-[0.2em] text-[var(--color-accent)]">Riffscribe</p>
       <h1 className="max-w-3xl text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
         Give it a song. Get the sheet music, the tab, and a backing track.
@@ -107,8 +111,10 @@ export default function Home() {
 
       <footer className="mt-12 text-xs text-white/30">
         Built on Basic Pitch (Spotify, Apache-2.0), Demucs (Meta, MIT), alphaTab (MPL-2.0) and
-        Signalsmith Stretch (MIT). Part of <a className="underline" href="https://6x7.gr">6x7.gr</a>.
+        Signalsmith Stretch (MIT).
       </footer>
     </main>
+    <SiteFooter />
+    </>
   );
 }

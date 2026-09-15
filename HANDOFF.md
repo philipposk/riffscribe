@@ -18,8 +18,9 @@ written down for their instrument, the song without that part to play against,
 a way to slow it down, and a way to check themselves. That is the whole product.
 Judge new features against that sentence.
 
-Everything runs in the browser. No accounts, no server-side inference, no
-uploads. The only server route is the assistant's LLM proxy.
+Everything heavy runs in the browser. No server-side inference, no uploads.
+Accounts are optional (Supabase) and only needed to save songs and use the
+assistant — see "Accounts, plans, billing" below.
 
 ## Layout
 
@@ -224,13 +225,34 @@ Embedded page-assistant, vendored as built ESM in `vendor/page-assistant/`
 (widget + core, no install-time clone or build). Capabilities call the real
 studio functions, so answers come from the app rather than the model.
 
-One server route: `POST /api/pa/v1/llm/complete`. It is **unauthenticated**, so
-it is spend-limited instead — fixed small model (`openai/gpt-oss-20b` via
-OpenRouter), 700 output tokens, capped context, 60 requests/hour/IP held in
-memory. Env: `OPENROUTER_API_KEY` (set in Vercel production), optional
-`ASSISTANT_MODEL`. With no key the widget simply does not appear.
+Server route: `POST /api/pa/v1/llm/complete`. Requires a signed-in caller (the
+access token arrives as the `rs_at` cookie, since the widget sets its own
+headers) and spends one request from the plan via `riffscribe_use_assistant`.
+Spend guards stay: fixed small model (`openai/gpt-oss-20b` via OpenRouter), 700
+output tokens, capped context, 60 requests/hour/IP in memory. Env:
+`OPENROUTER_API_KEY`, optional `ASSISTANT_MODEL`. The widget mounts only for
+signed-in users — its own 401/429 messages ("not configured", "busy") would
+mislead.
 
-If accounts ever arrive, put this route behind a session and relax the caps.
+## Accounts, plans, billing
+
+- SQL: `supabase/accounts.sql` (applied to `fmrnqepyyjucnfbrqawl`). Usage
+  table, plan lookup from the shared `subscriptions` table (app `riffscribe`
+  or `global`), song cap as an insert trigger, `riffscribe_account()` for the
+  menu, `riffscribe_delete_my_data()`. Limits live in `riffscribe_limits` and
+  are mirrored for display in `src/lib/plans.ts` — keep in step.
+- Free: 10 saved songs, 100 assistant requests/month. Pro €5/mo: 1000 / 2000.
+  Transcription etc. is never metered (runs on the user's device).
+- UI: account menu (`AccountMenu.tsx`) in the studio header and `SiteHeader`;
+  `/songs`, `/account`, `/pricing`, `/terms`, `/privacy`.
+- Stripe (shared 6x7 account, **test mode** for now): `/api/checkout`,
+  `/api/portal`, `/api/stripe/webhook` (filters on `metadata.app=riffscribe`,
+  dedupes via `riffscribe_webhook_events`). Env: `STRIPE_SECRET_KEY`,
+  `STRIPE_PRICE_PRO`, `STRIPE_WEBHOOK_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`.
+- Deleting data (`/api/account`) removes Riffscribe rows and cancels the
+  Stripe sub; the shared 6x7 login is kept.
+- Analytics: PostHog (`Providers.tsx`), no recording/autocapture. Env
+  `NEXT_PUBLIC_POSTHOG_KEY` / `_HOST` — currently the same project as transcriber.
 
 ## Next, in the order I would do them
 
