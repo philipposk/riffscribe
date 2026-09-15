@@ -100,6 +100,11 @@ await a.save({ id: "c1", title: "Bass part", messages: [{ role: "user", content:
 const save = client.queries.at(-1);
 const row = save.ops.find(([o]) => o === "upsert")?.[1];
 check("save() writes the row as this person, in this app", row?.user_id === uid && row?.app === ASSISTANT_CHATS_APP);
+// The columns an upsert matches on; checked against the table's primary key below.
+const upsertKey = (q) => q.ops.find(([o]) => o === "upsert")?.[2]?.onConflict;
+const saveKey = upsertKey(save);
+await a.saveMany([{ id: "c2", title: "Chords", messages: [{ role: "user", content: "hi" }], createdAt: now, updatedAt: now }]);
+const saveManyKey = upsertKey(client.queries.at(-1));
 
 await a.get("c1");
 check("get() is scoped to this person", scoped(client.queries.at(-1), uid) && has(client.queries.at(-1), "eq", "id", "c1"));
@@ -118,6 +123,15 @@ const sql = readFileSync(new URL("../supabase/assistant_chats.sql", import.meta.
   .join("\n");
 check("the migration creates the table the adapter uses", sql.includes(`create table if not exists public.${ASSISTANT_CHATS_TABLE}`));
 check("row-level security is on", sql.includes(`alter table public.${ASSISTANT_CHATS_TABLE} enable row level security`));
+// A chat id is unique only per person per app, and an upsert on columns that are not the
+// key fails in Postgres, so the key and the adapter's onConflict must be the same columns.
+const pk = sql
+  .match(new RegExp(`create table if not exists public\\.${ASSISTANT_CHATS_TABLE} \\(([\\s\\S]*?)\\n\\);`))?.[1]
+  .match(/primary key \(([^)]+)\)/)?.[1]
+  .replace(/\s+/g, "");
+check("the primary key is (user_id, app, id)", pk === "user_id,app,id", pk);
+check("save() upserts on the table's primary key", !!pk && saveKey === pk, saveKey);
+check("saveMany() upserts on the table's primary key", !!pk && saveManyKey === pk, saveManyKey);
 const policies = [...sql.matchAll(/create policy "[^"]+" on public\.\w+\s+for (\w+) to (\w+)\s+([\s\S]*?);/g)];
 check("four policies: select, insert, update, delete", policies.map((p) => p[1]).sort().join(",") === "delete,insert,select,update");
 check("every policy is for signed-in users only", policies.every((p) => p[2] === "authenticated"));
