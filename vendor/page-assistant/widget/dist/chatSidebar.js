@@ -1,4 +1,5 @@
 import { CHAT_HISTORY_CHANGE_EVENT } from "./chatHistory.js";
+import { DEFAULT_STRINGS, fmt } from "./strings.js";
 // Uses the theme CSS variables (--pa-*) so the sidebar matches light/dark like the rest
 // of the panel instead of hardcoding dark colors.
 const SIDEBAR_CSS = `
@@ -73,6 +74,7 @@ export class ChatSidebar {
     store;
     handlers;
     activeId;
+    s;
     el;
     listEl;
     searchInput;
@@ -82,10 +84,13 @@ export class ChatSidebar {
     query = "";
     onHistoryChange = () => this.refresh();
     outsideClickHandler;
-    constructor(store, handlers, activeId) {
+    constructor(store, handlers, activeId, 
+    /** Resolved chrome strings. Defaults keep this constructor's old 3-arg call sites working. */
+    s = DEFAULT_STRINGS) {
         this.store = store;
         this.handlers = handlers;
         this.activeId = activeId;
+        this.s = s;
     }
     render() {
         this.el = el("div", "sidebar");
@@ -94,8 +99,8 @@ export class ChatSidebar {
         this.el.appendChild(style);
         const head = el("div", "sidebar-head");
         this.searchInput = el("input");
-        this.searchInput.placeholder = "Search chats…";
-        this.searchInput.setAttribute("aria-label", "Search chats");
+        this.searchInput.placeholder = this.s.sidebarSearch;
+        this.searchInput.setAttribute("aria-label", this.s.sidebarSearch);
         this.searchInput.oninput = () => {
             this.query = this.searchInput.value;
             this.handlers.onSearch(this.query);
@@ -103,13 +108,13 @@ export class ChatSidebar {
         };
         const toggleBtn = el("button", "toggle-sidebar");
         toggleBtn.textContent = "◀";
-        toggleBtn.title = "Collapse sidebar";
-        toggleBtn.setAttribute("aria-label", "Collapse chat history sidebar");
+        toggleBtn.title = this.s.sidebarCollapse;
+        toggleBtn.setAttribute("aria-label", this.s.sidebarCollapse);
         toggleBtn.onclick = () => this.handlers.onToggle(false);
         head.append(this.searchInput, toggleBtn);
         const newBtn = el("button", "new-chat");
-        newBtn.textContent = "+ New chat";
-        newBtn.setAttribute("aria-label", "Start a new chat");
+        newBtn.textContent = this.s.sidebarNewChat;
+        newBtn.setAttribute("aria-label", this.s.sidebarNewChatLabel);
         newBtn.onclick = () => this.handlers.onNew();
         this.listEl = el("div", "sidebar-list");
         this.el.append(head, newBtn, this.listEl);
@@ -140,7 +145,7 @@ export class ChatSidebar {
         const unpinned = sessions.filter((s) => !s.pinned && !s.archived);
         const archived = sessions.filter((s) => s.archived);
         if (pinned.length) {
-            this.addSection("Pinned");
+            this.addSection(this.s.sidebarPinned);
             for (const s of pinned)
                 this.addItem(s);
         }
@@ -165,13 +170,13 @@ export class ChatSidebar {
                 this.addItem(s);
         }
         if (ungrouped.length) {
-            this.addSection("Recent");
+            this.addSection(this.s.sidebarRecent);
             const visible = ungrouped.slice(0, this.showLimit);
             for (const s of visible)
                 this.addItem(s);
             if (ungrouped.length > this.showLimit) {
                 const more = el("button", "show-more");
-                more.textContent = `Show ${ungrouped.length - this.showLimit} more…`;
+                more.textContent = fmt(this.s.sidebarShowMore, { count: String(ungrouped.length - this.showLimit) });
                 more.onclick = () => {
                     this.showLimit += PAGE_SIZE;
                     this.refresh();
@@ -180,13 +185,13 @@ export class ChatSidebar {
             }
         }
         if (archived.length) {
-            this.addSection("Archived");
+            this.addSection(this.s.sidebarArchived);
             for (const s of archived.slice(0, 5))
                 this.addItem(s);
         }
         if (!sessions.length) {
             const empty = el("div", "section-label");
-            empty.textContent = "No chats yet";
+            empty.textContent = this.s.sidebarEmpty;
             this.listEl.appendChild(empty);
         }
     }
@@ -208,7 +213,7 @@ export class ChatSidebar {
         title.title = session.title;
         const menuBtn = el("button", "chat-menu-btn");
         menuBtn.textContent = "⋯";
-        menuBtn.setAttribute("aria-label", `Actions for "${session.title}"`);
+        menuBtn.setAttribute("aria-label", fmt(this.s.sidebarChatActions, { title: session.title }));
         menuBtn.setAttribute("aria-haspopup", "menu");
         menuBtn.onclick = (e) => {
             e.stopPropagation();
@@ -228,17 +233,17 @@ export class ChatSidebar {
         const menu = el("div", "ctx-menu");
         menu.setAttribute("role", "menu");
         const items = [
-            { label: "Rename", action: () => this.promptRename(session) },
-            { label: "Fork", action: () => this.handlers.onFork(session.id) },
-            { label: session.pinned ? "Unpin" : "Pin", action: () => this.handlers.onPin(session.id, !session.pinned) },
-            { label: "Mark unread", action: () => this.handlers.onMarkUnread(session.id) },
-            { label: "Share (copy JSON)", action: () => this.handlers.onShare(session.id) },
-            { label: session.archived ? "Unarchive" : "Archive", action: () => this.handlers.onArchive(session.id) },
+            { label: this.s.menuRename, action: () => this.promptRename(session) },
+            { label: this.s.menuFork, action: () => this.handlers.onFork(session.id) },
+            { label: session.pinned ? this.s.menuUnpin : this.s.menuPin, action: () => this.handlers.onPin(session.id, !session.pinned) },
+            { label: this.s.menuMarkUnread, action: () => this.handlers.onMarkUnread(session.id) },
+            { label: this.s.menuShare, action: () => this.handlers.onShare(session.id) },
+            { label: session.archived ? this.s.menuUnarchive : this.s.menuArchive, action: () => this.handlers.onArchive(session.id) },
             {
-                label: "Delete",
+                label: this.s.menuDelete,
                 action: () => {
                     // Deletion is destructive and irreversible — confirm first.
-                    if (typeof confirm === "function" && !confirm(`Delete "${session.title}"? This can't be undone.`))
+                    if (typeof confirm === "function" && !confirm(fmt(this.s.deleteChatConfirm, { title: session.title })))
                         return;
                     this.handlers.onDelete(session.id);
                 },
@@ -316,7 +321,7 @@ export class ChatSidebar {
         return true;
     }
     promptRename(session) {
-        const title = prompt("Rename chat:", session.title);
+        const title = prompt(this.s.renameChatPrompt, session.title);
         if (title?.trim())
             this.handlers.onRename(session.id, title.trim());
     }

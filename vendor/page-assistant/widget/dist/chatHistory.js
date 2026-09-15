@@ -5,42 +5,164 @@ const MAX_MESSAGES_PER_SESSION = 100;
 function uid() {
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
+function emptyData() {
+    return { version: 1, activeId: null, sessions: [], groups: [] };
+}
 function titleFromMessage(text) {
     const t = text.trim().replace(/\s+/g, " ");
     return t.length > 48 ? t.slice(0, 46) + "…" : t || "New chat";
 }
-/** localStorage-backed multi-chat store (client-only; host can sync via export/import). */
+/**
+ * Multi-chat store. The UI reads it synchronously; where it keeps chats is switchable:
+ * localStorage (the default, and the only option before account history) or memory only.
+ * Account sync mirrors it through `onChange` rather than living inside it.
+ */
 export class ChatHistoryStore {
     storageKey;
     data;
-    constructor(storageKey = CHAT_HISTORY_STORAGE_KEY) {
+    persistLocal;
+    listeners = new Set();
+    constructor(storageKey = CHAT_HISTORY_STORAGE_KEY, opts = {}) {
         this.storageKey = storageKey;
-        this.data = this.load();
+        this.persistLocal = opts.persist !== false;
+        this.data = this.persistLocal ? ChatHistoryStore.readLocal(this.storageKey) : emptyData();
     }
-    load() {
-        if (typeof localStorage === "undefined") {
-            return { version: 1, activeId: null, sessions: [], groups: [] };
-        }
+    /** What localStorage holds under `storageKey`, without touching any store. */
+    static readLocal(storageKey = CHAT_HISTORY_STORAGE_KEY) {
+        if (typeof localStorage === "undefined")
+            return emptyData();
         try {
-            const raw = localStorage.getItem(this.storageKey);
+            const raw = localStorage.getItem(storageKey);
             if (!raw)
-                return { version: 1, activeId: null, sessions: [], groups: [] };
+                return emptyData();
             const parsed = JSON.parse(raw);
-            if (parsed.version !== 1 || !Array.isArray(parsed.sessions)) {
-                return { version: 1, activeId: null, sessions: [], groups: [] };
-            }
+            if (parsed.version !== 1 || !Array.isArray(parsed.sessions))
+                return emptyData();
             return { version: 1, activeId: parsed.activeId ?? null, sessions: parsed.sessions, groups: parsed.groups ?? [] };
         }
         catch {
-            return { version: 1, activeId: null, sessions: [], groups: [] };
+            return emptyData();
         }
     }
-    persist() {
+    /** Remove every chat this device holds under `storageKey`. */
+    static clearLocal(storageKey = CHAT_HISTORY_STORAGE_KEY) {
+        if (typeof localStorage === "undefined")
+            return;
+        try {
+            localStorage.removeItem(storageKey);
+        }
+        catch {
+            /* storage blocked — nothing to clear */
+        }
+    }
+    /** Remove the given chats from what localStorage holds under `storageKey`, leaving the rest. */
+    static removeLocal(ids, storageKey = CHAT_HISTORY_STORAGE_KEY) {
+        if (typeof localStorage === "undefined" || !ids.length)
+            return;
+        const drop = new Set(ids);
+        const data = ChatHistoryStore.readLocal(storageKey);
+        data.sessions = data.sessions.filter((s) => !drop.has(s.id));
+        if (data.activeId && drop.has(data.activeId))
+            data.activeId = null;
+        try {
+            localStorage.setItem(storageKey, JSON.stringify(data));
+        }
+        catch {
+            /* storage blocked — nothing more to do */
+        }
+    }
+    /** True while this store reads and writes localStorage. */
+    get persistsLocally() {
+        return this.persistLocal;
+    }
+    /** The localStorage key this store reads and writes while it persists. */
+    get localKey() {
+        return this.storageKey;
+    }
+    /** Be told about every change that another copy would need to mirror. */
+    onChange(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+    /**
+     * Switch to localStorage and show what it holds. `storageKey` moves the store to another
+     * key (another person's slot); nothing is written to the key it leaves.
+     */
+    useLocalStorage(storageKey) {
+        if (storageKey)
+            this.storageKey = storageKey;
+        this.persistLocal = true;
+        this.data = ChatHistoryStore.readLocal(this.storageKey);
+        this.commit({ kind: "replace" });
+    }
+    /** Switch to memory only, starting from `data` (empty by default). Writes nothing to the device. */
+    useMemory(data) {
+        this.persistLocal = false;
+        this.data = {
+            version: 1,
+            activeId: data?.activeId ?? null,
+            sessions: data?.sessions ? [...data.sessions] : [],
+            groups: data?.groups ? [...data.groups] : [],
+        };
+        this.commit({ kind: "replace" });
+    }
+    /**
+     * Add chats loaded from elsewhere. A chat already here that is newer than the incoming
+     * copy is kept — it has edits the other copy has not seen yet. The active chat is kept.
+     */
+    merge(sessions) {
+        for (const incoming of sessions) {
+            const existing = this.get(incoming.id);
+            if (!existing)
+                this.data.sessions.push({ ...incoming });
+            else if (existing.updatedAt < incoming.updatedAt)
+                Object.assign(existing, incoming);
+        }
+        this.commit({ kind: "replace" });
+    }
+    /** Drop chats from this store without reporting it: they are gone elsewhere already. */
+    forget(ids) {
+        const drop = new Set(ids);
+        this.data.sessions = this.data.sessions.filter((s) => !drop.has(s.id));
+        if (this.data.activeId && drop.has(this.data.activeId))
+            this.data.activeId = null;
+        this.commit({ kind: "replace" });
+    }
+    /** Empty the store (and localStorage, while persisting). Not reported as per-chat deletes. */
+    clearAll() {
+        this.data = emptyData();
+        this.commit({ kind: "replace" });
+    }
+    /** Fill in a chat's messages without counting it as an edit. */
+    hydrate(id, messages) {
+        const s = this.get(id);
+        if (!s)
+            return;
+        s.messages = messages.slice(-MAX_MESSAGES_PER_SESSION);
+        this.commit({ kind: "replace" });
+    }
+    commit(...changes) {
+        if (this.persistLocal)
+            this.writeLocal();
+        if (typeof window !== "undefined" && typeof CustomEvent === "function") {
+            window.dispatchEvent(new CustomEvent(CHAT_HISTORY_CHANGE_EVENT));
+        }
+        for (const change of changes) {
+            for (const l of this.listeners) {
+                try {
+                    l(change);
+                }
+                catch {
+                    /* a listener must not break the store */
+                }
+            }
+        }
+    }
+    writeLocal() {
         if (typeof localStorage === "undefined")
             return;
         try {
             localStorage.setItem(this.storageKey, JSON.stringify(this.data));
-            window.dispatchEvent(new CustomEvent(CHAT_HISTORY_CHANGE_EVENT));
         }
         catch {
             /* quota exceeded — trim oldest archived */
@@ -96,7 +218,7 @@ export class ChatHistoryStore {
         this.data.sessions.unshift(session);
         this.data.activeId = session.id;
         this.trimSessions();
-        this.persist();
+        this.commit({ kind: "upsert", id: session.id });
         return session;
     }
     setActive(id) {
@@ -107,7 +229,7 @@ export class ChatHistoryStore {
                 s.unread = false;
             }
         }
-        this.persist();
+        this.commit();
     }
     saveMessages(id, messages, opts) {
         const s = this.get(id);
@@ -121,7 +243,7 @@ export class ChatHistoryStore {
         if (firstUser && (s.title === "New chat" || !s.title)) {
             s.title = titleFromMessage(firstUser.content);
         }
-        this.persist();
+        this.commit({ kind: "upsert", id });
     }
     rename(id, title) {
         const s = this.get(id);
@@ -129,14 +251,14 @@ export class ChatHistoryStore {
             return;
         s.title = title.trim() || s.title;
         s.updatedAt = new Date().toISOString();
-        this.persist();
+        this.commit({ kind: "upsert", id });
     }
     delete(id) {
         this.data.sessions = this.data.sessions.filter((s) => s.id !== id);
         if (this.data.activeId === id) {
             this.data.activeId = this.data.sessions.find((s) => !s.archived)?.id ?? null;
         }
-        this.persist();
+        this.commit({ kind: "delete", id });
     }
     archive(id, archived = true) {
         const s = this.get(id);
@@ -147,7 +269,7 @@ export class ChatHistoryStore {
         if (archived && this.data.activeId === id) {
             this.data.activeId = this.data.sessions.find((x) => !x.archived && x.id !== id)?.id ?? null;
         }
-        this.persist();
+        this.commit({ kind: "upsert", id });
     }
     pin(id, pinned = true) {
         const s = this.get(id);
@@ -155,14 +277,14 @@ export class ChatHistoryStore {
             return;
         s.pinned = pinned;
         s.updatedAt = new Date().toISOString();
-        this.persist();
+        this.commit({ kind: "upsert", id });
     }
     markUnread(id, unread = true) {
         const s = this.get(id);
         if (!s)
             return;
         s.unread = unread;
-        this.persist();
+        this.commit();
     }
     fork(id) {
         const src = this.get(id);
@@ -181,7 +303,7 @@ export class ChatHistoryStore {
         this.data.sessions.unshift(forked);
         this.data.activeId = forked.id;
         this.trimSessions();
-        this.persist();
+        this.commit({ kind: "upsert", id: forked.id });
         return forked;
     }
     reorder(ids) {
@@ -190,7 +312,7 @@ export class ChatHistoryStore {
             if (s)
                 s.order = ids.length - i;
         });
-        this.persist();
+        this.commit();
     }
     setGroup(sessionId, groupId) {
         const s = this.get(sessionId);
@@ -198,12 +320,12 @@ export class ChatHistoryStore {
             return;
         s.groupId = groupId;
         s.updatedAt = new Date().toISOString();
-        this.persist();
+        this.commit({ kind: "upsert", id: sessionId });
     }
     createGroup(name) {
         const g = { id: uid(), name, order: this.data.groups.length };
         this.data.groups.push(g);
-        this.persist();
+        this.commit();
         return g;
     }
     renameGroup(id, name) {
@@ -211,15 +333,18 @@ export class ChatHistoryStore {
         if (!g)
             return;
         g.name = name.trim() || g.name;
-        this.persist();
+        this.commit();
     }
     deleteGroup(id) {
         this.data.groups = this.data.groups.filter((g) => g.id !== id);
+        const touched = [];
         for (const s of this.data.sessions) {
-            if (s.groupId === id)
+            if (s.groupId === id) {
                 s.groupId = undefined;
+                touched.push(s.id);
+            }
         }
-        this.persist();
+        this.commit(...touched.map((sid) => ({ kind: "upsert", id: sid })));
     }
     /** Export session as shareable JSON (no secrets). */
     share(id) {
@@ -237,8 +362,8 @@ export class ChatHistoryStore {
             const parsed = JSON.parse(json);
             if (parsed.version !== 1 || !Array.isArray(parsed.sessions))
                 return false;
-            this.data = parsed;
-            this.persist();
+            this.data = { version: 1, activeId: parsed.activeId ?? null, sessions: parsed.sessions, groups: parsed.groups ?? [] };
+            this.commit({ kind: "import", ids: parsed.sessions.map((x) => x.id) });
             return true;
         }
         catch {

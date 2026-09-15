@@ -1,4 +1,5 @@
 import type { ChatHistoryStore } from "./chatHistory.js";
+import { type WidgetStrings } from "./strings.js";
 export interface ChatSidebarHandlers {
     onSelect: (id: string) => void;
     onNew: () => void;
@@ -16,6 +17,8 @@ export declare class ChatSidebar {
     private store;
     private handlers;
     private activeId;
+    /** Resolved chrome strings. Defaults keep this constructor's old 3-arg call sites working. */
+    private s;
     private el;
     private listEl;
     private searchInput;
@@ -25,7 +28,9 @@ export declare class ChatSidebar {
     private query;
     private onHistoryChange;
     private outsideClickHandler?;
-    constructor(store: ChatHistoryStore, handlers: ChatSidebarHandlers, activeId: string | null);
+    constructor(store: ChatHistoryStore, handlers: ChatSidebarHandlers, activeId: string | null, 
+    /** Resolved chrome strings. Defaults keep this constructor's old 3-arg call sites working. */
+    s?: WidgetStrings);
     render(): HTMLDivElement;
     /** Detach the history listener and any open menu (for widget teardown). */
     destroy(): void;

@@ -7,12 +7,18 @@
  * buttons you would. Anything slow or destructive asks first.
  *
  * Voice is the browser's own speech APIs by default, so it costs nothing.
+ *
+ * Chats are saved to the player's account while they are signed in, and to this
+ * browser otherwise — see lib/assistantHistory.ts.
  */
 import { useEffect, useRef } from "react";
 
 import {
   GREEK_STRINGS, bcp47, languageInstruction, type AssistantLang,
 } from "@/lib/assistantLang";
+import { assistantChatHistory } from "@/lib/assistantHistory";
+import { onAuthChange } from "@/lib/store/charts";
+import { supabase } from "@/lib/supabase/client";
 
 export interface AssistantActions {
   describe: () => string;
@@ -72,7 +78,7 @@ export default function Assistant({
         return; // the assistant is optional — the studio works without it
       }
       if (disposed) return;
-      const { PageAssistant, capability } = mod;
+      const { PageAssistant, capability, supabaseChatHistoryAdapter } = mod;
       const a = () => latest.current;
 
       const caps = [
@@ -304,7 +310,20 @@ export default function Assistant({
         // honest rather than offering a choice that is quietly ignored.
         showModelPicker: false,
         modelFixedNote:
-          "Riffscribe runs one small model for everyone, chosen on the server. There is no account here, so the choice is not yours to make — and nothing you type is billed to you.",
+          "Riffscribe runs one small model for everyone, chosen on the server, so there is nothing to pick here — and nothing you type is billed to you.",
+        // Chat history. Signed in, the default is the player's account: a chat
+        // follows them to any device they sign in on. Signed out, or on a
+        // deployment without Supabase, chats stay in this browser as they always
+        // have. The player can switch in settings (Data tab) to this device only,
+        // or to not saving at all, and delete one chat or all of them. Only the
+        // text of the conversation is saved, never audio, and RLS keeps each
+        // person to their own rows. Chats idle for 12 months are deleted
+        // (supabase/assistant_chats.sql). Chats already in this browser stay there
+        // until the player chooses to move them; settings offers that.
+        chatHistoryMode: "account",
+        chatHistoryAdapter: assistantChatHistory(supabase(), supabaseChatHistoryAdapter),
+        chatHistoryFallbackMode: "device",
+        onChatHistoryError: (e: unknown) => console.warn("[assistant] chat history:", e),
         lang: bcp47(lang),
         strings: lang === "el" ? GREEK_STRINGS : undefined,
         persona:
@@ -325,7 +344,17 @@ export default function Assistant({
           "Mute the vocals and export the backing track",
         ],
       });
-      teardown = () => PageAssistant.destroy();
+      // Signing in and out happens in the save bar, not the widget, so tell it
+      // who is here now. Deferred a tick: supabase-js asks that its own calls
+      // wait until this callback has returned, and the widget's check reads the
+      // session.
+      const stopAuth = onAuthChange(() => {
+        setTimeout(() => void PageAssistant.refreshChatHistory(), 0);
+      });
+      teardown = () => {
+        stopAuth();
+        PageAssistant.destroy();
+      };
     })();
 
     return () => {

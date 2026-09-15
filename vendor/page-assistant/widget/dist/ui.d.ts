@@ -17,6 +17,8 @@ export interface UIHandlers {
     /** Return true if the deleted/archived id was the active chat (so the store op ran). */
     onDeleteChat?: (id: string) => void;
     onArchiveChat?: (id: string) => void;
+    /** Fork through the controller, which may have to fetch the chat's messages first. */
+    onForkChat?: (id: string) => void;
 }
 export interface UIOptions {
     /** The mark on the launcher button: a name from LAUNCHER_ICONS, raw SVG, or a character. */

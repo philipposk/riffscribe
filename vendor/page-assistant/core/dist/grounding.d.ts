@@ -1,4 +1,6 @@
 import type { Capability, ChatRequest, ChatResponse, JSONSchema, LLMProvider, MemoryStore, PageContext, ToolInvocation } from "./types.js";
+import { type ScrubRule } from "./scrub.js";
+import { type VocabularyOption } from "./vocabulary.js";
 export interface AssistantOptions {
     capabilities: Capability[];
     llm: LLMProvider;
@@ -8,13 +10,42 @@ export interface AssistantOptions {
     /** App name used in the system prompt. */
     appName?: string;
     /**
+     * The assistant's own name, if it has one ("Ada"). The model introduces itself by it and
+     * answers "who are you" with it; `appName` stays the product. One line, 60 chars max.
+     */
+    assistantName?: string;
+    /**
      * Free-text knowledge about the app — README, docs, "what this is for". Injected into the
      * system prompt so the assistant understands the product, not just its buttons.
      */
     knowledge?: string;
     /** Suggested things the user can ask. The assistant offers these proactively. */
     suggestions?: string[];
+    /**
+     * Forced routing: before the model's first round, a keyword heuristic may force one
+     * capability for an unambiguous factual question. `false` turns it off; a function
+     * replaces it (return a capability name, or undefined to let the model choose). A name
+     * that is not a registered, enabled capability is ignored.
+     */
+    forcedRouting?: false | ForcedRouter;
+    /**
+     * Rewrites applied to every user-facing message (model prose, render() output, and the
+     * error text of a failed run()) and to error text sent back to the model. Defaults to
+     * DEFAULT_SCRUB_RULES: credentials, connection strings, environment variable names.
+     * Extend it with your own internal terms — `[...DEFAULT_SCRUB_RULES, ["InternalDB",
+     * "our records"]]` — or pass `false` to turn it off.
+     */
+    scrub?: ScrubRule[] | false;
+    /**
+     * The real values in the user's workspace (tags, statuses, projects) and what their
+     * words mean here, so loose wording maps onto real values. A fixed Vocabulary, a loader
+     * (cached 60 s), or `{ load, ttlMs, timeoutMs, key }`. Best-effort: a loader that throws
+     * or is slow is skipped for that turn and never breaks the chat.
+     */
+    vocabulary?: VocabularyOption;
 }
+/** Picks a capability to force on the first round, or undefined to leave it to the model. */
+export type ForcedRouter = (message: string, capabilities: Capability[]) => string | undefined;
 /**
  * The grounded assistant. Mirrors the strive page-assistant safety model:
  *  1. The model may ONLY call registered capabilities (no free-form actions).
@@ -25,11 +56,17 @@ export interface AssistantOptions {
 export declare class Assistant {
     private opts;
     private caps;
+    private vocabulary?;
     constructor(opts: AssistantOptions);
     get capabilities(): Capability[];
     /** Fold in extra knowledge discovered at runtime (e.g. fetched README / llm.txt). */
     setKnowledge(text: string): void;
     private systemPrompt;
+    /** Last step before text reaches the user (or goes back to the model as an error). */
+    private say;
+    /** Capabilities switched on right now — the only ones the model is told about. */
+    private available;
+    private route;
     private toolSpecs;
     chat(req: ChatRequest): Promise<ChatResponse>;
     /** Execute a confirmed capability (called after user approves a pendingConfirmation). */
@@ -60,6 +97,10 @@ export declare function validateArgs(args: Record<string, unknown>, schema: JSON
  * intents we force the matching capability so the model can't answer from memory.
  * Heuristic and conservative: only fires on a confident keyword + a single
  * obviously-matching capability.
+ *
+ * Never picks a confirm-gated capability: forcing exists to answer factual questions from
+ * real data, and a question that happens to share words with a write ("how many orders
+ * would archiving touch?") must not come back as a confirmation card for that write.
  */
 export declare function forcedFactualTool(message: string, caps: Capability[]): string | undefined;
 /**

@@ -37,9 +37,10 @@ src/components/      Studio (the whole app), Mixer, Transport, Waveform,
 src/app/api/pa/…     the assistant's LLM proxy
 src/app/c/[id]/      a shared chart, readable without an account
 supabase/schema.sql  the charts table and its row-level security
+supabase/assistant_chats.sql  the assistant's saved chats, RLS, 12-month sweep
 local/               fetch-server.mjs — optional link fetcher, runs on your Mac
 scripts/             copy-assets (runs on install), verify-tex, verify-voices,
-                     verify-marking
+                     verify-marking, verify-chat-history
 ```
 
 `Studio.tsx` is large and holds all the state. That is deliberate — the pieces
@@ -191,6 +192,10 @@ Checked against the live deployment, not just locally:
 
 ## Not verified
 
+- Account chat history in a browser. The wiring is checked by
+  `scripts/verify-chat-history.mjs` against a stand-in client, but it has not
+  run against the live project, because `supabase/assistant_chats.sql` has not
+  been applied there yet.
 - Overdub recording end to end — needs a microphone grant, never exercised. The
   take-marking UI sits behind it, so that path is unexercised too; the marking
   logic underneath it is unit-tested.
@@ -231,6 +236,17 @@ memory. Env: `OPENROUTER_API_KEY` (set in Vercel production), optional
 `ASSISTANT_MODEL`. With no key the widget simply does not appear.
 
 If accounts ever arrive, put this route behind a session and relax the caps.
+
+Chat history (`src/lib/assistantHistory.ts`): signed in, chats go to the
+player's account in `riffscribe_assistant_chats` through the widget's Supabase
+adapter and the browser client — RLS, every policy `auth.uid() = user_id`.
+Signed out, or with no Supabase configured, they stay in localStorage, kept per
+signed-in person so a shared browser does not mix players. The player can pick
+account / this device / don't save in the widget's Data tab. Sign-in and
+sign-out call `PageAssistant.refreshChatHistory()`. Chats idle 12 months are
+deleted daily by the pg_cron job `riffscribe-assistant-chats-retention` — only
+scheduled if pg_cron was enabled when `supabase/assistant_chats.sql` was run;
+otherwise run the `cron.schedule` at the end of that file by hand.
 
 ## Next, in the order I would do them
 
