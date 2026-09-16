@@ -19,5 +19,11 @@ export declare const DEFAULT_SCRUB_RULES: ScrubRule[];
  * inline code would otherwise show as literal `**` and backticks.
  */
 export declare const PLAIN_TEXT_SCRUB_RULES: ScrubRule[];
-/** Apply `rules` in order. */
+/**
+ * Apply `rules` in order. Links (`[label](href)`) survive: rules rewrite the text around
+ * them and each label, never an href. A link whose href a rule would change is reduced to
+ * its label, so a credential or internal name in a URL is never shown or followed. The
+ * PLAIN_TEXT_SCRUB_RULES are formatting, not secrets, and don't judge hrefs: a slug like
+ * `/a__b__c` keeps its link.
+ */
 export declare function scrubText(text: string, rules: ScrubRule[]): string;

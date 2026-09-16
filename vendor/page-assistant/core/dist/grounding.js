@@ -1,6 +1,7 @@
 import { isCapabilityEnabled, validateCapabilities } from "./registry.js";
 import { oneLine } from "./text.js";
 import { DEFAULT_SCRUB_RULES, scrubText } from "./scrub.js";
+import { linkText } from "./links.js";
 import { VocabularyResolver } from "./vocabulary.js";
 const MAX_TOOL_ROUNDS = 6;
 // Keep the last N history+working messages sent to the model. Prevents unbounded prompts
@@ -26,7 +27,7 @@ function genToolCallId() {
     return `tc_${Date.now().toString(36)}_${(uid++).toString(36)}`;
 }
 /**
- * The grounded assistant. Mirrors the strive page-assistant safety model:
+ * The grounded assistant. Safety model:
  *  1. The model may ONLY call registered capabilities (no free-form actions).
  *  2. Factual answers come from each capability's render(), not model prose.
  *  3. A validator strips/replaces model text that asserts numbers the tools
@@ -64,6 +65,7 @@ export class Assistant {
             `- For capabilities marked confirm, describe what will happen and wait for the user to approve before calling.`,
             `- Be concise. Prefer doing the action over describing it.`,
             `- Never mention environment variables, API routes, internal system names or capability names to the user; describe things in the user's terms.`,
+            `- Keep markdown links from capability results exactly as written, e.g. [label](/path). Never make up a link.`,
             `Current page: ${page.title ?? page.path} (${page.path}).`,
         ];
         if (page.state && Object.keys(page.state).length) {
@@ -276,7 +278,7 @@ export function coerceArgTypes(args, schema) {
     }
     return out;
 }
-/** Drop keys the schema didn't declare — mirrors strive's additionalProperties:false hardening. */
+/** Drop keys the schema didn't declare — the same hardening as additionalProperties:false. */
 export function stripUnknownKeys(args, schema) {
     if (!schema.properties)
         return args;
@@ -373,7 +375,7 @@ function overlapScore(a, b) {
  * Factual text validator. If the model's prose contains numbers that do NOT appear
  * anywhere in the trusted rendered tool output, we don't trust the prose — we fall
  * back to concatenating the trusted renders. This is the "validator replaces LLM text
- * when it invents a count" guarantee from strive, generalized.
+ * when it invents a count" guarantee.
  */
 export function validateFactualText(text, invocations) {
     const rendered = invocations.filter((i) => i.ok && i.rendered).map((i) => i.rendered);
@@ -389,10 +391,12 @@ export function validateFactualText(text, invocations) {
         const joined = rendered.join("\n\n");
         return { text: joined, wasCorrected: joined !== text };
     }
+    // Links: a label is text like any other and its numbers are checked; an href is where a
+    // link goes, not a claim, so its digits neither vouch for a number nor count as one.
     const trusted = [];
     const trustedNumbers = new Set();
     for (const r of rendered)
-        for (const n of r.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? []) {
+        for (const n of linkText(r).replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? []) {
             trustedNumbers.add(n);
             trusted.push(Number(n));
         }
@@ -407,8 +411,9 @@ export function validateFactualText(text, invocations) {
     };
     // Numbers that live inside a URL, path, or identifier-like token are structural, not
     // factual claims — collect them so we don't flag "gpt-4o", "/v1/", "ISO-8601", etc.
-    const structural = collectStructuralNumbers(text);
-    const claimedNumbers = text.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? [];
+    const prose = linkText(text);
+    const structural = collectStructuralNumbers(prose);
+    const claimedNumbers = prose.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? [];
     const invented = claimedNumbers.filter((n) => !isHonest(n) && Number(n) > 4 && !isWhitelisted(n, structural));
     if (invented.length === 0)
         return { text, wasCorrected: false };

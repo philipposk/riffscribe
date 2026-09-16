@@ -77,6 +77,70 @@ var init_fileUpload = __esm({
   }
 });
 
+// src/index.ts
+var index_exports = {};
+__export(index_exports, {
+  ASSISTANT_SETTINGS_STORAGE_KEY: () => ASSISTANT_SETTINGS_STORAGE_KEY,
+  AccountHistorySync: () => AccountHistorySync,
+  CHAT_HISTORY_CHANGE_EVENT: () => CHAT_HISTORY_CHANGE_EVENT,
+  CHAT_HISTORY_MODES: () => CHAT_HISTORY_MODES,
+  CHAT_HISTORY_MODE_STORAGE_KEY: () => CHAT_HISTORY_MODE_STORAGE_KEY,
+  CHAT_HISTORY_STORAGE_KEY: () => CHAT_HISTORY_STORAGE_KEY,
+  ChatHistoryManager: () => ChatHistoryManager,
+  ChatHistoryStore: () => ChatHistoryStore,
+  DEFAULT_MODELS: () => DEFAULT_MODELS,
+  DEFAULT_SCRUB_RULES: () => DEFAULT_SCRUB_RULES,
+  DEFAULT_STRINGS: () => DEFAULT_STRINGS,
+  ELEVENLABS_VOICES: () => ELEVENLABS_VOICES,
+  LocalMemoryStore: () => LocalMemoryStore,
+  OPENAI_VOICES: () => OPENAI_VOICES,
+  PLAIN_TEXT_SCRUB_RULES: () => PLAIN_TEXT_SCRUB_RULES,
+  PageAssistant: () => PageAssistant,
+  VOICE_SETTINGS_CHANGE_EVENT: () => VOICE_SETTINGS_CHANGE_EVENT,
+  VOICE_SETTINGS_STORAGE_KEY: () => VOICE_SETTINGS_STORAGE_KEY,
+  capability: () => capability,
+  closeAssistantSettingsModal: () => closeAssistantSettingsModal,
+  closeVoiceSettingsModal: () => closeVoiceSettingsModal,
+  deviceStorageKey: () => deviceStorageKey,
+  escapeLinkText: () => escapeLinkText,
+  exportAnalyticsMarkdown: () => exportAnalyticsMarkdown,
+  fetchModelCatalog: () => fetchModelCatalog,
+  followLink: () => followLink,
+  formatAttachmentsForPrompt: () => formatAttachmentsForPrompt,
+  fromAccountChat: () => fromAccountChat,
+  fullScan: () => fullScan,
+  getAssistantSettings: () => getAssistantSettings,
+  getLocalAnalytics: () => getLocalAnalytics,
+  getStoredChatHistoryMode: () => getStoredChatHistoryMode,
+  getVoiceDefaults: () => getVoiceDefaults,
+  getVoiceSettings: () => getVoiceSettings,
+  historyMoveOffers: () => historyMoveOffers,
+  linkText: () => linkText,
+  markdownLink: () => markdownLink,
+  mountAssistantSettingsPanel: () => mountAssistantSettingsPanel,
+  mountVoiceSettingsPanel: () => mountVoiceSettingsPanel,
+  openAssistantSettingsModal: () => openAssistantSettingsModal,
+  openVoiceSettingsModal: () => openVoiceSettingsModal,
+  pageActionCapabilities: () => pageActionCapabilities,
+  parseLinks: () => parseLinks,
+  readFileAttachment: () => readFileAttachment,
+  renderReply: () => renderReply,
+  resolveChatHistoryMode: () => resolveChatHistoryMode,
+  resolveStrings: () => resolveStrings,
+  resolveVoiceLang: () => resolveVoiceLang,
+  safeLinkHref: () => safeLinkHref,
+  scanPage: () => scanPage,
+  setAssistantSettings: () => setAssistantSettings,
+  setStoredChatHistoryMode: () => setStoredChatHistoryMode,
+  setVoiceDefaults: () => setVoiceDefaults,
+  setVoiceSettings: () => setVoiceSettings,
+  supabaseChatHistoryAdapter: () => supabaseChatHistoryAdapter,
+  toAccountChat: () => toAccountChat,
+  trackEvent: () => trackEvent,
+  voiceInputAvailable: () => voiceInputAvailable,
+  voiceOptionsFromSettings: () => voiceOptionsFromSettings
+});
+
 // ../core/dist/registry.js
 var TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 var DATA_KEYS = /* @__PURE__ */ new Set(["enum", "const", "default", "examples"]);
@@ -156,6 +220,191 @@ function oneLine(value, max) {
   return String(value ?? "").replace(LINE_BREAKING, " ").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+// ../core/dist/links.js
+var MAX_LABEL = 500;
+var MAX_HREF = 2048;
+function readLink(text, start) {
+  let label = "";
+  let depth = 0;
+  let i = start + 1;
+  for (; i < text.length; i++) {
+    if (i - start > MAX_LABEL)
+      return null;
+    const c = text[i];
+    if (c === "\n" || c === "\r")
+      return null;
+    if (c === "\\" && (text[i + 1] === "[" || text[i + 1] === "]" || text[i + 1] === "\\")) {
+      label += text[++i];
+      continue;
+    }
+    if (c === "[")
+      depth++;
+    else if (c === "]") {
+      if (depth === 0)
+        break;
+      depth--;
+    }
+    label += c;
+  }
+  if (text[i] !== "]" || text[i + 1] !== "(")
+    return null;
+  const hrefStart = i + 2;
+  let href = "";
+  let parens = 0;
+  let j = hrefStart;
+  for (; j < text.length; j++) {
+    if (j - hrefStart > MAX_HREF)
+      return null;
+    const c = text[j];
+    if (c === "\\" && (text[j + 1] === "(" || text[j + 1] === ")")) {
+      href += text[++j];
+      continue;
+    }
+    if (/\s/.test(c))
+      return null;
+    if (c === "(")
+      parens++;
+    else if (c === ")") {
+      if (parens === 0)
+        break;
+      parens--;
+    }
+    href += c;
+  }
+  if (text[j] !== ")" || !label.trim() || !href)
+    return null;
+  return {
+    start,
+    end: j + 1,
+    label,
+    href,
+    hrefSource: text.slice(hrefStart, j),
+    image: start > 0 && text[start - 1] === "!"
+  };
+}
+function scanLinks(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\" && (text[i + 1] === "[" || text[i + 1] === "]")) {
+      i++;
+      continue;
+    }
+    if (c !== "[")
+      continue;
+    const link = readLink(text, i);
+    if (!link)
+      continue;
+    out.push(link);
+    i = link.end - 1;
+  }
+  return out;
+}
+var unescapeText = (s) => s.replace(/\\([[\]])/g, "$1");
+function parseLinks(text) {
+  const out = [];
+  const pushText = (s) => {
+    if (!s)
+      return;
+    const last2 = out[out.length - 1];
+    if (last2?.type === "text")
+      last2.text += s;
+    else
+      out.push({ type: "text", text: s });
+  };
+  let last = 0;
+  for (const t of scanLinks(text)) {
+    if (t.image) {
+      pushText(unescapeText(text.slice(last, t.start - 1)));
+      pushText(t.label);
+    } else {
+      pushText(unescapeText(text.slice(last, t.start)));
+      out.push({ type: "link", label: t.label, href: t.href });
+    }
+    last = t.end;
+  }
+  pushText(unescapeText(text.slice(last)));
+  return out;
+}
+function linkText(text) {
+  return parseLinks(text).map((s) => s.type === "link" ? s.label : s.text).join("");
+}
+function httpOrigin(value) {
+  try {
+    const u = new URL(value);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+function safeLinkHref(href, policy = {}) {
+  if (!href || href.length > MAX_HREF)
+    return null;
+  if (/[\s\\ -]/.test(href))
+    return null;
+  if (href[0] === "/") {
+    if (href[1] === "/")
+      return null;
+    if (policy.origin) {
+      const own = httpOrigin(policy.origin);
+      try {
+        if (!own || new URL(href, own).origin !== own)
+          return null;
+      } catch {
+        return null;
+      }
+    }
+    return href;
+  }
+  if (!/^https?:\/\//i.test(href) || !policy.linkOrigins?.length)
+    return null;
+  const origin = httpOrigin(href);
+  if (!origin)
+    return null;
+  return policy.linkOrigins.some((o) => httpOrigin(o) === origin) ? href : null;
+}
+var escapeLabel = (s) => s.replace(/[[\]\\]/g, "\\$&");
+function escapeLinkText(s) {
+  return s.replace(/[[\]]/g, "\\$&");
+}
+function markdownLink(label, href) {
+  const l = escapeLabel(label.replace(/\s+/g, " ").trim());
+  const h = href.replace(/[\s\\]/g, (c) => encodeURIComponent(c)).replace(/[()]/g, "\\$&");
+  return `[${l}](${h})`;
+}
+var MARK_OPEN = "\uE000";
+var MARK_CLOSE = "\uE001";
+var MARK_RE = /([-]+)/g;
+var markFor = (n) => MARK_OPEN + [...n.toString(16)].map((d) => String.fromCharCode(57360 + parseInt(d, 16))).join("") + MARK_CLOSE;
+var markIndex = (digits) => parseInt([...digits].map((c) => (c.charCodeAt(0) - 57360).toString(16)).join(""), 16);
+function rewriteAroundLinks(text, rewrite, checkHref = rewrite) {
+  const tokens = scanLinks(text);
+  if (!tokens.length)
+    return rewrite(text);
+  let masked = "";
+  let last = 0;
+  tokens.forEach((t, n) => {
+    masked += text.slice(last, t.start) + markFor(n);
+    last = t.end;
+  });
+  masked += text.slice(last);
+  if (masked.replace(MARK_RE, "").includes(MARK_OPEN))
+    return null;
+  const out = rewrite(masked);
+  const seen = [...out.matchAll(MARK_RE)].map((m) => markIndex(m[1]));
+  if (seen.length !== tokens.length || new Set(seen).size !== tokens.length)
+    return null;
+  return out.replace(MARK_RE, (_, digits) => {
+    const t = tokens[markIndex(digits)];
+    const label = rewrite(t.label);
+    if (checkHref(t.href) !== t.href)
+      return escapeLinkText(label);
+    if (label === t.label)
+      return text.slice(t.start, t.end);
+    return `[${escapeLabel(label)}](${t.hrefSource})`;
+  });
+}
+
 // ../core/dist/scrub.js
 var REDACTED = "[redacted]";
 var DEFAULT_SCRUB_RULES = [
@@ -188,13 +437,19 @@ function compile(pattern) {
   return pattern.global ? pattern : new RegExp(pattern.source, `${pattern.flags}g`);
 }
 function scrubText(text, rules) {
-  let out = text;
-  for (const [pattern, replacement] of rules) {
-    const re = compile(pattern);
-    re.lastIndex = 0;
-    out = out.replace(re, replacement);
-  }
-  return out;
+  const compiled = rules.map((rule) => ({ re: compile(rule[0]), replacement: rule[1], formatting: PLAIN_TEXT_SCRUB_RULES.includes(rule) }));
+  const run = (s, all) => {
+    let out = s;
+    for (const { re, replacement, formatting } of compiled) {
+      if (!all && formatting)
+        continue;
+      re.lastIndex = 0;
+      out = out.replace(re, replacement);
+    }
+    return out;
+  };
+  const apply = (s) => run(s, true);
+  return rewriteAroundLinks(text, apply, (href) => run(href, false)) ?? apply(text);
 }
 
 // ../core/dist/vocabulary.js
@@ -361,6 +616,7 @@ var Assistant = class {
       `- For capabilities marked confirm, describe what will happen and wait for the user to approve before calling.`,
       `- Be concise. Prefer doing the action over describing it.`,
       `- Never mention environment variables, API routes, internal system names or capability names to the user; describe things in the user's terms.`,
+      `- Keep markdown links from capability results exactly as written, e.g. [label](/path). Never make up a link.`,
       `Current page: ${page.title ?? page.path} (${page.path}).`
     ];
     if (page.state && Object.keys(page.state).length) {
@@ -620,7 +876,7 @@ function validateFactualText(text, invocations) {
   const trusted = [];
   const trustedNumbers = /* @__PURE__ */ new Set();
   for (const r of rendered)
-    for (const n of r.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? []) {
+    for (const n of linkText(r).replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? []) {
       trustedNumbers.add(n);
       trusted.push(Number(n));
     }
@@ -630,8 +886,9 @@ function validateFactualText(text, invocations) {
     const num = Number(n);
     return trusted.some((t) => Math.round(t) === num || t.toFixed(1) === n || Math.abs(t - num) < 0.05);
   };
-  const structural = collectStructuralNumbers(text);
-  const claimedNumbers = text.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? [];
+  const prose = linkText(text);
+  const structural = collectStructuralNumbers(prose);
+  const claimedNumbers = prose.replace(/(\d),(\d)/g, "$1$2").match(/\d+(\.\d+)?/g) ?? [];
   const invented = claimedNumbers.filter((n) => !isHonest(n) && Number(n) > 4 && !isWhitelisted(n, structural));
   if (invented.length === 0)
     return { text, wasCorrected: false };
@@ -2037,6 +2294,8 @@ var THEME_VARS = {
     "--pa-text-muted": "#9ab4a6",
     "--pa-border": "#1f3a2c",
     "--pa-accent": "#16a34a",
+    // Links in replies: the accent, lifted to read on the dark reply bubble (~8:1).
+    "--pa-link": "#4ade80",
     // Hover/active shade of the accent, and a raised surface (active settings tab).
     "--pa-accent-hover": "#15803d",
     "--pa-bg-elevated": "#1d3328",
@@ -2057,6 +2316,8 @@ var THEME_VARS = {
     // Darkened from #059669 (~3.75:1 white text) to hit WCAG AA (~4.5:1) on accent buttons
     // (send / Confirm / Retry / "+ New chat").
     "--pa-accent": "#047857",
+    // Links in replies (~5.5:1 on the light reply bubble).
+    "--pa-link": "#047857",
     "--pa-accent-hover": "#065f46",
     "--pa-bg-elevated": "#e2e8f0",
     // Darker red for the "Delete" menu item — #f87171 was ~2.2:1 on white (fails AA).
@@ -2076,6 +2337,43 @@ function themeCssVars(mode) {
   const resolved = resolveTheme(mode);
   const vars = THEME_VARS[resolved];
   return Object.entries(vars).map(([k, v]) => `${k}: ${v}`).join("; ");
+}
+
+// src/replyLinks.ts
+function renderReply(parent, text, opts = {}) {
+  const doc = parent.ownerDocument ?? document;
+  const origin = typeof location !== "undefined" ? location.origin : void 0;
+  for (const seg of parseLinks(text)) {
+    if (seg.type === "text") {
+      parent.appendChild(doc.createTextNode(seg.text));
+      continue;
+    }
+    const href = safeLinkHref(seg.href, { origin, linkOrigins: opts.linkOrigins });
+    if (!href) {
+      parent.appendChild(doc.createTextNode(seg.label));
+      continue;
+    }
+    const a = doc.createElement("a");
+    a.href = href;
+    a.textContent = seg.label;
+    a.addEventListener("click", (e) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      followLink(href, opts.onNavigate);
+      opts.onFollowed?.(href);
+    });
+    parent.appendChild(a);
+  }
+}
+function followLink(href, onNavigate) {
+  const load = () => window.location.assign(href);
+  if (!onNavigate) return load();
+  try {
+    const r = onNavigate(href);
+    if (r && typeof r.then === "function") r.catch(load);
+  } catch {
+    load();
+  }
 }
 
 // src/ui.ts
@@ -2124,6 +2422,9 @@ var CSS2 = `
 .msg.user { align-self: flex-end; background: var(--pa-bg-msg-user); color: #fff; }
 .msg.assistant { align-self: flex-start; background: var(--pa-bg-msg-asst); border: 1px solid var(--pa-border); }
 .msg.system { align-self: center; font-size: 12px; opacity: .75; background: transparent; }
+.msg a { color: var(--pa-link, var(--pa-accent)); text-decoration: underline; text-underline-offset: 2px; border-radius: 3px; cursor: pointer; }
+.msg a:hover { text-decoration-thickness: 2px; }
+.msg a:focus-visible { outline: 2px solid var(--pa-link, var(--pa-accent)); outline-offset: 1px; }
 .msg.error {
   align-self: center; background: var(--pa-error-bg); color: var(--pa-error-text);
   border: 1px solid var(--pa-error-border); font-size: 13px; opacity: 1; max-width: 92%;
@@ -2229,8 +2530,7 @@ var WidgetUI = class {
     __publicField(this, "viewportHandler");
     /** Resolved chrome strings — every user-facing literal below reads from here. */
     __publicField(this, "s", DEFAULT_STRINGS);
-    const isNarrow = typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
-    this.sidebarOpen = isNarrow ? false : opts.sidebarOpen ?? true;
+    this.sidebarOpen = isNarrow() ? false : opts.sidebarOpen ?? true;
     this.theme = opts.theme ?? "dark";
     this.s = opts.strings ?? DEFAULT_STRINGS;
     this.host = document.createElement("div");
@@ -2376,7 +2676,8 @@ var WidgetUI = class {
     this.sendBtn = el2("button", "send");
     this.sendBtn.textContent = "\u27A4";
     this.sendBtn.setAttribute("aria-label", this.s.send);
-    foot.append(attachBtn, this.input, this.ttsBtn, this.micBtn, this.sendBtn);
+    if (this.opts.voiceEnabled === false) foot.append(attachBtn, this.input, this.sendBtn);
+    else foot.append(attachBtn, this.input, this.ttsBtn, this.micBtn, this.sendBtn);
     body.append(head, this.log, this.attachPreview, foot);
     this.panel.appendChild(body);
     this.panelWrap.appendChild(this.panel);
@@ -2589,7 +2890,18 @@ var WidgetUI = class {
   }
   addMessage(role, text) {
     const m = el2("div", `msg ${role}`);
-    m.textContent = text;
+    if (role === "assistant") {
+      renderReply(m, text, {
+        linkOrigins: this.opts.linkOrigins,
+        onNavigate: this.opts.onNavigate,
+        onFollowed: (href) => {
+          if (isNarrow()) this.toggle(false);
+          else this.opts.onLinkFollowed?.(href);
+        }
+      });
+    } else {
+      m.textContent = text;
+    }
     this.log.appendChild(m);
     this.log.scrollTop = this.log.scrollHeight;
     return m;
@@ -2762,6 +3074,9 @@ var WidgetUI = class {
     this.host.remove();
   }
 };
+function isNarrow() {
+  return typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
+}
 function el2(tag, cls) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -3327,7 +3642,7 @@ function escapeHtml2(s) {
 
 // src/models.ts
 async function fetchModelCatalog(serverUrl, signal, authToken) {
-  const fallback = { models: [...DEFAULT_MODELS], fixed: false };
+  const fallback = { models: [...DEFAULT_MODELS], fixed: true };
   if (!serverUrl || typeof fetch === "undefined") return fallback;
   const base = serverUrl.replace(/\/$/, "");
   try {
@@ -3337,18 +3652,16 @@ async function fetchModelCatalog(serverUrl, signal, authToken) {
     if (!res.ok) return fallback;
     const raw = await res.json();
     const models = Array.isArray(raw?.models) ? raw.models.filter((m) => !!m && typeof m.id === "string").map((m) => ({ id: m.id, label: typeof m.label === "string" && m.label ? m.label : m.id, provider: m.provider })) : [];
-    return {
-      models: models.length ? models : fallback.models,
-      fixed: raw?.fixed === true,
-      reason: typeof raw?.reason === "string" && raw.reason.trim() ? raw.reason : void 0
-    };
+    const reason = typeof raw?.reason === "string" && raw.reason.trim() ? raw.reason : void 0;
+    if (!models.length && raw?.fixed !== false) return { ...fallback, reason };
+    return { models: models.length ? models : fallback.models, fixed: raw?.fixed === true, reason };
   } catch {
     return fallback;
   }
 }
 
 // src/assistant-settings-ui.ts
-var TABS = ["General", "Voice", "Data"];
+var ALL_TABS = ["General", "Voice", "Data"];
 function mountAssistantSettingsPanel(container, opts = {}) {
   const storageKey = opts.storageKey ?? ASSISTANT_SETTINGS_STORAGE_KEY;
   const voiceKey = opts.voiceStorageKey ?? VOICE_SETTINGS_STORAGE_KEY;
@@ -3364,6 +3677,7 @@ function mountAssistantSettingsPanel(container, opts = {}) {
   shadow.appendChild(style);
   const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : void 0;
   media?.addEventListener?.("change", applyTheme);
+  const TABS = ALL_TABS.filter((t) => t !== "Voice" || opts.voice !== false);
   let activeTab = "General";
   const root = el4("div", "wrap");
   shadow.appendChild(root);
@@ -4567,6 +4881,8 @@ function supabaseChatHistoryAdapter(client, opts = {}) {
 
 // src/index.ts
 init_fileUpload();
+var REOPEN_KEY = "page-assistant:reopen-after-link";
+var REOPEN_WINDOW_MS = 3e4;
 var PageAssistantController = class {
   constructor(cfg) {
     this.cfg = cfg;
@@ -4677,6 +4993,7 @@ var PageAssistantController = class {
       authToken: cfg.authToken,
       modelPicker: cfg.showModelPicker,
       modelFixedNote: cfg.modelFixedNote,
+      voice: cfg.voice !== false,
       // Both settings surfaces get the same translations as the widget chrome; leaving
       // them English beside a translated panel reads as broken, not as untranslated.
       strings: cfg.strings
@@ -4686,7 +5003,15 @@ var PageAssistantController = class {
       onMic: () => this.toggleMic(),
       onConfirm: (ok) => this.handleConfirm(ok),
       onToggle: (open) => this.handleToggle(open),
-      onSettings: () => cfg.onSettings?.() ?? (cfg.useExtendedSettings !== false ? openAssistantSettingsModal(settingsUiOpts) : openVoiceSettingsModal(settingsUiOpts)),
+      onSettings: () => cfg.onSettings?.() ?? (cfg.useExtendedSettings !== false ? (
+        // The extended modal keeps two stores apart. It used to get the voice key as its
+        // `storageKey`, so theme, model and analytics were saved where nothing read them.
+        openAssistantSettingsModal({
+          ...settingsUiOpts,
+          storageKey: this.assistantSettingsKey,
+          voiceStorageKey: this.settingsKey
+        })
+      ) : openVoiceSettingsModal(settingsUiOpts)),
       onTtsToggle: (on) => {
         this.ttsEnabled = on;
       },
@@ -4706,7 +5031,18 @@ var PageAssistantController = class {
       lang: cfg.lang,
       // Don't render a mic that can only ever do nothing. Only relevant when voice is on
       // at all — `voice: false` keeps the existing "Voice is off for this app." message.
-      micAvailable: cfg.voice === false ? void 0 : voiceInputAvailable(cfg.serverUrl)
+      micAvailable: cfg.voice === false ? void 0 : voiceInputAvailable(cfg.serverUrl),
+      voiceEnabled: cfg.voice !== false,
+      linkOrigins: cfg.linkOrigins,
+      onNavigate: cfg.onNavigate,
+      // A full page load closes the panel even on a wide screen, where it should stay open.
+      onLinkFollowed: () => {
+        if (cfg.onNavigate) return;
+        try {
+          sessionStorage.setItem(REOPEN_KEY, String(Date.now()));
+        } catch {
+        }
+      }
     });
     if (this.activeChatId && this.history.length) {
       this.ui.loadMessages(this.displayHistory());
@@ -4732,6 +5068,19 @@ var PageAssistantController = class {
     window.addEventListener(VOICE_SETTINGS_CHANGE_EVENT, this.onSettingsChange);
     window.addEventListener(ASSISTANT_SETTINGS_CHANGE_EVENT, this.onAssistantSettingsChange);
     injectDiscoveryHint(cfg.serverUrl, cfg.knowledgeUrl, () => !this.destroyed);
+    this.reopenAfterLink();
+  }
+  /** Reopen the panel on the page a reply link just loaded, so the conversation carries on. */
+  reopenAfterLink() {
+    let at = 0;
+    try {
+      at = Number(sessionStorage.getItem(REOPEN_KEY));
+      sessionStorage.removeItem(REOPEN_KEY);
+    } catch {
+      return;
+    }
+    const narrow = typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
+    if (at && Date.now() - at < REOPEN_WINDOW_MS && !narrow) this.ui.toggle(true);
   }
   dispose() {
     window.removeEventListener(VOICE_SETTINGS_CHANGE_EVENT, this.onSettingsChange);
@@ -5110,7 +5459,7 @@ var PageAssistantController = class {
     }
     this.ui.setState("talking");
     try {
-      await this.voice.speak(text);
+      await this.voice.speak(linkText(text));
     } catch {
     }
     this.ui.setState("idle");
@@ -5244,7 +5593,7 @@ function stripAttachmentDump(content) {
   return head + (names.length ? `
 \u{1F4CE} ${names.join(", ")}` : "");
 }
-if (typeof window !== "undefined") window.PageAssistant = PageAssistant;
+if (typeof window !== "undefined") window.PageAssistant = { ...index_exports, ...PageAssistant };
 export {
   ASSISTANT_SETTINGS_STORAGE_KEY,
   AccountHistorySync,
@@ -5268,8 +5617,10 @@ export {
   closeAssistantSettingsModal,
   closeVoiceSettingsModal,
   deviceStorageKey,
+  escapeLinkText,
   exportAnalyticsMarkdown,
   fetchModelCatalog,
+  followLink,
   formatAttachmentsForPrompt,
   fromAccountChat,
   fullScan,
@@ -5279,15 +5630,20 @@ export {
   getVoiceDefaults,
   getVoiceSettings,
   historyMoveOffers,
+  linkText,
+  markdownLink,
   mountAssistantSettingsPanel,
   mountVoiceSettingsPanel,
   openAssistantSettingsModal,
   openVoiceSettingsModal,
   pageActionCapabilities,
+  parseLinks,
   readFileAttachment,
+  renderReply,
   resolveChatHistoryMode,
   resolveStrings,
   resolveVoiceLang,
+  safeLinkHref,
   scanPage,
   setAssistantSettings,
   setStoredChatHistoryMode,

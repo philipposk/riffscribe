@@ -8,8 +8,9 @@ Everything described here is committed, pushed to `main`, and live on
 - Card on https://www.6x7.gr (Creator tools, ♪ glyph) — lives in
   `~/Devoloper Projects/6x7.gr/src/data/projects.ts`
 
-Deploy is **not** wired to git. Ship with `vercel --prod --yes` from the project
-directory; `git push` alone changes nothing on the live site.
+Deploy **is** wired to git: the Vercel project is linked to GitHub, every push
+to `main` deploys production, and other branches get preview deploys. Work on a
+branch and merge through a PR. (`vercel --prod --yes` still deploys by hand.)
 
 ## What it is
 
@@ -226,9 +227,17 @@ Checked against the live deployment, not just locally:
 
 ## Assistant
 
-Embedded page-assistant, vendored as built ESM in `vendor/page-assistant/`
+Embedded page-assistant (0.6.1), vendored as built ESM in `vendor/page-assistant/`
 (widget + core, no install-time clone or build). Capabilities call the real
 studio functions, so answers come from the app rather than the model.
+
+It is mounted above the pages (`AssistantHost`, rendered by `Providers`) on
+`/studio` and `/songs`, so a link in a reply changes page through the router
+without closing the chat. The studio lends its controls through
+`lib/assistantBridge.ts`; its capabilities are `enabled` only while it is open.
+`find_saved_songs` answers with links: each song to `/studio?song=<id>`, and
+past five, "…and N more" to `/songs?q=<words>` — the same search as the My songs
+box, both through `matchSongs` in `lib/songSearch.ts`.
 
 Server route: `POST /api/pa/v1/llm/complete`. Requires a signed-in caller (the
 access token arrives as the `rs_at` cookie, since the widget sets its own

@@ -14,8 +14,9 @@ export interface ModelCatalog {
 /**
  * Ask `GET {serverUrl}/v1/models`.
  *
- * Degrades the safe way: any failure (404, network, bad JSON, an older server that only
- * returns `{models}`) resolves to the built-in list with `fixed: false`, so a server that
- * predates this endpoint still shows a working picker. A server that says `fixed` wins.
+ * A server that does not answer (404, network, bad JSON, no serverUrl) is taken to fix the
+ * model: most hosts proxy through their own route, which ignores the client's `model`, so a
+ * picker there changed nothing. Only a server that lists models gets one; an older server
+ * that returns just `{models}` still does. A server that says `fixed` wins.
  */
 export declare function fetchModelCatalog(serverUrl: string | undefined, signal?: AbortSignal, authToken?: string): Promise<ModelCatalog>;

@@ -47,7 +47,7 @@ export interface AssistantOptions {
 /** Picks a capability to force on the first round, or undefined to leave it to the model. */
 export type ForcedRouter = (message: string, capabilities: Capability[]) => string | undefined;
 /**
- * The grounded assistant. Mirrors the strive page-assistant safety model:
+ * The grounded assistant. Safety model:
  *  1. The model may ONLY call registered capabilities (no free-form actions).
  *  2. Factual answers come from each capability's render(), not model prose.
  *  3. A validator strips/replaces model text that asserts numbers the tools
@@ -81,7 +81,7 @@ export declare class Assistant {
  * string; everything else passes through untouched.
  */
 export declare function coerceArgTypes(args: Record<string, unknown>, schema: JSONSchema): Record<string, unknown>;
-/** Drop keys the schema didn't declare — mirrors strive's additionalProperties:false hardening. */
+/** Drop keys the schema didn't declare — the same hardening as additionalProperties:false. */
 export declare function stripUnknownKeys(args: Record<string, unknown>, schema: {
     properties?: Record<string, unknown>;
 }): Record<string, unknown>;
@@ -107,7 +107,7 @@ export declare function forcedFactualTool(message: string, caps: Capability[]): 
  * Factual text validator. If the model's prose contains numbers that do NOT appear
  * anywhere in the trusted rendered tool output, we don't trust the prose — we fall
  * back to concatenating the trusted renders. This is the "validator replaces LLM text
- * when it invents a count" guarantee from strive, generalized.
+ * when it invents a count" guarantee.
  */
 export declare function validateFactualText(text: string, invocations: ToolInvocation[]): {
     text: string;

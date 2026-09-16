@@ -1,24 +1,32 @@
 "use client";
 /**
- * The page assistant, wired to the studio.
+ * The page assistant, wired to the studio and to My songs.
  *
  * Every action it can take is a registered capability that calls the real
  * studio function — the model never invents results, it presses the same
  * buttons you would. Anything slow or destructive asks first.
+ *
+ * It is mounted once, above the pages (AssistantHost), so a link in a reply —
+ * a saved song, or "…and 12 more" — changes page without closing the
+ * conversation. The studio lends it the studio's controls while the studio is
+ * open (lib/assistantBridge.ts); on My songs only the song list is on offer.
  *
  * Voice is the browser's own speech APIs by default, so it costs nothing.
  *
  * Chats are saved to the player's account while they are signed in, and to this
  * browser otherwise — see lib/assistantHistory.ts.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import {
-  GREEK_STRINGS, bcp47, languageInstruction, type AssistantLang,
+  GREEK_STRINGS, bcp47, languageInstruction, loadLang, onLangChange, type AssistantLang,
 } from "@/lib/assistantLang";
+import { studioActions } from "@/lib/assistantBridge";
 import { assistantChatHistory } from "@/lib/assistantHistory";
-import { onAuthChange } from "@/lib/store/charts";
-import { supabase } from "@/lib/supabase/client";
+import { matchSongs, songHref, songsHref } from "@/lib/songSearch";
+import { listCharts, onAuthChange } from "@/lib/store/charts";
+import { savingConfigured, supabase } from "@/lib/supabase/client";
 
 export interface AssistantActions {
   describe: () => string;
@@ -51,18 +59,55 @@ const INSTRUMENT_IDS = [
   "trumpet", "trombone",
 ];
 
-export default function Assistant({
-  actions,
-  lang = "auto",
-}: {
-  actions: AssistantActions;
-  /** Language for the mic, the spoken replies and the chrome. */
-  lang?: AssistantLang;
-}) {
-  const latest = useRef(actions);
-  latest.current = actions;
+/** How many songs a reply names before the rest become one link to My songs. */
+const SONGS_SHOWN = 5;
+
+interface SongList {
+  query: string;
+  total: number;
+  songs: { id: string; title: string }[];
+}
+
+/**
+ * "3 saved songs matching “blues”: [A](/studio?song=…), [B](…), [C](…)."
+ * Past SONGS_SHOWN the rest is one link to My songs, searched for the same
+ * words, so it opens exactly the songs the reply left out.
+ */
+function songListReply(
+  r: SongList,
+  link: (label: string, href: string) => string,
+  esc: (text: string) => string,
+): string {
+  const query = esc(r.query);
+  if (!r.total) {
+    return r.query
+      ? `No saved song matches “${query}”. ${link("See all your songs", songsHref())}.`
+      : "You have not saved any songs yet. Transcribe a part in the studio and press Save.";
+  }
+  const matching = r.query ? ` matching “${query}”` : "";
+  const head = r.total === 1 ? `One saved song${matching}: ` : `${r.total} saved songs${matching}: `;
+  const names = r.songs.map((s) => link(s.title, songHref(s.id)));
+  const more = r.total - r.songs.length;
+  if (more > 0) names.push(link(`…and ${more} more`, songsHref(r.query)));
+  return `${head}${names.join(", ")}.`;
+}
+
+export default function Assistant() {
+  const router = useRouter();
+  const routerRef = useRef(router);
+  routerRef.current = router;
+
+  // What the assistant listens and speaks in: chosen in the studio, remembered
+  // per device. Unknown until mounted, so the widget does not start once in the
+  // wrong language and then again in the right one.
+  const [lang, setLang] = useState<AssistantLang | null>(null);
+  useEffect(() => {
+    setLang(loadLang());
+    return onLangChange(setLang);
+  }, []);
 
   useEffect(() => {
+    if (lang === null) return;
     // React runs effects twice in development. Loading the widget is async, so the
     // first pass is always torn down before its import resolves — that pass bails
     // out and the second one mounts for real. A "have I started?" ref would block
@@ -78,10 +123,17 @@ export default function Assistant({
         return; // the assistant is optional — the studio works without it
       }
       if (disposed) return;
-      const { PageAssistant, capability, supabaseChatHistoryAdapter } = mod;
-      const a = () => latest.current;
+      const { PageAssistant, capability, escapeLinkText, markdownLink, supabaseChatHistoryAdapter } = mod;
+      // The studio's controls, while the studio is on screen. Its capabilities
+      // are switched off otherwise, so the model only sees them while they work.
+      const inStudio = () => studioActions() !== null;
+      const a = () => {
+        const s = studioActions();
+        if (!s) throw new Error("The studio is not open.");
+        return s;
+      };
 
-      const caps = [
+      const studioCaps = [
         capability({
           name: "describe_studio",
           description:
@@ -294,6 +346,37 @@ export default function Assistant({
         }),
       ];
 
+      const songsCap = capability({
+        name: "find_saved_songs",
+        description:
+          "List the songs the player has saved to their account, newest first. Pass words from a title to list only the songs whose title contains all of them. Each song in the reply is a link that opens it in the studio.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Words from the song's title. Leave out to list every saved song.",
+            },
+          },
+        },
+        // Saved songs need accounts; a deployment without them has none.
+        enabled: savingConfigured,
+        // The list is the answer, links and all, so it is shown as written
+        // rather than retold by the model.
+        verbatim: true,
+        run: async ({ query }: { query?: string | null }): Promise<SongList> => {
+          const hits = matchSongs(await listCharts(), query);
+          return {
+            query: (query ?? "").trim(),
+            total: hits.length,
+            songs: hits.slice(0, SONGS_SHOWN).map(({ id, title }) => ({ id, title })),
+          };
+        },
+        render: (r: SongList) => songListReply(r, markdownLink, escapeLinkText),
+      });
+
+      const caps = [...studioCaps.map((c) => ({ ...c, enabled: inStudio })), songsCap];
+
       // Checked again here: the language can change while the import is in
       // flight, and without this the abandoned pass would mount a second
       // widget that nothing owns or tears down.
@@ -329,12 +412,27 @@ export default function Assistant({
           "A patient studio hand for a musician learning a part by ear. Practical and brief. You press the same buttons the player would." +
           languageInstruction(lang),
         knowledge:
-          "Riffscribe turns a recording into something you can practise: notation and tablature for your instrument, the song with your part removed, a pitch-preserving slow-down, and overdub recording. Everything runs in the browser; audio is never uploaded. You cannot load a song yourself — the player has to pick the file.",
+          "Riffscribe turns a recording into something you can practise: notation and tablature for your instrument, the song with your part removed, a pitch-preserving slow-down, and overdub recording. Everything runs in the browser; audio is never uploaded. You cannot load a song yourself — the player has to pick the file. You can list the songs they have saved; each one is a link that opens it in the studio. The studio's controls only exist while the studio page is open — on My songs, only the song list is on offer.",
         knowledgeUrl: "/llm.txt",
         voice: true,
         capabilities: caps,
-        getPageState: () => a().pageState(),
+        getPageState: () => {
+          const s = studioActions();
+          if (s) return { page: "studio", ...s.pageState() };
+          return { page: location.pathname === "/songs" ? "my songs" : location.pathname, studioOpen: false };
+        },
+        // A link in a reply changes page through Next's router, so this panel and
+        // the conversation in it stay on screen. Leaving the studio mid-job loses
+        // the job; a reload would warn about that, but the router does not fire
+        // beforeunload, so the same question is asked here.
+        onNavigate: (href: string) => {
+          const job = studioActions()?.pageState().busy;
+          const leaving = new URL(href, location.href).pathname !== "/studio";
+          if (job && leaving && !window.confirm(`“${job}” is still running and leaving the studio stops it. Leave anyway?`)) return;
+          routerRef.current.push(href);
+        },
         suggestions: [
+          "Which songs have I saved?",
           "Split the stems and write the bass part out",
           "Write this for violoncello",
           "Slow it to 60% and loop the first eight bars",
