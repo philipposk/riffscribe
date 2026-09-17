@@ -64,7 +64,7 @@ export default function AccountMenu({ newTab = false }: { newTab?: boolean }) {
       )}
 
       {open && (
-        <div className="panel absolute right-0 z-50 mt-2 w-72 p-4 shadow-2xl">
+        <div className="panel absolute right-0 z-50 mt-2 w-[min(18rem,calc(100vw-2rem))] p-4 shadow-2xl">
           {user ? (
             <>
               <p className="truncate text-sm">{user.email}</p>
