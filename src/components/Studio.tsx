@@ -119,6 +119,8 @@ export default function Studio() {
   /** A saved chart was opened but this device lacks its recording: the file to ask for. */
   const [wantedSong, setWantedSong] = useState<string | null>(null);
   const handedOff = useRef(false);
+  /** The song whose parts are being kept on this device; null while loading or after a trim. */
+  const partsFor = useRef<string | null>(null);
   const [restored, setRestored] = useState<string | null>(null);
 
   /** Bars of clicks before playback and before a take. 0 turns it off. */
@@ -190,6 +192,7 @@ export default function Studio() {
       setOverdub(null);
       setSource("mix");
       setRestored(null);
+      partsFor.current = null;
 
       // Have we taken this song apart before? Separating costs minutes, so it
       // is worth a moment's hashing to find out.
@@ -204,7 +207,17 @@ export default function Studio() {
         setStemMode(cached.mode as StemMode);
         setSource("other");
         setRestored(cached.mode === "ai" ? "Stems restored from this device — no need to split again." : "Instant split restored from this device.");
-      } else {
+      }
+      // Transcribed parts come back too, unless a saved chart just brought its own.
+      if (!restoring || !handedOff.current) {
+        const saved = await getScore<Part[]>(id, "parts");
+        if (saved?.length) {
+          setParts(saved);
+          setRestored((r) => `${r ? r + " " : ""}${saved.length} transcribed ${saved.length === 1 ? "part" : "parts"} restored.`);
+        }
+      }
+      partsFor.current = id;
+      if (!cached) {
         const partial = await doneBlocks(partialKey(id, stereo.left.length));
         if (partial.size) {
           setRestored(
@@ -228,6 +241,11 @@ export default function Studio() {
       setBusy(null);
     }
   }, []);
+
+  /** Keep this song's parts on the device, so reopening it brings them back. */
+  useEffect(() => {
+    if (key && partsFor.current === key) void putScore(key, "parts", parts);
+  }, [key, parts]);
 
   /** Coming back to the studio: reopen the song that was loaded before. */
   useEffect(() => {
@@ -650,6 +668,7 @@ export default function Studio() {
     setWavePeaks(peaksOf(toMono(left, right), 2200));
     setStems(null);
     setStemMode("none");
+    partsFor.current = null; // parts of a trimmed clip no longer line up with the song
     setParts([]);
     setOverdub(null);
     setSource("mix");
