@@ -6,7 +6,6 @@ import { openAssistantSettingsModal, closeAssistantSettingsModal, mountAssistant
 import { type ChatHistoryMode } from "./chatHistoryMode.js";
 import type { ChatHistoryAdapter } from "./chatHistoryAccount.js";
 import { type WidgetStrings } from "./strings.js";
-import * as widgetExports from "./index.js";
 export interface PageAssistantConfig {
     serverUrl: string;
     appName?: string;
@@ -172,7 +171,7 @@ export { capability } from "./capability.js";
 export type { Capability, ScrubRule, Vocabulary, VocabularyOption } from "@page-assistant/core";
 export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
 export { markdownLink, parseLinks, linkText, safeLinkHref, escapeLinkText, type ReplySegment, type LinkPolicy } from "@page-assistant/core";
-export { renderReply, followLink, type ReplyLinkOptions } from "./replyLinks.js";
+export { renderReply, followLink, replyExcerpt, type ReplyLinkOptions } from "./replyLinks.js";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
@@ -219,6 +218,10 @@ declare class PageAssistantController {
     private notedSttFallback;
     private notedBrowserFallback;
     private destroyed;
+    /** True while a chat turn (typed, voice, or ask()) is on its way to the assistant. */
+    private turnInFlight;
+    /** ask() calls made while a turn is running, run in order once it finishes. */
+    private askQueue;
     /** English defaults merged with whatever the host translated. */
     private strings;
     constructor(cfg: PageAssistantConfig);
@@ -228,6 +231,24 @@ declare class PageAssistantController {
     /** Full teardown for SPA/React strict-mode remounts: listeners, timers, voice, DOM. */
     destroy(): void;
     updateConfig(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>): void;
+    /**
+     * Ask the assistant a question from code, exactly as if the visitor had typed it: same
+     * grounding loop, capabilities, verbatim rendering, chat history and links. The message
+     * appears in the chat as a user turn, and the reply as an assistant turn.
+     *
+     * `open: true` opens the panel first, like typing does (default false — the visitor
+     * doesn't see the question unless you ask for that). `notify` (default true) controls
+     * the closed-panel reply bubble + unread badge described on `WidgetUI`; pass `false` for
+     * an ask() the visitor doesn't need telling about.
+     *
+     * Empty (or all-whitespace) text is ignored. A turn already running — typed, voice, or a
+     * previous ask() — is not interrupted: this call queues behind it and runs once it's
+     * done, so two turns are never interleaved into history.
+     */
+    ask(text: string, opts?: {
+        open?: boolean;
+        notify?: boolean;
+    }): Promise<void>;
     private newChat;
     /** Show greeting + suggestions once per empty chat (also fires on New chat). */
     private showGreeting;
@@ -267,7 +288,16 @@ declare class PageAssistantController {
     private track;
     private handleToggle;
     private pageContext;
+    /** Serializes turns: typed, voice, and ask() all funnel through here, one at a time. */
     private handleUser;
+    private handleUserTurn;
+    /**
+     * Reply bubble + unread badge for a reply landing while the panel is closed. An ask()'d
+     * reply gets both, unless the caller passed `notify: false` (then neither). A reply to
+     * what the visitor actually typed always just marks the badge — closing the panel
+     * mid-turn shouldn't silently drop the fact that an answer came back.
+     */
+    private notifyReplyIfClosed;
     private retryLastTurn;
     /** Map any error to a plain-English message + retry affordance. */
     private showFriendlyError;
@@ -282,6 +312,15 @@ declare class PageAssistantController {
 export declare const PageAssistant: {
     init(cfg: PageAssistantConfig): PageAssistantController;
     configure(patch: Partial<Pick<PageAssistantConfig, "autoSpeak" | "voice">>): void;
+    /**
+     * Ask the assistant a question from code, the same as if the visitor had typed it.
+     * `open: true` opens the panel first; `notify: false` skips the closed-panel reply
+     * bubble + unread badge for this call. See `PageAssistantController.ask`.
+     */
+    ask(text: string, opts?: {
+        open?: boolean;
+        notify?: boolean;
+    }): Promise<void>;
     /**
      * Re-check who is signed in and apply the chat-history mode that follows. Call it after
      * your app signs a user in or out; signing out drops account chats from the page.

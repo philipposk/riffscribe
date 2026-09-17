@@ -85,6 +85,10 @@ export declare class WidgetUI {
     private viewportHandler?;
     /** Resolved chrome strings — every user-facing literal below reads from here. */
     private s;
+    private badgeEl;
+    /** Replies not yet seen: shown as a number on the launcher, cleared when the panel opens. */
+    private unreadCount;
+    private replyBubbleEl?;
     constructor(title: string, handlers: UIHandlers, opts?: UIOptions);
     private themeStyle;
     private render;
@@ -98,6 +102,23 @@ export declare class WidgetUI {
     setTheme(theme: ThemeMode): void;
     setActiveChat(id: string | null): void;
     toast(text: string): void;
+    isOpen(): boolean;
+    /** Which side of the launcher faces the page, so the bubble grows toward it rather than
+     *  off the edge of the screen. The launcher is bottom-right today, so this reads "right"
+     *  everywhere in practice; computed rather than assumed in case that ever changes. */
+    private launcherSide;
+    /** Bump the unread count shown on the launcher, without a reply bubble. Used for an
+     *  ordinary (typed) reply that lands while the visitor closed the panel mid-turn. */
+    markUnread(): void;
+    /**
+     * Show a closed-panel reply preview anchored to the launcher, and bump the unread count.
+     * Only one bubble is shown at a time — a new one replaces whatever is there.
+     */
+    showReplyPreview(text: string): void;
+    hideReplyPreview(): void;
+    /** Called when the panel opens: the visitor has now seen whatever was waiting. */
+    clearUnread(): void;
+    private refreshBadge;
     private submit;
     /** Lock/unlock all input affordances while a request is in flight. */
     setBusy(busy: boolean): void;

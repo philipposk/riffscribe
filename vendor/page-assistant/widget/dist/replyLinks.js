@@ -2,7 +2,7 @@
 // (parseLinks, safeLinkHref); this builds the DOM for one reply and follows a click.
 // Nodes are made with createElement/createTextNode and textContent only — reply text is
 // never parsed as HTML.
-import { parseLinks, safeLinkHref } from "@page-assistant/core";
+import { parseLinks, safeLinkHref, linkText } from "@page-assistant/core";
 /** Append `text` to `parent`: plain text as text nodes, safe links as `<a>`, the rest as their label. */
 export function renderReply(parent, text, opts = {}) {
     const doc = parent.ownerDocument ?? document;
@@ -30,6 +30,16 @@ export function renderReply(parent, text, opts = {}) {
         });
         parent.appendChild(a);
     }
+}
+const REPLY_EXCERPT_MAX = 120;
+/**
+ * A reply as a short plain-text excerpt, for the closed-panel notification bubble
+ * (`ask()`'s reply preview). Links read as their label — never a raw URL — whitespace is
+ * collapsed, and anything past `max` characters is cut with a trailing "…".
+ */
+export function replyExcerpt(text, max = REPLY_EXCERPT_MAX) {
+    const plain = linkText(text).replace(/\s+/g, " ").trim();
+    return plain.length > max ? plain.slice(0, max).trimEnd() + "…" : plain;
 }
 /** Navigate with the host's handler; if it throws or rejects, do a normal page load. */
 export function followLink(href, onNavigate) {

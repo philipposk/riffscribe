@@ -13,15 +13,13 @@ import { ChatHistoryManager } from "./chatHistoryMode.js";
 import { formatAttachmentsForPrompt } from "./fileUpload.js";
 import { trackEvent } from "./analytics.js";
 import { DEFAULT_STRINGS, resolveStrings } from "./strings.js";
-// This module's own exports, so the script-tag global can carry all of them (see the end).
-import * as widgetExports from "./index.js";
 /** Set when a reply link starts a full page load on a wide screen; the next page reopens the panel. */
 const REOPEN_KEY = "page-assistant:reopen-after-link";
 const REOPEN_WINDOW_MS = 30_000;
 export { capability } from "./capability.js";
 export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
 export { markdownLink, parseLinks, linkText, safeLinkHref, escapeLinkText } from "@page-assistant/core";
-export { renderReply, followLink } from "./replyLinks.js";
+export { renderReply, followLink, replyExcerpt } from "./replyLinks.js";
 export { scanPage, fullScan } from "./scanner.js";
 export { LocalMemoryStore } from "./localMemory.js";
 export { pageActionCapabilities } from "./pageActions.js";
@@ -68,6 +66,10 @@ class PageAssistantController {
     notedSttFallback = false;
     notedBrowserFallback = false;
     destroyed = false;
+    /** True while a chat turn (typed, voice, or ask()) is on its way to the assistant. */
+    turnInFlight = false;
+    /** ask() calls made while a turn is running, run in order once it finishes. */
+    askQueue = [];
     /** English defaults merged with whatever the host translated. */
     strings = DEFAULT_STRINGS;
     constructor(cfg) {
@@ -263,6 +265,7 @@ class PageAssistantController {
         this.voice?.stop();
         this.voice = undefined;
         this.pending = undefined;
+        this.askQueue = []; // never run a queued ask() against a torn-down widget
         // Close any settings modal we may have opened so its shadow host + listeners don't leak.
         closeAssistantSettingsModal();
         closeVoiceSettingsModal();
@@ -290,6 +293,36 @@ class PageAssistantController {
                 this.voice = new Voice(vo);
             }
         }
+    }
+    /**
+     * Ask the assistant a question from code, exactly as if the visitor had typed it: same
+     * grounding loop, capabilities, verbatim rendering, chat history and links. The message
+     * appears in the chat as a user turn, and the reply as an assistant turn.
+     *
+     * `open: true` opens the panel first, like typing does (default false — the visitor
+     * doesn't see the question unless you ask for that). `notify` (default true) controls
+     * the closed-panel reply bubble + unread badge described on `WidgetUI`; pass `false` for
+     * an ask() the visitor doesn't need telling about.
+     *
+     * Empty (or all-whitespace) text is ignored. A turn already running — typed, voice, or a
+     * previous ask() — is not interrupted: this call queues behind it and runs once it's
+     * done, so two turns are never interleaved into history.
+     */
+    ask(text, opts = {}) {
+        if (this.destroyed)
+            return Promise.resolve();
+        const trimmed = text.trim();
+        if (!trimmed)
+            return Promise.resolve();
+        if (opts.open)
+            this.ui.toggle(true);
+        const askMeta = { notify: opts.notify !== false };
+        if (this.turnInFlight) {
+            return new Promise((resolve) => {
+                this.askQueue.push(() => resolve(this.handleUser(trimmed, undefined, askMeta)));
+            });
+        }
+        return this.handleUser(trimmed, undefined, askMeta);
     }
     newChat() {
         const model = getAssistantSettings(this.assistantSettingsKey).model;
@@ -555,7 +588,18 @@ class PageAssistantController {
             map: this.map,
         };
     }
-    async handleUser(text, attachments) {
+    /** Serializes turns: typed, voice, and ask() all funnel through here, one at a time. */
+    async handleUser(text, attachments, askMeta) {
+        this.turnInFlight = true;
+        try {
+            await this.handleUserTurn(text, attachments, askMeta);
+        }
+        finally {
+            this.turnInFlight = false;
+            this.askQueue.shift()?.();
+        }
+    }
+    async handleUserTurn(text, attachments, askMeta) {
         if (this.pending) {
             // A new message supersedes a stale pending confirmation — clear its live buttons.
             this.clearPending();
@@ -564,7 +608,7 @@ class PageAssistantController {
         const message = formatAttachmentsForPrompt(text, attachments ?? []);
         if (!message.trim())
             return;
-        this.lastTurn = { text, attachments };
+        this.lastTurn = { text, attachments, askMeta };
         this.ui.addMessage("user", text + (attachments?.length ? `\n📎 ${attachments.map((a) => a.name).join(", ")}` : ""));
         this.ui.setState("thinking");
         this.ui.setBusy(true);
@@ -592,6 +636,7 @@ class PageAssistantController {
             }
             this.ui.setBusy(false);
             this.ui.addMessage("assistant", res.message);
+            this.notifyReplyIfClosed(res.message, askMeta);
             await this.say(res.message);
             this.track("message_sent", { len: message.length });
         }
@@ -604,11 +649,28 @@ class PageAssistantController {
             this.showFriendlyError(e, () => this.retryLastTurn());
         }
     }
+    /**
+     * Reply bubble + unread badge for a reply landing while the panel is closed. An ask()'d
+     * reply gets both, unless the caller passed `notify: false` (then neither). A reply to
+     * what the visitor actually typed always just marks the badge — closing the panel
+     * mid-turn shouldn't silently drop the fact that an answer came back.
+     */
+    notifyReplyIfClosed(message, askMeta) {
+        if (this.ui.isOpen())
+            return;
+        if (askMeta) {
+            if (askMeta.notify)
+                this.ui.showReplyPreview(message);
+        }
+        else {
+            this.ui.markUnread();
+        }
+    }
     retryLastTurn() {
         if (!this.lastTurn)
             return;
-        const { text, attachments } = this.lastTurn;
-        this.handleUser(text, attachments);
+        const { text, attachments, askMeta } = this.lastTurn;
+        this.handleUser(text, attachments, askMeta);
     }
     /** Map any error to a plain-English message + retry affordance. */
     showFriendlyError(e, onRetry) {
@@ -777,6 +839,14 @@ export const PageAssistant = {
         instance?.updateConfig(patch);
     },
     /**
+     * Ask the assistant a question from code, the same as if the visitor had typed it.
+     * `open: true` opens the panel first; `notify: false` skips the closed-panel reply
+     * bubble + unread badge for this call. See `PageAssistantController.ask`.
+     */
+    ask(text, opts) {
+        return instance?.ask(text, opts) ?? Promise.resolve();
+    },
+    /**
      * Re-check who is signed in and apply the chat-history mode that follows. Call it after
      * your app signs a user in or out; signing out drops account chats from the page.
      */
@@ -855,9 +925,9 @@ function stripAttachmentDump(content) {
         names.push(m[1] ?? m[2]);
     return head + (names.length ? `\n📎 ${names.join(", ")}` : "");
 }
-// The script-tag build's handle is `window.PageAssistant`, so it carries every export of this
-// module, not a hand-kept subset. 0.6.0's subset lacked `supabaseChatHistoryAdapter`, so an app
-// that vendors the bundle had no adapter to pass, and without one the widget quietly keeps chats
-// on the device. On a name clash the controller's own methods win.
+// Imported as a module, the controller is also reachable as `window.PageAssistant`. The script-tag
+// build puts every export there instead (src/global.ts). This module must never import itself to
+// do that: bundlers that split a module's code from its re-exports (Next.js Turbopack) run the
+// spread before the re-exports exist, and the whole import throws.
 if (typeof window !== "undefined")
-    window.PageAssistant = { ...widgetExports, ...PageAssistant };
+    window.PageAssistant = PageAssistant;
