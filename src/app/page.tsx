@@ -87,7 +87,6 @@ export default function Home() {
 
       <div className="mt-8 flex flex-wrap gap-3">
         <Link className="btn btn-primary" href="/studio">Open the studio</Link>
-        <a className="btn" href="https://github.com/philipposk/riffscribe">Source on GitHub</a>
       </div>
 
       <div className="mt-14 grid gap-4 sm:grid-cols-2">

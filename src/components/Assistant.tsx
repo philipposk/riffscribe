@@ -19,9 +19,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import {
-  GREEK_STRINGS, bcp47, languageInstruction, loadLang, onLangChange, type AssistantLang,
-} from "@/lib/assistantLang";
 import { studioActions } from "@/lib/assistantBridge";
 import { assistantChatHistory } from "@/lib/assistantHistory";
 import { matchSongs, songHref, songsHref } from "@/lib/songSearch";
@@ -97,17 +94,7 @@ export default function Assistant() {
   const routerRef = useRef(router);
   routerRef.current = router;
 
-  // What the assistant listens and speaks in: chosen in the studio, remembered
-  // per device. Unknown until mounted, so the widget does not start once in the
-  // wrong language and then again in the right one.
-  const [lang, setLang] = useState<AssistantLang | null>(null);
   useEffect(() => {
-    setLang(loadLang());
-    return onLangChange(setLang);
-  }, []);
-
-  useEffect(() => {
-    if (lang === null) return;
     // React runs effects twice in development. Loading the widget is async, so the
     // first pass is always torn down before its import resolves — that pass bails
     // out and the second one mounts for real. A "have I started?" ref would block
@@ -377,9 +364,6 @@ export default function Assistant() {
 
       const caps = [...studioCaps.map((c) => ({ ...c, enabled: inStudio })), songsCap];
 
-      // Checked again here: the language can change while the import is in
-      // flight, and without this the abandoned pass would mount a second
-      // widget that nothing owns or tears down.
       if (disposed) return;
       PageAssistant.init({
         serverUrl: "/api/pa",
@@ -406,11 +390,8 @@ export default function Assistant() {
         chatHistoryAdapter: assistantChatHistory(supabase(), supabaseChatHistoryAdapter),
         chatHistoryFallbackMode: "device",
         onChatHistoryError: (e: unknown) => console.warn("[assistant] chat history:", e),
-        lang: bcp47(lang),
-        strings: lang === "el" ? GREEK_STRINGS : undefined,
         persona:
-          "A patient studio hand for a musician learning a part by ear. Practical and brief. You press the same buttons the player would." +
-          languageInstruction(lang),
+          "A patient studio hand for a musician learning a part by ear. Practical and brief. You press the same buttons the player would. Always reply in English.",
         knowledge:
           "Riffscribe turns a recording into something you can practise: notation and tablature for your instrument, the song with your part removed, a pitch-preserving slow-down, and overdub recording. Everything runs in the browser; audio is never uploaded. You cannot load a song yourself — the player has to pick the file. You can list the songs they have saved; each one is a link that opens it in the studio. The studio's controls only exist while the studio page is open — on My songs, only the song list is on offer.",
         knowledgeUrl: "/llm.txt",
@@ -459,7 +440,7 @@ export default function Assistant() {
       teardown?.();
       teardown = null;
     };
-  }, [lang]);
+  }, []);
 
   return null;
 }

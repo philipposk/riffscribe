@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bookmark, Check, ChevronDown, ChevronUp, Download, FileMusic, Link as LinkIcon, Loader2, Mic,
-  Languages, Music2, Pause, Play, Printer, Repeat, RotateCcw, Scissors, Square, Target,
+  Music2, Pause, Play, Printer, Repeat, RotateCcw, Scissors, Square, Target,
   Trash2, Undo2,
   Upload, Users, Wand2,
 } from "lucide-react";
@@ -54,7 +54,6 @@ import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcr
 import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
 import { keyChoices, keyName, shortestShift } from "@/lib/transcribe/spelling";
 import { CHART_VERSION, loadChart, type Chart } from "@/lib/store/charts";
-import { LANG_OPTIONS, loadLang, saveLang, type AssistantLang } from "@/lib/assistantLang";
 import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
   DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part,
@@ -154,10 +153,6 @@ export default function Studio() {
   const [chartId, setChartId] = useState<string | null>(null);
   // Signed in, there are saved songs the assistant can point to.
   const { user: signedIn } = useAccount();
-
-  /** What the assistant listens and speaks in. Remembered per device. */
-  const [assistantLang, setAssistantLang] = useState<AssistantLang>("auto");
-  useEffect(() => setAssistantLang(loadLang()), []);
 
   const engineRef = useRef<PracticeEngine | null>(null);
   const recorderRef = useRef<MicRecorder | null>(null);
@@ -1293,24 +1288,7 @@ export default function Studio() {
             Song in, sheet music and tab out. Everything runs on this device.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-xs text-white/45">
-            <Languages size={14} />
-            <select
-              className="bg-transparent text-xs"
-              value={assistantLang}
-              onChange={(e) => {
-                const v = e.target.value as AssistantLang;
-                setAssistantLang(v);
-                saveLang(v);
-              }}
-              title="Language the assistant listens and speaks in"
-            >
-              {LANG_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </label>
+        <div className="ml-auto flex items-center gap-2">
           {/* New tabs: leaving this page would drop the loaded song and any split in progress. */}
           <a className="btn" href="/" target="_blank" rel="noopener">About</a>
           <AccountMenu newTab />
