@@ -3,7 +3,7 @@
 import { ChatSidebar } from "./chatSidebar.js";
 import { themeCssVars } from "./themes.js";
 import { DEFAULT_STRINGS, fmt } from "./strings.js";
-import { renderReply } from "./replyLinks.js";
+import { renderReply, replyExcerpt } from "./replyLinks.js";
 /**
  * The read-aloud toggle. It used to be a telephone (☎), which reads as "call support"
  * rather than "speak this reply" — and the launcher's telephone was already removed for
@@ -25,6 +25,33 @@ const CSS = `
 .launcher svg { width: 28px; height: 28px; fill: currentColor; }
 .launcher .glyph { font-size: 24px; line-height: 1; }
 .launcher:hover { transform: scale(1.08); }
+.badge {
+  position: absolute; top: -2px; right: -2px; min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 9px; background: var(--pa-danger); color: #fff; font-size: 11px; font-weight: 700;
+  line-height: 1; align-items: center; justify-content: center; display: none;
+  box-shadow: 0 0 0 2px var(--pa-bg);
+}
+.badge.show { display: flex; }
+.reply-bubble {
+  position: fixed; bottom: calc(92px + env(safe-area-inset-bottom));
+  max-width: min(300px, calc(100vw - 44px));
+  z-index: 2147483646; display: flex; align-items: flex-start; gap: 2px;
+  background: var(--pa-bg-head); color: var(--pa-text); border: 1px solid var(--pa-border);
+  border-radius: 14px; padding: 10px 6px 10px 14px; box-shadow: 0 14px 34px rgba(0,0,0,.35);
+  animation: pa-bubble-in .18s ease-out;
+}
+.reply-bubble[data-side="right"] { right: calc(22px + env(safe-area-inset-right)); }
+.reply-bubble[data-side="left"] { left: calc(22px + env(safe-area-inset-left)); }
+.reply-bubble .text {
+  background: none; border: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  padding: 0; margin: 0; font-size: 13px; line-height: 1.4; flex: 1;
+}
+.reply-bubble .dismiss {
+  background: none; border: none; color: var(--pa-text-muted); cursor: pointer; font-size: 15px;
+  line-height: 1; padding: 2px 6px; border-radius: 6px; flex-shrink: 0;
+}
+.reply-bubble .dismiss:hover { background: var(--pa-border); color: var(--pa-text); }
+@keyframes pa-bubble-in { from { opacity: 0; transform: translateY(6px) scale(.97); } to { opacity: 1; transform: none; } }
 .launcher.talking { animation: bob .5s infinite alternate; }
 .launcher.thinking { animation: spin 1.2s linear infinite; }
 .launcher.listening { box-shadow: 0 0 0 6px rgba(94,234,212,.35), 0 8px 28px rgba(13,148,136,.45); }
@@ -118,6 +145,7 @@ const CSS = `
   .launcher.listening { box-shadow: 0 0 0 6px rgba(94,234,212,.35), 0 8px 28px rgba(13,148,136,.45); }
   .scanline { animation: none; top: 50%; }
   .typing span { animation: none; opacity: .6; }
+  .reply-bubble { animation: none; }
 }
 `;
 // Contrast tokens layered on top of the theme vars. Fixes AA failures:
@@ -164,6 +192,10 @@ export class WidgetUI {
     viewportHandler;
     /** Resolved chrome strings — every user-facing literal below reads from here. */
     s = DEFAULT_STRINGS;
+    badgeEl;
+    /** Replies not yet seen: shown as a number on the launcher, cleared when the panel opens. */
+    unreadCount = 0;
+    replyBubbleEl;
     constructor(title, handlers, opts = {}) {
         this.title = title;
         this.handlers = handlers;
@@ -195,9 +227,14 @@ export class WidgetUI {
         this.toastEl = el("div", "toast");
         this.launcher = el("button", "launcher");
         this.launcher.innerHTML = resolveLauncherIcon(this.opts.launcherIcon);
+        this.badgeEl = el("span", "badge");
+        // The count is decorative — the launcher's own aria-label (kept in sync by refreshBadge)
+        // already says "N new replies", so a screen reader would otherwise announce it twice.
+        this.badgeEl.setAttribute("aria-hidden", "true");
+        this.launcher.appendChild(this.badgeEl);
         this.launcher.title = this.title;
-        this.launcher.setAttribute("aria-label", fmt(this.s.launcherOpen, { title: this.title }));
         this.launcher.setAttribute("aria-expanded", "false");
+        this.refreshBadge(); // sets the initial (no-unread) aria-label
         this.panelWrap = el("div", "panel-wrap");
         this.panel = el("div", "panel");
         this.panel.setAttribute("role", "dialog");
@@ -464,6 +501,73 @@ export class WidgetUI {
         this.toastEl.classList.add("show");
         setTimeout(() => this.toastEl.classList.remove("show"), 2200);
     }
+    isOpen() {
+        return this.panelWrap.classList.contains("open");
+    }
+    // ---- Reply bubble + unread badge (closed-panel notifications) ----
+    /** Which side of the launcher faces the page, so the bubble grows toward it rather than
+     *  off the edge of the screen. The launcher is bottom-right today, so this reads "right"
+     *  everywhere in practice; computed rather than assumed in case that ever changes. */
+    launcherSide() {
+        if (typeof window === "undefined")
+            return "right";
+        const rect = this.launcher.getBoundingClientRect();
+        const vw = window.innerWidth || document.documentElement?.clientWidth || 0;
+        if (!vw)
+            return "right";
+        return vw - rect.right <= rect.left ? "right" : "left";
+    }
+    /** Bump the unread count shown on the launcher, without a reply bubble. Used for an
+     *  ordinary (typed) reply that lands while the visitor closed the panel mid-turn. */
+    markUnread() {
+        this.unreadCount++;
+        this.refreshBadge();
+    }
+    /**
+     * Show a closed-panel reply preview anchored to the launcher, and bump the unread count.
+     * Only one bubble is shown at a time — a new one replaces whatever is there.
+     */
+    showReplyPreview(text) {
+        this.hideReplyPreview();
+        const bubble = el("div", "reply-bubble");
+        bubble.dataset.side = this.launcherSide();
+        bubble.setAttribute("role", "status");
+        // role="status" already implies aria-live="polite"; set explicitly so the intent reads
+        // clearly here rather than relying on implicit ARIA semantics.
+        bubble.setAttribute("aria-live", "polite");
+        const open = el("button", "text");
+        open.textContent = replyExcerpt(text);
+        open.onclick = () => this.toggle(true);
+        const dismiss = el("button", "dismiss");
+        dismiss.textContent = "×";
+        dismiss.setAttribute("aria-label", this.s.replyBubbleDismiss);
+        dismiss.onclick = (e) => {
+            e.stopPropagation();
+            this.hideReplyPreview(); // hides the bubble; the badge count is untouched
+        };
+        bubble.append(open, dismiss);
+        this.root.appendChild(bubble);
+        this.replyBubbleEl = bubble;
+        this.markUnread();
+    }
+    hideReplyPreview() {
+        this.replyBubbleEl?.remove();
+        this.replyBubbleEl = undefined;
+    }
+    /** Called when the panel opens: the visitor has now seen whatever was waiting. */
+    clearUnread() {
+        this.unreadCount = 0;
+        this.hideReplyPreview();
+        this.refreshBadge();
+    }
+    refreshBadge() {
+        const n = this.unreadCount;
+        this.badgeEl.textContent = String(n);
+        this.badgeEl.classList.toggle("show", n > 0);
+        const base = fmt(this.s.launcherOpen, { title: this.title });
+        const unread = n === 0 ? "" : n === 1 ? this.s.unreadReply : fmt(this.s.unreadReplies, { count: String(n) });
+        this.launcher.setAttribute("aria-label", unread ? `${base} — ${unread}` : base);
+    }
     submit() {
         if (this.busy)
             return; // guard: no double-send while a request is in flight
@@ -510,6 +614,15 @@ export class WidgetUI {
         this.panelWrap.classList.toggle("open", willOpen);
         this.launcher.setAttribute("aria-expanded", String(willOpen));
         if (willOpen) {
+            // Opening — from the launcher, the reply bubble, or code — is what "seeing" a reply
+            // means: the badge and any bubble are for what hasn't been opened to yet.
+            this.clearUnread();
+            // A reply that landed while the panel was closed could not scroll the hidden log (and a
+            // restored history starts at its oldest message), so opening always shows the latest turn.
+            const raf = globalThis.requestAnimationFrame ?? ((cb) => setTimeout(cb, 0));
+            raf(() => {
+                this.log.scrollTop = this.log.scrollHeight;
+            });
             this.lastFocused = document.activeElement ?? undefined;
             this.input.focus();
         }

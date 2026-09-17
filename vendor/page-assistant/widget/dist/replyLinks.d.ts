@@ -8,5 +8,11 @@ export interface ReplyLinkOptions {
 }
 /** Append `text` to `parent`: plain text as text nodes, safe links as `<a>`, the rest as their label. */
 export declare function renderReply(parent: HTMLElement, text: string, opts?: ReplyLinkOptions): void;
+/**
+ * A reply as a short plain-text excerpt, for the closed-panel notification bubble
+ * (`ask()`'s reply preview). Links read as their label — never a raw URL — whitespace is
+ * collapsed, and anything past `max` characters is cut with a trailing "…".
+ */
+export declare function replyExcerpt(text: string, max?: number): string;
 /** Navigate with the host's handler; if it throws or rejects, do a normal page load. */
 export declare function followLink(href: string, onNavigate?: (href: string) => void | Promise<unknown>): void;

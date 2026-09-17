@@ -5,6 +5,12 @@ export interface WidgetStrings {
     settings: string;
     exportChat: string;
     historyToggle: string;
+    /** aria-label for the reply bubble's small × button. Dismisses the bubble, keeps the badge. */
+    replyBubbleDismiss: string;
+    /** Appended to the launcher's aria-label for exactly one unread reply. */
+    unreadReply: string;
+    /** Appended to the launcher's aria-label for more than one unread reply. `{count}` is the total. */
+    unreadReplies: string;
     attach: string;
     /** `{name}` is the attachment filename. */
     removeAttachment: string;

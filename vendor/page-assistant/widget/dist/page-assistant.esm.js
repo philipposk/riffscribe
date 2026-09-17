@@ -77,70 +77,6 @@ var init_fileUpload = __esm({
   }
 });
 
-// src/index.ts
-var index_exports = {};
-__export(index_exports, {
-  ASSISTANT_SETTINGS_STORAGE_KEY: () => ASSISTANT_SETTINGS_STORAGE_KEY,
-  AccountHistorySync: () => AccountHistorySync,
-  CHAT_HISTORY_CHANGE_EVENT: () => CHAT_HISTORY_CHANGE_EVENT,
-  CHAT_HISTORY_MODES: () => CHAT_HISTORY_MODES,
-  CHAT_HISTORY_MODE_STORAGE_KEY: () => CHAT_HISTORY_MODE_STORAGE_KEY,
-  CHAT_HISTORY_STORAGE_KEY: () => CHAT_HISTORY_STORAGE_KEY,
-  ChatHistoryManager: () => ChatHistoryManager,
-  ChatHistoryStore: () => ChatHistoryStore,
-  DEFAULT_MODELS: () => DEFAULT_MODELS,
-  DEFAULT_SCRUB_RULES: () => DEFAULT_SCRUB_RULES,
-  DEFAULT_STRINGS: () => DEFAULT_STRINGS,
-  ELEVENLABS_VOICES: () => ELEVENLABS_VOICES,
-  LocalMemoryStore: () => LocalMemoryStore,
-  OPENAI_VOICES: () => OPENAI_VOICES,
-  PLAIN_TEXT_SCRUB_RULES: () => PLAIN_TEXT_SCRUB_RULES,
-  PageAssistant: () => PageAssistant,
-  VOICE_SETTINGS_CHANGE_EVENT: () => VOICE_SETTINGS_CHANGE_EVENT,
-  VOICE_SETTINGS_STORAGE_KEY: () => VOICE_SETTINGS_STORAGE_KEY,
-  capability: () => capability,
-  closeAssistantSettingsModal: () => closeAssistantSettingsModal,
-  closeVoiceSettingsModal: () => closeVoiceSettingsModal,
-  deviceStorageKey: () => deviceStorageKey,
-  escapeLinkText: () => escapeLinkText,
-  exportAnalyticsMarkdown: () => exportAnalyticsMarkdown,
-  fetchModelCatalog: () => fetchModelCatalog,
-  followLink: () => followLink,
-  formatAttachmentsForPrompt: () => formatAttachmentsForPrompt,
-  fromAccountChat: () => fromAccountChat,
-  fullScan: () => fullScan,
-  getAssistantSettings: () => getAssistantSettings,
-  getLocalAnalytics: () => getLocalAnalytics,
-  getStoredChatHistoryMode: () => getStoredChatHistoryMode,
-  getVoiceDefaults: () => getVoiceDefaults,
-  getVoiceSettings: () => getVoiceSettings,
-  historyMoveOffers: () => historyMoveOffers,
-  linkText: () => linkText,
-  markdownLink: () => markdownLink,
-  mountAssistantSettingsPanel: () => mountAssistantSettingsPanel,
-  mountVoiceSettingsPanel: () => mountVoiceSettingsPanel,
-  openAssistantSettingsModal: () => openAssistantSettingsModal,
-  openVoiceSettingsModal: () => openVoiceSettingsModal,
-  pageActionCapabilities: () => pageActionCapabilities,
-  parseLinks: () => parseLinks,
-  readFileAttachment: () => readFileAttachment,
-  renderReply: () => renderReply,
-  resolveChatHistoryMode: () => resolveChatHistoryMode,
-  resolveStrings: () => resolveStrings,
-  resolveVoiceLang: () => resolveVoiceLang,
-  safeLinkHref: () => safeLinkHref,
-  scanPage: () => scanPage,
-  setAssistantSettings: () => setAssistantSettings,
-  setStoredChatHistoryMode: () => setStoredChatHistoryMode,
-  setVoiceDefaults: () => setVoiceDefaults,
-  setVoiceSettings: () => setVoiceSettings,
-  supabaseChatHistoryAdapter: () => supabaseChatHistoryAdapter,
-  toAccountChat: () => toAccountChat,
-  trackEvent: () => trackEvent,
-  voiceInputAvailable: () => voiceInputAvailable,
-  voiceOptionsFromSettings: () => voiceOptionsFromSettings
-});
-
 // ../core/dist/registry.js
 var TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 var DATA_KEYS = /* @__PURE__ */ new Set(["enum", "const", "default", "examples"]);
@@ -1846,6 +1782,9 @@ var DEFAULT_STRINGS = {
   settings: "Assistant settings",
   exportChat: "Export chat",
   historyToggle: "Toggle chat history",
+  replyBubbleDismiss: "Dismiss reply preview",
+  unreadReply: "1 new reply",
+  unreadReplies: "{count} new replies",
   attach: "Attach file",
   removeAttachment: "Remove attachment {name}",
   inputPlaceholder: "Ask or tell me to do something\u2026",
@@ -2365,6 +2304,11 @@ function renderReply(parent, text, opts = {}) {
     parent.appendChild(a);
   }
 }
+var REPLY_EXCERPT_MAX = 120;
+function replyExcerpt(text, max = REPLY_EXCERPT_MAX) {
+  const plain = linkText(text).replace(/\s+/g, " ").trim();
+  return plain.length > max ? plain.slice(0, max).trimEnd() + "\u2026" : plain;
+}
 function followLink(href, onNavigate) {
   const load = () => window.location.assign(href);
   if (!onNavigate) return load();
@@ -2392,6 +2336,33 @@ var CSS2 = `
 .launcher svg { width: 28px; height: 28px; fill: currentColor; }
 .launcher .glyph { font-size: 24px; line-height: 1; }
 .launcher:hover { transform: scale(1.08); }
+.badge {
+  position: absolute; top: -2px; right: -2px; min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 9px; background: var(--pa-danger); color: #fff; font-size: 11px; font-weight: 700;
+  line-height: 1; align-items: center; justify-content: center; display: none;
+  box-shadow: 0 0 0 2px var(--pa-bg);
+}
+.badge.show { display: flex; }
+.reply-bubble {
+  position: fixed; bottom: calc(92px + env(safe-area-inset-bottom));
+  max-width: min(300px, calc(100vw - 44px));
+  z-index: 2147483646; display: flex; align-items: flex-start; gap: 2px;
+  background: var(--pa-bg-head); color: var(--pa-text); border: 1px solid var(--pa-border);
+  border-radius: 14px; padding: 10px 6px 10px 14px; box-shadow: 0 14px 34px rgba(0,0,0,.35);
+  animation: pa-bubble-in .18s ease-out;
+}
+.reply-bubble[data-side="right"] { right: calc(22px + env(safe-area-inset-right)); }
+.reply-bubble[data-side="left"] { left: calc(22px + env(safe-area-inset-left)); }
+.reply-bubble .text {
+  background: none; border: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  padding: 0; margin: 0; font-size: 13px; line-height: 1.4; flex: 1;
+}
+.reply-bubble .dismiss {
+  background: none; border: none; color: var(--pa-text-muted); cursor: pointer; font-size: 15px;
+  line-height: 1; padding: 2px 6px; border-radius: 6px; flex-shrink: 0;
+}
+.reply-bubble .dismiss:hover { background: var(--pa-border); color: var(--pa-text); }
+@keyframes pa-bubble-in { from { opacity: 0; transform: translateY(6px) scale(.97); } to { opacity: 1; transform: none; } }
 .launcher.talking { animation: bob .5s infinite alternate; }
 .launcher.thinking { animation: spin 1.2s linear infinite; }
 .launcher.listening { box-shadow: 0 0 0 6px rgba(94,234,212,.35), 0 8px 28px rgba(13,148,136,.45); }
@@ -2485,6 +2456,7 @@ var CSS2 = `
   .launcher.listening { box-shadow: 0 0 0 6px rgba(94,234,212,.35), 0 8px 28px rgba(13,148,136,.45); }
   .scanline { animation: none; top: 50%; }
   .typing span { animation: none; opacity: .6; }
+  .reply-bubble { animation: none; }
 }
 `;
 var CONTRAST_VARS = {
@@ -2530,6 +2502,10 @@ var WidgetUI = class {
     __publicField(this, "viewportHandler");
     /** Resolved chrome strings — every user-facing literal below reads from here. */
     __publicField(this, "s", DEFAULT_STRINGS);
+    __publicField(this, "badgeEl");
+    /** Replies not yet seen: shown as a number on the launcher, cleared when the panel opens. */
+    __publicField(this, "unreadCount", 0);
+    __publicField(this, "replyBubbleEl");
     this.sidebarOpen = isNarrow() ? false : opts.sidebarOpen ?? true;
     this.theme = opts.theme ?? "dark";
     this.s = opts.strings ?? DEFAULT_STRINGS;
@@ -2554,9 +2530,12 @@ var WidgetUI = class {
     this.toastEl = el2("div", "toast");
     this.launcher = el2("button", "launcher");
     this.launcher.innerHTML = resolveLauncherIcon(this.opts.launcherIcon);
+    this.badgeEl = el2("span", "badge");
+    this.badgeEl.setAttribute("aria-hidden", "true");
+    this.launcher.appendChild(this.badgeEl);
     this.launcher.title = this.title;
-    this.launcher.setAttribute("aria-label", fmt(this.s.launcherOpen, { title: this.title }));
     this.launcher.setAttribute("aria-expanded", "false");
+    this.refreshBadge();
     this.panelWrap = el2("div", "panel-wrap");
     this.panel = el2("div", "panel");
     this.panel.setAttribute("role", "dialog");
@@ -2802,6 +2781,69 @@ var WidgetUI = class {
     this.toastEl.classList.add("show");
     setTimeout(() => this.toastEl.classList.remove("show"), 2200);
   }
+  isOpen() {
+    return this.panelWrap.classList.contains("open");
+  }
+  // ---- Reply bubble + unread badge (closed-panel notifications) ----
+  /** Which side of the launcher faces the page, so the bubble grows toward it rather than
+   *  off the edge of the screen. The launcher is bottom-right today, so this reads "right"
+   *  everywhere in practice; computed rather than assumed in case that ever changes. */
+  launcherSide() {
+    if (typeof window === "undefined") return "right";
+    const rect = this.launcher.getBoundingClientRect();
+    const vw = window.innerWidth || document.documentElement?.clientWidth || 0;
+    if (!vw) return "right";
+    return vw - rect.right <= rect.left ? "right" : "left";
+  }
+  /** Bump the unread count shown on the launcher, without a reply bubble. Used for an
+   *  ordinary (typed) reply that lands while the visitor closed the panel mid-turn. */
+  markUnread() {
+    this.unreadCount++;
+    this.refreshBadge();
+  }
+  /**
+   * Show a closed-panel reply preview anchored to the launcher, and bump the unread count.
+   * Only one bubble is shown at a time — a new one replaces whatever is there.
+   */
+  showReplyPreview(text) {
+    this.hideReplyPreview();
+    const bubble = el2("div", "reply-bubble");
+    bubble.dataset.side = this.launcherSide();
+    bubble.setAttribute("role", "status");
+    bubble.setAttribute("aria-live", "polite");
+    const open = el2("button", "text");
+    open.textContent = replyExcerpt(text);
+    open.onclick = () => this.toggle(true);
+    const dismiss = el2("button", "dismiss");
+    dismiss.textContent = "\xD7";
+    dismiss.setAttribute("aria-label", this.s.replyBubbleDismiss);
+    dismiss.onclick = (e) => {
+      e.stopPropagation();
+      this.hideReplyPreview();
+    };
+    bubble.append(open, dismiss);
+    this.root.appendChild(bubble);
+    this.replyBubbleEl = bubble;
+    this.markUnread();
+  }
+  hideReplyPreview() {
+    this.replyBubbleEl?.remove();
+    this.replyBubbleEl = void 0;
+  }
+  /** Called when the panel opens: the visitor has now seen whatever was waiting. */
+  clearUnread() {
+    this.unreadCount = 0;
+    this.hideReplyPreview();
+    this.refreshBadge();
+  }
+  refreshBadge() {
+    const n = this.unreadCount;
+    this.badgeEl.textContent = String(n);
+    this.badgeEl.classList.toggle("show", n > 0);
+    const base = fmt(this.s.launcherOpen, { title: this.title });
+    const unread = n === 0 ? "" : n === 1 ? this.s.unreadReply : fmt(this.s.unreadReplies, { count: String(n) });
+    this.launcher.setAttribute("aria-label", unread ? `${base} \u2014 ${unread}` : base);
+  }
   submit() {
     if (this.busy) return;
     const t = this.input.value.trim();
@@ -2841,6 +2883,11 @@ var WidgetUI = class {
     this.panelWrap.classList.toggle("open", willOpen);
     this.launcher.setAttribute("aria-expanded", String(willOpen));
     if (willOpen) {
+      this.clearUnread();
+      const raf = globalThis.requestAnimationFrame ?? ((cb) => setTimeout(cb, 0));
+      raf(() => {
+        this.log.scrollTop = this.log.scrollHeight;
+      });
       this.lastFocused = document.activeElement ?? void 0;
       this.input.focus();
     } else {
@@ -4913,6 +4960,10 @@ var PageAssistantController = class {
     __publicField(this, "notedSttFallback", false);
     __publicField(this, "notedBrowserFallback", false);
     __publicField(this, "destroyed", false);
+    /** True while a chat turn (typed, voice, or ask()) is on its way to the assistant. */
+    __publicField(this, "turnInFlight", false);
+    /** ask() calls made while a turn is running, run in order once it finishes. */
+    __publicField(this, "askQueue", []);
     /** English defaults merged with whatever the host translated. */
     __publicField(this, "strings", DEFAULT_STRINGS);
     this.strings = resolveStrings(cfg.strings);
@@ -5095,6 +5146,7 @@ var PageAssistantController = class {
     this.voice?.stop();
     this.voice = void 0;
     this.pending = void 0;
+    this.askQueue = [];
     closeAssistantSettingsModal();
     closeVoiceSettingsModal();
     this.ui.destroy();
@@ -5115,6 +5167,33 @@ var PageAssistantController = class {
         this.voice = new Voice(vo);
       }
     }
+  }
+  /**
+   * Ask the assistant a question from code, exactly as if the visitor had typed it: same
+   * grounding loop, capabilities, verbatim rendering, chat history and links. The message
+   * appears in the chat as a user turn, and the reply as an assistant turn.
+   *
+   * `open: true` opens the panel first, like typing does (default false — the visitor
+   * doesn't see the question unless you ask for that). `notify` (default true) controls
+   * the closed-panel reply bubble + unread badge described on `WidgetUI`; pass `false` for
+   * an ask() the visitor doesn't need telling about.
+   *
+   * Empty (or all-whitespace) text is ignored. A turn already running — typed, voice, or a
+   * previous ask() — is not interrupted: this call queues behind it and runs once it's
+   * done, so two turns are never interleaved into history.
+   */
+  ask(text, opts = {}) {
+    if (this.destroyed) return Promise.resolve();
+    const trimmed = text.trim();
+    if (!trimmed) return Promise.resolve();
+    if (opts.open) this.ui.toggle(true);
+    const askMeta = { notify: opts.notify !== false };
+    if (this.turnInFlight) {
+      return new Promise((resolve) => {
+        this.askQueue.push(() => resolve(this.handleUser(trimmed, void 0, askMeta)));
+      });
+    }
+    return this.handleUser(trimmed, void 0, askMeta);
   }
   newChat() {
     const model = getAssistantSettings(this.assistantSettingsKey).model;
@@ -5339,14 +5418,24 @@ var PageAssistantController = class {
       map: this.map
     };
   }
-  async handleUser(text, attachments) {
+  /** Serializes turns: typed, voice, and ask() all funnel through here, one at a time. */
+  async handleUser(text, attachments, askMeta) {
+    this.turnInFlight = true;
+    try {
+      await this.handleUserTurn(text, attachments, askMeta);
+    } finally {
+      this.turnInFlight = false;
+      this.askQueue.shift()?.();
+    }
+  }
+  async handleUserTurn(text, attachments, askMeta) {
     if (this.pending) {
       this.clearPending();
       this.ui.addMessage("system", this.strings.pendingActionCancelled);
     }
     const message = formatAttachmentsForPrompt(text, attachments ?? []);
     if (!message.trim()) return;
-    this.lastTurn = { text, attachments };
+    this.lastTurn = { text, attachments, askMeta };
     this.ui.addMessage("user", text + (attachments?.length ? `
 \u{1F4CE} ${attachments.map((a) => a.name).join(", ")}` : ""));
     this.ui.setState("thinking");
@@ -5368,6 +5457,7 @@ var PageAssistantController = class {
       }
       this.ui.setBusy(false);
       this.ui.addMessage("assistant", res.message);
+      this.notifyReplyIfClosed(res.message, askMeta);
       await this.say(res.message);
       this.track("message_sent", { len: message.length });
     } catch (e) {
@@ -5377,10 +5467,24 @@ var PageAssistantController = class {
       this.showFriendlyError(e, () => this.retryLastTurn());
     }
   }
+  /**
+   * Reply bubble + unread badge for a reply landing while the panel is closed. An ask()'d
+   * reply gets both, unless the caller passed `notify: false` (then neither). A reply to
+   * what the visitor actually typed always just marks the badge — closing the panel
+   * mid-turn shouldn't silently drop the fact that an answer came back.
+   */
+  notifyReplyIfClosed(message, askMeta) {
+    if (this.ui.isOpen()) return;
+    if (askMeta) {
+      if (askMeta.notify) this.ui.showReplyPreview(message);
+    } else {
+      this.ui.markUnread();
+    }
+  }
   retryLastTurn() {
     if (!this.lastTurn) return;
-    const { text, attachments } = this.lastTurn;
-    this.handleUser(text, attachments);
+    const { text, attachments, askMeta } = this.lastTurn;
+    this.handleUser(text, attachments, askMeta);
   }
   /** Map any error to a plain-English message + retry affordance. */
   showFriendlyError(e, onRetry) {
@@ -5527,6 +5631,14 @@ var PageAssistant = {
     instance?.updateConfig(patch);
   },
   /**
+   * Ask the assistant a question from code, the same as if the visitor had typed it.
+   * `open: true` opens the panel first; `notify: false` skips the closed-panel reply
+   * bubble + unread badge for this call. See `PageAssistantController.ask`.
+   */
+  ask(text, opts) {
+    return instance?.ask(text, opts) ?? Promise.resolve();
+  },
+  /**
    * Re-check who is signed in and apply the chat-history mode that follows. Call it after
    * your app signs a user in or out; signing out drops account chats from the page.
    */
@@ -5593,7 +5705,7 @@ function stripAttachmentDump(content) {
   return head + (names.length ? `
 \u{1F4CE} ${names.join(", ")}` : "");
 }
-if (typeof window !== "undefined") window.PageAssistant = { ...index_exports, ...PageAssistant };
+if (typeof window !== "undefined") window.PageAssistant = PageAssistant;
 export {
   ASSISTANT_SETTINGS_STORAGE_KEY,
   AccountHistorySync,
@@ -5640,6 +5752,7 @@ export {
   parseLinks,
   readFileAttachment,
   renderReply,
+  replyExcerpt,
   resolveChatHistoryMode,
   resolveStrings,
   resolveVoiceLang,

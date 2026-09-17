@@ -227,7 +227,7 @@ Checked against the live deployment, not just locally:
 
 ## Assistant
 
-Embedded page-assistant (0.6.1), vendored as built ESM in `vendor/page-assistant/`
+Embedded page-assistant (0.7.2), vendored as built ESM in `vendor/page-assistant/`
 (widget + core, no install-time clone or build). Capabilities call the real
 studio functions, so answers come from the app rather than the model.
 
