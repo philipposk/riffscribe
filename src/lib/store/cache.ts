@@ -268,7 +268,9 @@ async function decodeTrack(enc: EncodedTrack, wantRate: number): Promise<Track> 
     },
   });
 
-  decoder.configure({ codec: "opus", sampleRate: enc.rate, numberOfChannels: 2 });
+  // Opus always decodes at 48 kHz. Chrome rejects any other rate here even
+  // though it encoded at it, which made every cached split unreadable.
+  decoder.configure({ codec: "opus", sampleRate: OPUS_RATE, numberOfChannels: 2 });
   let at = 0;
   const sizes = enc.sizes!;
   for (let i = 0; i < sizes.length; i++) {
