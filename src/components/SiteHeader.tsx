@@ -25,7 +25,7 @@ export function SiteFooter() {
       <Link className="hover:text-white/60" href="/pricing">Pricing</Link>
       <Link className="hover:text-white/60" href="/terms">Terms</Link>
       <Link className="hover:text-white/60" href="/privacy">Privacy</Link>
-      <a className="hover:text-white/60" href="mailto:phktistakis@gmail.com">Contact</a>
+      <a className="hover:text-white/60" href="mailto:hello@6x7.gr">Contact</a>
       <a className="hover:text-white/60" href="https://github.com/philipposk/riffscribe">GitHub</a>
       <span className="ml-auto">Part of <a className="underline" href="https://6x7.gr">6x7.gr</a></span>
     </footer>

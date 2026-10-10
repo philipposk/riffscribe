@@ -52,7 +52,7 @@ export default function Terms() {
         <p>You can delete your data at any time from your account page. We may end accounts that break these terms.</p>
 
         <H>Contact</H>
-        <p><a className="underline" href="mailto:phktistakis@gmail.com">phktistakis@gmail.com</a> · see also the{" "}
+        <p><a className="underline" href="mailto:admin@6x7.gr">admin@6x7.gr</a> · see also the{" "}
           <a className="underline" href="/privacy">privacy policy</a>.</p>
       </main>
       <SiteFooter />

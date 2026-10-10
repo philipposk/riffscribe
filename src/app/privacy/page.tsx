@@ -66,7 +66,7 @@ export default function Privacy() {
 
         <H>Your rights</H>
         <p>Under GDPR and similar laws you can access, correct, export or delete your data, and object to processing.
-          Email <a className="underline" href="mailto:phktistakis@gmail.com">phktistakis@gmail.com</a>.</p>
+          Email <a className="underline" href="mailto:admin@6x7.gr">admin@6x7.gr</a>.</p>
       </main>
       <SiteFooter />
     </>
