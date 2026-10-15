@@ -905,6 +905,25 @@ var rememberFactCapability = {
   render: (r) => `Noted \u2014 I'll remember that (${r.topic}).`
 };
 
+// ../core/dist/explainUi.js
+function explainUiCapability(opts) {
+  return {
+    name: opts.name,
+    description: opts.description,
+    parameters: { type: "object", properties: {} },
+    tags: opts.tags ?? ["help"],
+    verbatim: true,
+    enabled: opts.enabled,
+    async run() {
+      return await opts.run();
+    },
+    render: opts.render
+  };
+}
+function pageStateHint(base, hint) {
+  return { ...base, hint };
+}
+
 // src/llmProxy.ts
 var ProxyError = class extends Error {
   constructor(status, message) {
@@ -955,6 +974,7 @@ var VoiceError = class extends Error {
   }
 };
 var SILERO_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/index.js";
+var SILENT_WAV = "data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
 function resolveVoiceLang(explicit) {
   const set = explicit?.trim();
   if (set) return set;
@@ -979,6 +999,19 @@ var Voice = class {
     __publicField(this, "speaking", false);
     __publicField(this, "currentAudio");
     __publicField(this, "currentUtterance");
+    /**
+     * The one element server speech plays through. iOS only lets an element play once it has
+     * played inside a tap, and a reply arrives seconds after the tap that asked for it, so a
+     * fresh `new Audio()` per reply was always refused and read-aloud stayed silent. prime()
+     * unlocks this one during a tap; every reply reuses it.
+     */
+    __publicField(this, "audioEl");
+    __publicField(this, "audioUnlocked", false);
+    __publicField(this, "synthPrimed", false);
+    /** Ends the server playback in progress and resolves its speak(). */
+    __publicField(this, "endPlayback");
+    /** Bumped by stop(): a reply still downloading when it changes is never played. */
+    __publicField(this, "speakGen", 0);
     __publicField(this, "activeRecognition");
     __publicField(this, "listenAbort");
     __publicField(this, "bargeCleanup");
@@ -989,6 +1022,47 @@ var Voice = class {
   /** The language for this utterance/listen. Resolved now, not at construction. */
   lang() {
     return resolveVoiceLang(this.opts.lang);
+  }
+  /**
+   * Call synchronously inside a tap or key press (read-aloud switched on, send, mic) when
+   * replies will be read aloud. iOS lets a page start audio or speech only inside a user
+   * gesture, and a reply arrives outside one. This plays silence through the audio element
+   * server speech uses and speaks a silent utterance, which unlocks both for the page. Each is
+   * done once, so calling it on every tap is cheap. Audio is only touched for server speech:
+   * playing even silence pauses whatever else the phone is playing.
+   */
+  prime() {
+    if (typeof window === "undefined") return;
+    if (!this.synthPrimed && "speechSynthesis" in window) {
+      this.synthPrimed = true;
+      try {
+        const u = new SpeechSynthesisUtterance(" ");
+        u.volume = 0;
+        speechSynthesis.speak(u);
+      } catch {
+      }
+    }
+    if (this.audioUnlocked || this.speaking || this.opts.ttsMode !== "server" || !this.opts.serverUrl) return;
+    const audio = this.audio();
+    if (!audio) return;
+    this.audioUnlocked = true;
+    try {
+      audio.src = SILENT_WAV;
+      audio.play()?.then(
+        () => {
+          if (audio.src === SILENT_WAV) audio.pause();
+        },
+        () => {
+          this.audioUnlocked = false;
+        }
+      );
+    } catch {
+      this.audioUnlocked = false;
+    }
+  }
+  audio() {
+    if (!this.audioEl && typeof Audio !== "undefined") this.audioEl = new Audio();
+    return this.audioEl;
   }
   async speak(text, onWord) {
     this.stop();
@@ -1050,6 +1124,7 @@ var Voice = class {
     return named.find((v) => vLang(v) === want) ?? named.find((v) => baseLang(vLang(v)) === wantBase) ?? voices.find((v) => vLang(v) === want) ?? voices.find((v) => baseLang(vLang(v)) === wantBase) ?? named[0];
   }
   async speakServer(text) {
+    const gen = this.speakGen;
     const headers = { "content-type": "application/json" };
     if (this.opts.authToken) headers.authorization = `Bearer ${this.opts.authToken}`;
     let res;
@@ -1065,47 +1140,54 @@ var Voice = class {
         })
       });
     } catch {
-      return this.speakBrowser(text);
+      return gen === this.speakGen ? this.speakBrowser(text) : void 0;
     }
+    if (gen !== this.speakGen) return;
     if (!res.ok) return this.speakBrowser(text);
     const blob = await res.blob();
+    if (gen !== this.speakGen) return;
+    const audio = this.audio();
+    if (!audio) return this.speakBrowser(text);
     const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    audio.src = url;
     this.currentAudio = audio;
     this.speaking = true;
     return new Promise((resolve) => {
       let settled = false;
-      const done = () => {
-        if (settled) return;
+      const finish = () => {
+        if (settled) return false;
         settled = true;
+        audio.onended = audio.onerror = null;
+        if (this.currentAudio === audio) this.currentAudio = void 0;
+        if (this.endPlayback === done) this.endPlayback = void 0;
         this.speaking = false;
-        this.currentAudio = void 0;
         this.stopBargeIn();
         URL.revokeObjectURL(url);
-        resolve();
+        return true;
       };
+      const done = () => {
+        if (finish()) resolve();
+      };
+      this.endPlayback = done;
       audio.onended = done;
       audio.onerror = done;
       audio.play().then(
         () => this.startBargeIn(),
-        () => done()
+        // Refused: on iOS, an element that never played inside a tap (prime() was not called,
+        // or the page has been in the background). Read the reply with the browser's voice
+        // rather than not at all. Never hangs with the mascot stuck "talking".
+        () => {
+          if (finish()) this.speakBrowser(text).then(resolve);
+        }
       );
     });
   }
   stop() {
+    this.speakGen++;
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     this.currentUtterance = void 0;
-    if (this.currentAudio) {
-      this.currentAudio.pause();
-      const src = this.currentAudio.src;
-      this.currentAudio = void 0;
-      if (src.startsWith("blob:")) {
-        try {
-          URL.revokeObjectURL(src);
-        } catch {
-        }
-      }
-    }
+    this.currentAudio?.pause();
+    this.endPlayback?.();
     this.speaking = false;
     this.stopBargeIn();
   }
@@ -2326,7 +2408,7 @@ var CSS2 = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; }
 .launcher {
-  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(22px + env(safe-area-inset-bottom));
+  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(22px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom));
   width: 60px; height: 60px; border-radius: 50%;
   border: none; cursor: pointer; z-index: 2147483646;
   background: radial-gradient(circle at 30% 30%, var(--pa-launcher-from), var(--pa-launcher-to));
@@ -2344,7 +2426,7 @@ var CSS2 = `
 }
 .badge.show { display: flex; }
 .reply-bubble {
-  position: fixed; bottom: calc(92px + env(safe-area-inset-bottom));
+  position: fixed; bottom: calc(92px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom));
   max-width: min(300px, calc(100vw - 44px));
   z-index: 2147483646; display: flex; align-items: flex-start; gap: 2px;
   background: var(--pa-bg-head); color: var(--pa-text); border: 1px solid var(--pa-border);
@@ -2371,17 +2453,24 @@ var CSS2 = `
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(94,234,212,.25), 0 8px 28px rgba(13,148,136,.45); } }
 .panel-wrap {
-  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(92px + env(safe-area-inset-bottom));
+  position: fixed; right: calc(22px + env(safe-area-inset-right)); bottom: calc(92px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom));
   z-index: 2147483646; display: none;
 }
 .panel-wrap.open { display: flex; }
+/* --pa-vvh is the visible height (visualViewport), set by bindViewport; 100vh where there is none. */
 .panel {
   position: relative;
   width: 580px; max-width: calc(100vw - 32px);
-  height: 520px; max-height: calc(100vh - 130px); background: var(--pa-bg); color: var(--pa-text);
+  height: 520px; max-height: calc(var(--pa-vvh, 100vh) - 130px - var(--pa-offset-bottom, 0px) - env(safe-area-inset-bottom)); background: var(--pa-bg); color: var(--pa-text);
   border: 1px solid var(--pa-border); border-radius: 16px;
   display: flex; flex-direction: row; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.5);
 }
+/* Opening on a touch screen focuses the panel, not the text box (see toggle()). */
+.panel:focus { outline: none; }
+/* While the on-screen keyboard covers the page, the launcher and any bottom bar are behind it, so the
+   panel sits just above the keyboard (bindViewport lifts it) and is never taller than what is left. */
+.panel-wrap.kb { bottom: 8px; }
+.panel-wrap.kb .panel { max-height: calc(var(--pa-vvh, 100vh) - 16px - env(safe-area-inset-top)); }
 .panel-body { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .head { padding: 14px 16px; background: var(--pa-bg-head); border-bottom: 1px solid var(--pa-border); font-weight: 600; display:flex; align-items:center; gap:8px; }
 .head .dot { width:8px;height:8px;border-radius:50%;background:#4ade80; }
@@ -2421,7 +2510,7 @@ var CSS2 = `
 .attach-tag button { background:none; border:none; color:var(--pa-text-muted); cursor:pointer; font-size:12px; line-height:1; padding:0; }
 .attach-tag button:hover { color:var(--pa-text); }
 .foot { padding: 10px; border-top: 1px solid var(--pa-border); display: flex; gap: 8px; align-items: center; }
-.foot input[type=text] { flex: 1; background: var(--pa-bg-input); border: 1px solid var(--pa-border); color: var(--pa-text); border-radius: 10px; padding: 9px 12px; outline: none; font-size: 16px; }
+.foot input[type=text] { flex: 1; min-width: 0; background: var(--pa-bg-input); border: 1px solid var(--pa-border); color: var(--pa-text); border-radius: 10px; padding: 9px 12px; outline: none; font-size: 16px; }
 .foot input[type=text]:disabled { opacity: .6; }
 .foot button { border: none; border-radius: 10px; padding: 0 12px; cursor: pointer; font-size: 16px; height: 36px; }
 .foot button:disabled { opacity: .5; cursor: default; }
@@ -2437,7 +2526,7 @@ var CSS2 = `
 .scanline { position:fixed; left:0; right:0; height:3px; background:linear-gradient(90deg,transparent,#4ade80,transparent); z-index:2147483645; display:none; animation: sweep 1.4s ease-in-out infinite; }
 .scanline.on { display:block; }
 @keyframes sweep { 0%{top:0} 100%{top:100vh} }
-.toast { position:fixed; left:50%; bottom:100px; transform:translateX(-50%); background:var(--pa-bg-head); color:var(--pa-text); border:1px solid var(--pa-border); border-radius:10px; padding:8px 14px; font-size:13px; z-index:2147483647; box-shadow:0 8px 24px rgba(0,0,0,.4); opacity:0; transition:opacity .2s; pointer-events:none; }
+.toast { position:fixed; left:50%; bottom:calc(100px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom)); transform:translateX(-50%); background:var(--pa-bg-head); color:var(--pa-text); border:1px solid var(--pa-border); border-radius:10px; padding:8px 14px; font-size:13px; z-index:2147483647; box-shadow:0 8px 24px rgba(0,0,0,.4); opacity:0; transition:opacity .2s; pointer-events:none; }
 .toast.show { opacity:1; }
 /* Highlight ring for the visual action preview \u2014 drawn in the shadow root, never in host DOM. */
 .pa-highlight { position:fixed; z-index:2147483644; border:3px solid var(--pa-accent); border-radius:8px; box-shadow:0 0 0 3px rgba(22,163,74,.35), 0 0 20px rgba(22,163,74,.5); pointer-events:none; transition:all .2s ease; }
@@ -2448,8 +2537,16 @@ var CSS2 = `
 .sidebar-scrim.show { display: block; }
 @media (min-width: 521px) { .sidebar-scrim { display: none !important; } }
 @media (max-width: 520px) {
-  .panel { width: calc(100vw - 16px); height: calc(100dvh - 110px); max-height: calc(100dvh - 110px); }
-  .panel-wrap { right: 8px; left: 8px; bottom: calc(84px + env(safe-area-inset-bottom)); }
+  .panel {
+    width: calc(100vw - 16px);
+    height: calc(var(--pa-vvh, 100vh) - 110px - var(--pa-offset-bottom, 0px) - env(safe-area-inset-bottom) - env(safe-area-inset-top));
+    max-height: none;
+  }
+  .panel-wrap { right: 8px; left: 8px; bottom: calc(84px + var(--pa-offset-bottom, 0px) + env(safe-area-inset-bottom)); }
+  .panel-wrap.kb .panel { height: calc(var(--pa-vvh, 100vh) - 16px - env(safe-area-inset-top)); }
+  /* Attach, read-aloud, mic and send beside the text box on a 320\u2013375px screen. */
+  .foot { gap: 6px; padding: 8px; }
+  .foot button { padding: 0 9px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .launcher.talking, .launcher.thinking, .launcher.scanning { animation: none; }
@@ -2540,6 +2637,7 @@ var WidgetUI = class {
     this.panel = el2("div", "panel");
     this.panel.setAttribute("role", "dialog");
     this.panel.setAttribute("aria-label", this.title);
+    this.panel.tabIndex = -1;
     if (this.opts.chatStore) {
       const handlers = {
         onSelect: (id) => this.handlers.onSelectChat?.(id),
@@ -2707,10 +2805,12 @@ var WidgetUI = class {
     const vv = window.visualViewport;
     if (!vv) return;
     this.viewportHandler = () => {
-      const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      const px = overlap > 60 ? overlap : 0;
+      const px = keyboardOverlap(window.innerHeight, vv.height, vv.offsetTop);
+      this.host.style.setProperty("--pa-vvh", `${Math.round(vv.height)}px`);
+      this.panelWrap.classList.toggle("kb", px > 0);
       this.panelWrap.style.transform = px ? `translateY(-${px}px)` : "";
     };
+    this.viewportHandler();
     vv.addEventListener("resize", this.viewportHandler);
     vv.addEventListener("scroll", this.viewportHandler);
   }
@@ -2726,7 +2826,10 @@ var WidgetUI = class {
     const first = items[0];
     const last = items[items.length - 1];
     const active = this.root.activeElement ?? document.activeElement;
-    if (e.shiftKey && active === first) {
+    if (active === this.panel) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    } else if (e.shiftKey && active === first) {
       e.preventDefault();
       last.focus();
     } else if (!e.shiftKey && active === last) {
@@ -2889,7 +2992,8 @@ var WidgetUI = class {
         this.log.scrollTop = this.log.scrollHeight;
       });
       this.lastFocused = document.activeElement ?? void 0;
-      this.input.focus();
+      if (isTouchOnly()) this.panel.focus({ preventScroll: true });
+      else this.input.focus();
     } else {
       this.clearHighlight();
       (this.lastFocused ?? this.launcher).focus();
@@ -3123,6 +3227,13 @@ var WidgetUI = class {
 };
 function isNarrow() {
   return typeof matchMedia !== "undefined" && matchMedia("(max-width: 520px)").matches;
+}
+function isTouchOnly() {
+  return typeof matchMedia !== "undefined" && matchMedia("(hover: none) and (pointer: coarse)").matches;
+}
+function keyboardOverlap(innerHeight, visibleHeight, visibleTop) {
+  const overlap = Math.max(0, Math.round(innerHeight - visibleHeight - visibleTop));
+  return overlap > 60 ? overlap : 0;
 }
 function el2(tag, cls) {
   const e = document.createElement(tag);
@@ -5050,9 +5161,20 @@ var PageAssistantController = class {
       strings: cfg.strings
     };
     this.ui = new WidgetUI(cfg.assistantName ?? cfg.appName ?? "Assistant", {
-      onSend: (t, attachments) => this.handleUser(t, attachments),
-      onMic: () => this.toggleMic(),
-      onConfirm: (ok) => this.handleConfirm(ok),
+      // Taps and key presses that lead to a spoken reply prime speech while they are still a
+      // user gesture (see Voice.prime).
+      onSend: (t, attachments) => {
+        this.primeVoice();
+        return this.handleUser(t, attachments);
+      },
+      onMic: () => {
+        this.primeVoice();
+        return this.toggleMic();
+      },
+      onConfirm: (ok) => {
+        if (ok) this.primeVoice();
+        return this.handleConfirm(ok);
+      },
       onToggle: (open) => this.handleToggle(open),
       onSettings: () => cfg.onSettings?.() ?? (cfg.useExtendedSettings !== false ? (
         // The extended modal keeps two stores apart. It used to get the voice key as its
@@ -5065,6 +5187,7 @@ var PageAssistantController = class {
       ) : openVoiceSettingsModal(settingsUiOpts)),
       onTtsToggle: (on) => {
         this.ttsEnabled = on;
+        this.primeVoice();
       },
       onNewChat: () => this.newChat(),
       onSelectChat: (id) => this.switchChat(id),
@@ -5214,7 +5337,10 @@ var PageAssistantController = class {
     this.greetedChatId = this.activeChatId;
     if (this.cfg.greeting) this.ui.addMessage("assistant", this.cfg.greeting);
     if (this.cfg.suggestions?.length) {
-      this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
+      this.ui.addSuggestions(this.cfg.suggestions, (t) => {
+        this.primeVoice();
+        return this.handleUser(t);
+      });
     }
   }
   clearPending() {
@@ -5483,6 +5609,7 @@ var PageAssistantController = class {
   }
   retryLastTurn() {
     if (!this.lastTurn) return;
+    this.primeVoice();
     const { text, attachments, askMeta } = this.lastTurn;
     this.handleUser(text, attachments, askMeta);
   }
@@ -5555,6 +5682,10 @@ var PageAssistantController = class {
     } finally {
       this.pending = void 0;
     }
+  }
+  /** Only when replies will be read aloud: priming plays silence, which pauses the phone's music. */
+  primeVoice() {
+    if (this.ttsEnabled) this.voice?.prime();
   }
   async say(text) {
     if (!this.voice || !this.ttsEnabled) {
@@ -5730,6 +5861,7 @@ export {
   closeVoiceSettingsModal,
   deviceStorageKey,
   escapeLinkText,
+  explainUiCapability,
   exportAnalyticsMarkdown,
   fetchModelCatalog,
   followLink,
@@ -5749,6 +5881,7 @@ export {
   openAssistantSettingsModal,
   openVoiceSettingsModal,
   pageActionCapabilities,
+  pageStateHint,
   parseLinks,
   readFileAttachment,
   renderReply,

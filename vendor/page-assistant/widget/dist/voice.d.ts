@@ -79,6 +79,19 @@ export declare class Voice {
     private speaking;
     private currentAudio?;
     private currentUtterance?;
+    /**
+     * The one element server speech plays through. iOS only lets an element play once it has
+     * played inside a tap, and a reply arrives seconds after the tap that asked for it, so a
+     * fresh `new Audio()` per reply was always refused and read-aloud stayed silent. prime()
+     * unlocks this one during a tap; every reply reuses it.
+     */
+    private audioEl?;
+    private audioUnlocked;
+    private synthPrimed;
+    /** Ends the server playback in progress and resolves its speak(). */
+    private endPlayback?;
+    /** Bumped by stop(): a reply still downloading when it changes is never played. */
+    private speakGen;
     private activeRecognition?;
     private listenAbort?;
     private bargeCleanup?;
@@ -86,6 +99,16 @@ export declare class Voice {
     get isSpeaking(): boolean;
     /** The language for this utterance/listen. Resolved now, not at construction. */
     private lang;
+    /**
+     * Call synchronously inside a tap or key press (read-aloud switched on, send, mic) when
+     * replies will be read aloud. iOS lets a page start audio or speech only inside a user
+     * gesture, and a reply arrives outside one. This plays silence through the audio element
+     * server speech uses and speaks a silent utterance, which unlocks both for the page. Each is
+     * done once, so calling it on every tap is cheap. Audio is only touched for server speech:
+     * playing even silence pauses whatever else the phone is playing.
+     */
+    prime(): void;
+    private audio;
     speak(text: string, onWord?: (t: string) => void): Promise<void>;
     private speakBrowser;
     /**
