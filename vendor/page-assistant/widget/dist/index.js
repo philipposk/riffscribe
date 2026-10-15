@@ -17,7 +17,7 @@ import { DEFAULT_STRINGS, resolveStrings } from "./strings.js";
 const REOPEN_KEY = "page-assistant:reopen-after-link";
 const REOPEN_WINDOW_MS = 30_000;
 export { capability } from "./capability.js";
-export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
+export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES, explainUiCapability, pageStateHint, } from "@page-assistant/core";
 export { markdownLink, parseLinks, linkText, safeLinkHref, escapeLinkText } from "@page-assistant/core";
 export { renderReply, followLink, replyExcerpt } from "./replyLinks.js";
 export { scanPage, fullScan } from "./scanner.js";
@@ -159,9 +159,21 @@ class PageAssistantController {
             strings: cfg.strings,
         };
         this.ui = new WidgetUI(cfg.assistantName ?? cfg.appName ?? "Assistant", {
-            onSend: (t, attachments) => this.handleUser(t, attachments),
-            onMic: () => this.toggleMic(),
-            onConfirm: (ok) => this.handleConfirm(ok),
+            // Taps and key presses that lead to a spoken reply prime speech while they are still a
+            // user gesture (see Voice.prime).
+            onSend: (t, attachments) => {
+                this.primeVoice();
+                return this.handleUser(t, attachments);
+            },
+            onMic: () => {
+                this.primeVoice();
+                return this.toggleMic();
+            },
+            onConfirm: (ok) => {
+                if (ok)
+                    this.primeVoice();
+                return this.handleConfirm(ok);
+            },
             onToggle: (open) => this.handleToggle(open),
             onSettings: () => cfg.onSettings?.() ??
                 (cfg.useExtendedSettings !== false
@@ -175,6 +187,7 @@ class PageAssistantController {
                     : openVoiceSettingsModal(settingsUiOpts)),
             onTtsToggle: (on) => {
                 this.ttsEnabled = on;
+                this.primeVoice();
             },
             onNewChat: () => this.newChat(),
             onSelectChat: (id) => this.switchChat(id),
@@ -346,7 +359,10 @@ class PageAssistantController {
         if (this.cfg.greeting)
             this.ui.addMessage("assistant", this.cfg.greeting);
         if (this.cfg.suggestions?.length) {
-            this.ui.addSuggestions(this.cfg.suggestions, (t) => this.handleUser(t));
+            this.ui.addSuggestions(this.cfg.suggestions, (t) => {
+                this.primeVoice();
+                return this.handleUser(t);
+            });
         }
     }
     clearPending() {
@@ -669,6 +685,7 @@ class PageAssistantController {
     retryLastTurn() {
         if (!this.lastTurn)
             return;
+        this.primeVoice(); // the Retry button
         const { text, attachments, askMeta } = this.lastTurn;
         this.handleUser(text, attachments, askMeta);
     }
@@ -752,6 +769,11 @@ class PageAssistantController {
         finally {
             this.pending = undefined;
         }
+    }
+    /** Only when replies will be read aloud: priming plays silence, which pauses the phone's music. */
+    primeVoice() {
+        if (this.ttsEnabled)
+            this.voice?.prime();
     }
     async say(text) {
         if (!this.voice || !this.ttsEnabled) {

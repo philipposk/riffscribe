@@ -149,6 +149,16 @@ export declare class WidgetUI {
     /** Tear down all DOM + listeners this UI created (for destroy()). */
     destroy(): void;
 }
+/** A phone or tablet with no mouse or trackpad: focusing a text box there opens the keyboard. */
+export declare function isTouchOnly(): boolean;
+/**
+ * How far the on-screen keyboard covers the page, in px: the gap between the bottom of what is
+ * visible (visualViewport) and the bottom of the layout viewport that fixed elements sit on.
+ * 0 below 60px, which is browser toolbars showing and hiding, not a keyboard. Also 0 where the
+ * keyboard shrinks the page itself (an installed web app, Android's resize mode): fixed elements
+ * then move up with it.
+ */
+export declare function keyboardOverlap(innerHeight: number, visibleHeight: number, visibleTop: number): number;
 export declare const LAUNCHER_ICONS: Record<string, string>;
 /** Resolve whatever the host asked for into markup for the launcher.
  *  A name picks one of the above; raw SVG passes through; anything else

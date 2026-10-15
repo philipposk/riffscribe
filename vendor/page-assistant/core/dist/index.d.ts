@@ -12,5 +12,7 @@ export type { Vocabulary, VocabularyContext, VocabularyLoader, VocabularySource,
 export type { LlmTxtMeta } from "./llmtxt.js";
 export { InMemoryStore } from "./memory.js";
 export { rememberFactCapability } from "./builtins.js";
+export { explainUiCapability, pageStateHint } from "./explainUi.js";
+export type { ExplainUiCapabilityOptions } from "./explainUi.js";
 export { MemoryTicketStore, normalizeTicket, ticketsFromRun, feedbackWellKnown, sendTicket, makeTicketFloodGuard, } from "./feedback.js";
 export type { Ticket, TicketKind, TicketStore } from "./feedback.js";

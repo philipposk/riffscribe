@@ -169,7 +169,8 @@ export interface PageAssistantConfig {
 }
 export { capability } from "./capability.js";
 export type { Capability, ScrubRule, Vocabulary, VocabularyOption } from "@page-assistant/core";
-export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES } from "@page-assistant/core";
+export { DEFAULT_SCRUB_RULES, PLAIN_TEXT_SCRUB_RULES, explainUiCapability, pageStateHint, } from "@page-assistant/core";
+export type { ExplainUiCapabilityOptions } from "@page-assistant/core";
 export { markdownLink, parseLinks, linkText, safeLinkHref, escapeLinkText, type ReplySegment, type LinkPolicy } from "@page-assistant/core";
 export { renderReply, followLink, replyExcerpt, type ReplyLinkOptions } from "./replyLinks.js";
 export { scanPage, fullScan } from "./scanner.js";
@@ -306,6 +307,8 @@ declare class PageAssistantController {
     /** Resolve a scanner selector for the control an action targets (undefined if none). */
     private resolveActionSelector;
     private handleConfirm;
+    /** Only when replies will be read aloud: priming plays silence, which pauses the phone's music. */
+    private primeVoice;
     private say;
     private toggleMic;
 }

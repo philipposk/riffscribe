@@ -7,4 +7,5 @@ export { parseLinks, linkText, safeLinkHref, markdownLink, escapeLinkText, rewri
 export { renderVocabulary, VocabularyResolver } from "./vocabulary.js";
 export { InMemoryStore } from "./memory.js";
 export { rememberFactCapability } from "./builtins.js";
+export { explainUiCapability, pageStateHint } from "./explainUi.js";
 export { MemoryTicketStore, normalizeTicket, ticketsFromRun, feedbackWellKnown, sendTicket, makeTicketFloodGuard, } from "./feedback.js";
