@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { supabase, savingConfigured } from "../supabase/client";
 import { currentUser, onAuthChange, signOut } from "./charts";
+import { trackAppAccessClient } from "../app-access-client";
 
 export interface Account {
   plan: string;
@@ -73,7 +74,10 @@ export function syncAuthCookie(): () => void {
       : `rs_at=; Path=/api; Max-Age=0; SameSite=Lax${secure}`;
   };
   void s.auth.getSession().then(({ data }) => write(data.session?.access_token ?? null));
-  const { data } = s.auth.onAuthStateChange((_e, session) => write(session?.access_token ?? null));
+  const { data } = s.auth.onAuthStateChange((_e, session) => {
+    write(session?.access_token ?? null);
+    void trackAppAccessClient(s, session?.user, "riffscribe");
+  });
   return () => data.subscription.unsubscribe();
 }
 
