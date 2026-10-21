@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Loader2 } from "lucide-react";
 
 import { startCheckout, useAccount } from "@/lib/store/account";
+import { BILLING_LIVE } from "@/lib/billingLive";
 
 export default function PricingActions({ plan }: { plan: "free" | "pro" }) {
   const { user, account } = useAccount();
@@ -12,6 +13,7 @@ export default function PricingActions({ plan }: { plan: "free" | "pro" }) {
 
   if (plan === "free") return <Link className="btn" href="/studio">Open the studio</Link>;
   if (account && account.plan !== "free") return <Link className="btn" href="/account">You're on Pro — manage</Link>;
+  if (!BILLING_LIVE) return <button className="btn btn-primary" disabled aria-disabled="true">Coming soon</button>;
   if (!user) return <Link className="btn btn-primary" href="/account">Sign in to upgrade</Link>;
 
   return (
