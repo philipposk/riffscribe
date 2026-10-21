@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react";
 import SignIn from "./SignIn";
 import { Meter } from "./AccountMenu";
 import { signOut } from "@/lib/store/charts";
+import { BILLING_LIVE } from "@/lib/billingLive";
 import { deleteAccount, openBillingPortal, startCheckout, useAccount } from "@/lib/store/account";
 import { PLANS, planLabel } from "@/lib/plans";
 
@@ -70,11 +71,14 @@ export default function AccountPage() {
           Transcribing, splitting stems and slowing down run on your own device, so they are unlimited on every plan.
         </p>
         <div className="flex flex-wrap gap-2">
-          {free && (
+          {free && BILLING_LIVE && (
             <button className="btn btn-primary" disabled={!!busy} onClick={() => void run("up", startCheckout)}>
               {busy === "up" && <Loader2 className="animate-spin" size={15} />}
               Upgrade to Pro — {PLANS.pro.price}
             </button>
+          )}
+          {free && !BILLING_LIVE && (
+            <button className="btn btn-primary" disabled aria-disabled="true">Pro — coming soon</button>
           )}
           {account?.has_billing && (
             <button className="btn" disabled={!!busy} onClick={() => void run("portal", openBillingPortal)}>
