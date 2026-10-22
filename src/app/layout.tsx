@@ -11,7 +11,6 @@ export const metadata: Metadata = {
   title,
   description,
   applicationName: "Riffscribe",
-  alternates: { canonical: "/" },
   manifest: "/manifest.webmanifest",
   openGraph: {
     title,

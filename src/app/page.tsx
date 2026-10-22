@@ -1,6 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 
 import SiteHeader, { SiteFooter } from "@/components/SiteHeader";
+
+// Only the home page is canonical to "/"; other pages keep their own URL.
+export const metadata: Metadata = { alternates: { canonical: "/" } };
+
 
 const FEATURES = [
   {
