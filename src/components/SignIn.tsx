@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { Loader2, User } from "lucide-react";
 
-import { signInWithEmail, signInWithGoogle } from "@/lib/store/charts";
+import { db, signInWithEmail, signInWithGoogle } from "@/lib/store/charts";
+import { GoogleIdentityButton } from "@/components/GoogleIdentityButton";
 
 export default function SignIn({ stacked = false }: { stacked?: boolean }) {
   const [email, setEmail] = useState("");
@@ -26,10 +27,12 @@ export default function SignIn({ stacked = false }: { stacked?: boolean }) {
   return (
     <div>
       <div className={stacked ? "flex flex-col gap-2" : "flex flex-wrap items-center gap-2"}>
-        <button className="btn justify-center" disabled={!!busy} onClick={() => void run("google", signInWithGoogle)}>
-          {busy === "google" ? <Loader2 className="animate-spin" size={15} /> : <User size={15} />}
-          Continue with Google
-        </button>
+        <GoogleIdentityButton getSupabase={db} onSignedIn={() => window.location.assign("/studio")} onError={setError}>
+          <button className="btn justify-center" disabled={!!busy} onClick={() => void run("google", signInWithGoogle)}>
+            {busy === "google" ? <Loader2 className="animate-spin" size={15} /> : <User size={15} />}
+            Continue with Google
+          </button>
+        </GoogleIdentityButton>
         <span className="text-center text-xs text-white/30">or</span>
         <input
           type="email"

@@ -50,7 +50,7 @@ export class NotConfigured extends Error {
   }
 }
 
-function db() {
+export function db() {
   const s = supabase();
   if (!s) throw new NotConfigured();
   return s;
