@@ -92,7 +92,7 @@ export async function signInWithEmail(email: string): Promise<void> {
 }
 
 export async function signOut(): Promise<void> {
-  await db().auth.signOut();
+  await db().auth.signOut({ scope: "local" });
 }
 
 /* ----------------------------------------------------------------- charts */
