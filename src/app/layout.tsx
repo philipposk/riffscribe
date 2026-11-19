@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import NativeShell from "@/components/NativeShell";
 import Providers from "@/components/Providers";
 import { SiteJsonLd } from "@/components/SiteJsonLd";
 
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <SiteJsonLd />
+        <NativeShell />
         <Providers>{children}</Providers>
       </body>
     </html>

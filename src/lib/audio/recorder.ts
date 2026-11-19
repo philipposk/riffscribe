@@ -73,9 +73,10 @@ export class MicRecorder {
 export async function stretchOffline(
   channels: Float32Array[],
   sampleRate: number,
-  rate: number
+  rate: number,
+  semitones = 0
 ): Promise<Float32Array[]> {
-  if (Math.abs(rate - 1) < 1e-4) return channels;
+  if (Math.abs(rate - 1) < 1e-4 && semitones === 0) return channels;
   const inputLength = channels[0].length;
   const outputLength = Math.ceil(inputLength / rate) + Math.ceil(sampleRate * 0.25);
   const ctx = new OfflineAudioContext(channels.length, outputLength, sampleRate);
@@ -87,7 +88,7 @@ export async function stretchOffline(
   });
   await node.addBuffers(channels);
   node.connect(ctx.destination);
-  await node.schedule({ output: 0, active: true, input: 0, rate, semitones: 0 });
+  await node.schedule({ output: 0, active: true, input: 0, rate, semitones });
   const rendered = await ctx.startRendering();
   const out: Float32Array[] = [];
   for (let c = 0; c < channels.length; c++) out.push(rendered.getChannelData(c).slice());

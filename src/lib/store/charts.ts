@@ -15,8 +15,12 @@
  * the other three players and each of them opens the same parts, tempo and
  * markings against their own copy of the song.
  */
+import { isNativePlatform } from "../native";
 import { supabase } from "../supabase/client";
 import type { Part, TranscriptionSettings } from "../types";
+
+/** Custom scheme the phone shell registers. Add this exact URL to the Supabase redirect allow-list. */
+const NATIVE_AUTH_REDIRECT = "gr.sixseven.riffscribe://auth/callback";
 
 export const CHART_VERSION = 1;
 
@@ -75,11 +79,33 @@ export function onAuthChange(fn: (user: { id: string; email?: string } | null) =
 }
 
 export async function signInWithGoogle(): Promise<void> {
-  const { error } = await db().auth.signInWithOAuth({
+  // Website, and any build where Capacitor is absent: redirect this tab.
+  // Email OTP below is unchanged either way.
+  if (!(await isNativePlatform())) {
+    const { error } = await db().auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: `${location.origin}/studio` },
+    });
+    if (error) throw error;
+    return;
+  }
+
+  // Phone shell: keep the PKCE verifier in the WebView, finish Google in the
+  // system browser, and come back on the custom scheme. NativeShell then
+  // opens /studio with the code so this WebView can exchange it.
+  const { data, error } = await db().auth.signInWithOAuth({
     provider: "google",
-    options: { redirectTo: `${location.origin}/studio` },
+    options: { redirectTo: NATIVE_AUTH_REDIRECT, skipBrowserRedirect: true },
   });
   if (error) throw error;
+  const url = data?.url;
+  if (!url) throw new Error("Google sign-in did not return a URL.");
+  try {
+    const { Browser } = await import("@capacitor/browser");
+    await Browser.open({ url });
+  } catch {
+    window.open(url, "_system");
+  }
 }
 
 /** The address-only route, for anyone who would rather not use a Google account. */

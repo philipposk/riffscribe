@@ -376,6 +376,33 @@ export async function putScore<T>(key: string, variant: string, value: T): Promi
   await tx(SCORES, "readwrite", (s) => s.put(value, `${key}:${variant}`));
 }
 
+/* -------------------------------------------------------- Studio session */
+
+/** Mixer faders and the last overdub take — small enough to keep with the song. */
+export interface SavedSession {
+  mix: Record<string, { gain: number; muted: boolean }>;
+  soloed: string | null;
+  overdub: EncodedTrack | null;
+}
+
+export async function getSession(key: string): Promise<SavedSession | null> {
+  return (await getScore<SavedSession>(key, "session")) ?? null;
+}
+
+export async function putSession(key: string, session: SavedSession): Promise<void> {
+  await putScore(key, "session", session);
+}
+
+/** Encode a stereo track for session storage (Opus when available). */
+export async function packTrack(track: Track, rate: number): Promise<EncodedTrack> {
+  return encodeTrack(track, rate);
+}
+
+/** Decode a track saved in a session back to float samples. */
+export async function unpackTrack(enc: EncodedTrack, wantRate: number): Promise<Track> {
+  return decodeTrack(enc, wantRate);
+}
+
 /* --------------------------------------------------------------- Eviction */
 
 export async function listSongs(): Promise<CachedSong[]> {

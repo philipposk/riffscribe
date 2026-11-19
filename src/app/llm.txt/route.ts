@@ -42,8 +42,9 @@ fingering chosen to keep the hand still.
 ## Exports
 
 MIDI, MusicXML (opens in MuseScore, Guitar Pro, Dorico), alphaTex, printable PDF,
-and wav — the whole mix, the backing track, any single stem, or just the looped
-section.
+and wav or mp3 — the whole mix, the backing track, any single stem, or just the
+looped section. Audio exports match the current practice speed and key. Mixer
+settings and overdub takes are kept on the device between visits.
 
 ## Honest limits
 

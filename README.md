@@ -194,6 +194,23 @@ The Demucs model (~180 MB) is fetched from Hugging Face on first AI split and
 then lives in the browser's Cache Storage. Point
 `NEXT_PUBLIC_DEMUCS_MODEL_URL` somewhere else to self-host it.
 
+## Mobile app
+
+`mobile/` is a Capacitor shell. It does not bundle this Next server. The
+WebView loads **https://riffscribe.6x7.gr** (`server.url`, cleartext off).
+Setup, the microphone and background-audio keys, the Google return scheme, and
+store-listing notes are in [`mobile/README.md`](mobile/README.md). A draft
+listing is [`mobile/STORE.md`](mobile/STORE.md).
+
+On a phone, Google sign-in opens the system browser and returns through
+`gr.sixseven.riffscribe://auth/callback`. That exact URL has to be on the Supabase
+redirect allow-list before the shell can finish sign-in. Email sign-in links
+are unchanged. AI stem split can fail on a phone; instant vocal removal is not
+blocked. Exports in the shell go to the share sheet.
+
+The shell only picks up the native sign-in, share sheet, and stem-split
+messages after this web app is deployed. Until then it still shows the live site.
+
 ## Browser support
 
 - **Chrome / Edge** — best. WebGPU makes the AI split several times faster.

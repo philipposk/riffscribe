@@ -1,0 +1,5 @@
+node_modules/
+# Generated native projects — recreate with `npm run add:ios` / `npm run add:android`,
+# then `npm run native-config`.
+ios/
+android/

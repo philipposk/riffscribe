@@ -40,9 +40,11 @@ import {
 } from "@/lib/audio/stems";
 import { synthesizeGuide } from "@/lib/audio/guide";
 import {
-  forget, getScore, getStems, putScore, putStems, requestPersistence, songKey,
+  forget, getScore, getSession, getStems, packTrack, putScore, putSession, putStems, requestPersistence,
+  songKey, unpackTrack,
 } from "@/lib/store/cache";
 import { clearBlocks, doneBlocks, getBlock, putBlock } from "@/lib/store/partialSplit";
+import { encodeMp3 } from "@/lib/audio/mp3";
 import { downloadBlob, encodeWav } from "@/lib/audio/wav";
 import {
   channelsToAudioBuffer, lastTranscriptionRanIn, toModelInput, transcribeAudio,
@@ -53,6 +55,7 @@ import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcribe/compare";
 import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
 import { keyChoices, keyName, shortestShift } from "@/lib/transcribe/spelling";
+import { isNativePlatform, nativeDeviceMemoryGb } from "@/lib/native";
 import { CHART_VERSION, loadChart, type Chart } from "@/lib/store/charts";
 import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
@@ -91,6 +94,8 @@ export default function Studio() {
   const [stemMode, setStemMode] = useState<StemMode>("none");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Set when a native phone reports ≤4 GB and the user has not confirmed the AI split. */
+  const [aiSplitCautionGb, setAiSplitCautionGb] = useState<number | null>(null);
   const [log, setLog] = useState<string>("");
 
   const [parts, setParts] = useState<Part[]>([]);
@@ -111,6 +116,7 @@ export default function Studio() {
   const [overdub, setOverdub] = useState<{ left: Float32Array; right: Float32Array } | null>(null);
   const [nudgeMs, setNudgeMs] = useState(0);
   const [loopOnlyExport, setLoopOnlyExport] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"wav" | "mp3">("wav");
   const [playAlong, setPlayAlong] = useState(true);
   const [linkUrl, setLinkUrl] = useState("");
   const [helperUp, setHelperUp] = useState<boolean | null>(null);
@@ -189,7 +195,6 @@ export default function Studio() {
       setStems(null);
       setStemMode("none");
       if (!restoring) setParts([]);
-      setOverdub(null);
       setSource("mix");
       setRestored(null);
       partsFor.current = null;
@@ -215,6 +220,22 @@ export default function Studio() {
           setParts(saved);
           setRestored((r) => `${r ? r + " " : ""}${saved.length} transcribed ${saved.length === 1 ? "part" : "parts"} restored.`);
         }
+      }
+      const session = await getSession(id);
+      if (session) {
+        setMix(session.mix);
+        setSoloed(session.soloed);
+        if (session.overdub) {
+          const track = await unpackTrack(session.overdub, DEMUCS_SAMPLE_RATE);
+          setOverdub(track);
+          setRestored((r) => `${r ? r + " " : ""}Mixer and your last take restored.`);
+        } else {
+          setOverdub(null);
+        }
+      } else {
+        setMix({});
+        setSoloed(null);
+        setOverdub(null);
       }
       partsFor.current = id;
       if (!cached) {
@@ -246,6 +267,15 @@ export default function Studio() {
   useEffect(() => {
     if (key && partsFor.current === key) void putScore(key, "parts", parts);
   }, [key, parts]);
+
+  /** Mixer faders and overdub take — same cache key as stems and parts. */
+  useEffect(() => {
+    if (!key || partsFor.current !== key) return;
+    void (async () => {
+      const packed = overdub ? await packTrack(overdub, DEMUCS_SAMPLE_RATE) : null;
+      await putSession(key, { mix, soloed, overdub: packed });
+    })();
+  }, [key, mix, soloed, overdub]);
 
   /** Coming back to the studio: reopen the song that was loaded before. */
   useEffect(() => {
@@ -634,6 +664,7 @@ export default function Studio() {
       setStems(result);
       setStemMode("ai");
       setSource("other");
+      setAiSplitCautionGb(null);
       setLog("Four stems ready. Mute what you don't want to hear.");
       // Minutes of work — never make anyone wait for it twice.
       if (key && file) {
@@ -642,11 +673,30 @@ export default function Studio() {
       }
     } catch (e) {
       if (e instanceof Error && e.message === SPLIT_PAUSED) return;
-      setError(e instanceof Error ? e.message : "stem separation failed");
+      const detail = e instanceof Error && e.message ? e.message : "stem separation failed";
+      const native = await isNativePlatform();
+      setError(
+        native
+          ? `This phone could not finish the AI stem split. The desktop site is the reliable place for it. Instant vocal removal still works on this phone. (${detail})`
+          : detail,
+      );
     } finally {
       cancelSplitRef.current = null;
       setBusy(null);
     }
+  }
+
+  /**
+   * AI split only. Instant vocal removal is never gated.
+   * A phone that reports 4 GB or less gets a warning and can still continue.
+   */
+  async function startAiSplit() {
+    const mem = await nativeDeviceMemoryGb();
+    if (mem != null && mem <= 4) {
+      setAiSplitCautionGb(mem);
+      return;
+    }
+    await runDemucs();
   }
 
   function cancelJob() {
@@ -1064,17 +1114,34 @@ export default function Studio() {
     return { from, to, suffix: `-${Math.round(loop[0])}s-${Math.round(loop[1])}s` };
   }
 
-  function writeWav(
-    channels: { left: Float32Array; right: Float32Array },
-    name: string
-  ) {
-    const { from, to, suffix } = exportWindow();
+  /** Slice the loop if asked, then bake the current practice speed and key. */
+  async function prepareExport(channels: { left: Float32Array; right: Float32Array }) {
+    const { from, to } = exportWindow();
     const left = from || to < channels.left.length ? channels.left.slice(from, to) : channels.left;
     const right = from || to < channels.right.length ? channels.right.slice(from, to) : channels.right;
-    downloadBlob(encodeWav([left, right], DEMUCS_SAMPLE_RATE), `${baseName}-${name}${suffix}.wav`);
+    const { rate, semitones } = transport;
+    if (Math.abs(rate - 1) < 1e-4 && semitones === 0) return { left, right };
+    const [l, r] = await stretchOffline([left, right], DEMUCS_SAMPLE_RATE, rate, semitones);
+    return { left: l, right: r };
   }
 
-  function exportAudio(kind: "backing" | "mix") {
+  async function downloadChannels(channels: { left: Float32Array; right: Float32Array }, name: string) {
+    const { suffix } = exportWindow();
+    const needsBake = Math.abs(transport.rate - 1) >= 1e-4 || transport.semitones !== 0;
+    if (needsBake) setBusy({ label: "Rendering export at your practice speed and key…" });
+    try {
+      const baked = await prepareExport(channels);
+      const blob =
+        exportFormat === "mp3"
+          ? encodeMp3([baked.left, baked.right], DEMUCS_SAMPLE_RATE)
+          : encodeWav([baked.left, baked.right], DEMUCS_SAMPLE_RATE);
+      downloadBlob(blob, `${baseName}-${name}${suffix}.${exportFormat}`);
+    } finally {
+      if (needsBake) setBusy(null);
+    }
+  }
+
+  async function exportAudio(kind: "backing" | "mix") {
     if (!audio) return;
     const length = audio.left.length;
 
@@ -1082,7 +1149,7 @@ export default function Studio() {
       // everything except the vocals, at full level, whatever the faders say
       const keys = stemMode === "instant" ? ["other"] : ["drums", "bass", "other"];
       setError(null);
-      writeWav(mixStems(stems, keys, { length }), "backing");
+      await downloadChannels(mixStems(stems, keys, { length }), "backing");
       return;
     }
 
@@ -1103,15 +1170,15 @@ export default function Studio() {
       return;
     }
     setError(null);
-    writeWav(mixStems(parts, audible, { length, gains }), "mix");
+    await downloadChannels(mixStems(parts, audible, { length, gains }), "mix");
   }
 
   /** One track on its own — the stem, your part, your take, the click. */
-  function exportTrack(id: string) {
+  async function exportTrack(id: string) {
     const part = allParts()[id];
     if (!part) return;
     setError(null);
-    writeWav(part, id);
+    await downloadChannels(part, id);
   }
 
   /* -------------------------------------------------------------------- UI */
@@ -1166,6 +1233,11 @@ export default function Studio() {
       if (!audio) return "Load a song first.";
       if (busy) return "Something else is already running.";
       if (mode === "instant") { await runInstant(); return "Instant split done — vocal and backing are separate rows in the mixer."; }
+      const mem = await nativeDeviceMemoryGb();
+      if (mem != null && mem <= 4) {
+        setAiSplitCautionGb(mem);
+        return `This phone reports about ${mem} GB of memory. AI stem split may fail here — the warning on the page can continue anyway. Instant vocal removal still works. The desktop site is the reliable place for the AI split.`;
+      }
       await runDemucs();
       return "The AI split finished — vocals, drums, bass and everything else are separate rows now.";
     },
@@ -1226,15 +1298,17 @@ export default function Studio() {
 
     exportFile: (what) => {
       const w = what.toLowerCase();
+      if (w.includes("mp3")) setExportFormat("mp3");
+      else if (w.includes("wav")) setExportFormat("wav");
       if (w.includes("midi")) { exportMidi(); return "MIDI downloaded."; }
       if (w.includes("xml")) { exportMusicXml(); return "MusicXML downloaded."; }
       if (w.includes("tex")) { exportTex(); return "alphaTex downloaded."; }
       if (w.includes("pdf") || w.includes("print")) { window.print(); return "Opened the print dialog."; }
-      if (w.includes("backing")) { exportAudio("backing"); return "Backing track downloaded."; }
-      if (w.includes("mix")) { exportAudio("mix"); return "The current mix was downloaded."; }
+      if (w.includes("backing")) { void exportAudio("backing"); return "Backing track download started — at your current speed and key."; }
+      if (w.includes("mix")) { void exportAudio("mix"); return "Mix download started — at your current speed and key."; }
       const track = trackList.find((t) => w.includes(t.id) || w.includes(t.label.toLowerCase()));
-      if (track) { exportTrack(track.id); return `${track.label} downloaded on its own.`; }
-      return `I can export midi, musicxml, alphatex, pdf, the backing track, the current mix, or one of: ${trackList.map((t) => t.id).join(", ")}.`;
+      if (track) { void exportTrack(track.id); return `${track.label} download started.`; }
+      return `I can export midi, musicxml, alphatex, pdf, wav or mp3 (backing track, current mix, or one of: ${trackList.map((t) => t.id).join(", ")}). Audio exports match your practice speed and key.`;
     },
 
     checkTake: async () => {
@@ -1357,7 +1431,7 @@ export default function Studio() {
           </span>
           <span className="text-xs text-white/40">Nothing is uploaded. The file never leaves your browser.</span>
           <input
-            type="file" accept="audio/*" className="hidden"
+            type="file" accept=".mp3,.wav,.m4a,.flac,.ogg,.aac,audio/*" className="hidden"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadFile(f); }}
           />
         </label>
@@ -1413,11 +1487,32 @@ export default function Studio() {
                 {busy?.label.startsWith("Pulling") ? <Loader2 className="animate-spin" size={15} /> : <Scissors size={15} />}
                 Instant vocal removal
               </button>
-              <button className="btn btn-primary" onClick={runDemucs} disabled={!!busy}>
+              <button className="btn btn-primary" onClick={() => void startAiSplit()} disabled={!!busy}>
                 {busy && /model|Separating/i.test(busy.label) ? <Loader2 className="animate-spin" size={15} /> : <Wand2 size={15} />}
                 {busy && /model|Separating/i.test(busy.label) ? "Separating…" : "AI split into 4 stems"}
               </button>
             </div>
+            {aiSplitCautionGb != null && (
+              <div className="mb-4 rounded-md border border-amber-400/40 bg-amber-950/40 px-3 py-2 text-xs text-amber-100">
+                <p>
+                  This phone reports about {aiSplitCautionGb} GB of memory. AI stem split may fail here.
+                  The desktop site is the reliable place for it. Instant vocal removal is unaffected.
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="btn py-1 text-xs"
+                    disabled={!!busy}
+                    onClick={() => { setAiSplitCautionGb(null); void runDemucs(); }}
+                  >
+                    Continue anyway
+                  </button>
+                  <button type="button" className="btn py-1 text-xs" onClick={() => setAiSplitCautionGb(null)}>
+                    Not now
+                  </button>
+                </div>
+              </div>
+            )}
             {restored && (
               <p className="mb-4 flex items-center gap-2 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/10 px-3 py-2 text-xs text-white/70">
                 <Check size={14} className="shrink-0 text-[var(--color-accent)]" />
@@ -1443,12 +1538,24 @@ export default function Studio() {
               onChange={(id, p) => setMix((m) => ({ ...m, [id]: { ...(m[id] ?? { gain: 1, muted: false }), ...p } }))}
             />
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button className="btn" onClick={() => exportAudio("backing")} disabled={!stems}>
-                <Download size={15} /> Backing track .wav
+              <button className="btn" onClick={() => void exportAudio("backing")} disabled={!stems || !!busy}>
+                <Download size={15} /> Backing track .{exportFormat}
               </button>
-              <button className="btn" onClick={() => exportAudio("mix")}>
-                <Download size={15} /> Current mix .wav
+              <button className="btn" onClick={() => void exportAudio("mix")} disabled={!!busy}>
+                <Download size={15} /> Current mix .{exportFormat}
               </button>
+              <span className="flex rounded-md border border-white/10 p-0.5 text-xs">
+                {(["wav", "mp3"] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    className={`rounded px-2 py-1 uppercase ${exportFormat === f ? "bg-white/15 text-white" : "text-white/45 hover:text-white/70"}`}
+                    onClick={() => setExportFormat(f)}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </span>
               <label className={`flex items-center gap-2 text-xs ${loop ? "text-white/60" : "text-white/25"}`}>
                 <input
                   type="checkbox" checked={loopOnlyExport} disabled={!loop}
@@ -1458,8 +1565,8 @@ export default function Studio() {
               </label>
             </div>
             <p className="mt-2 text-xs text-white/35">
-              The arrow on each row downloads that track on its own — the isolated vocal, the drums,
-              your part, your take.
+              The arrow on each row downloads that track on its own. Audio exports use your current
+              practice speed and key, and your mix and take are kept on this device when you come back.
             </p>
           </section>
 

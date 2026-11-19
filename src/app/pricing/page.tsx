@@ -10,7 +10,7 @@ const ALWAYS = [
   "Unlimited transcription — notation and tab",
   "Unlimited stem splitting and vocal removal",
   "Slow-down, transpose, loop, tuner, play-along",
-  "Every export: MIDI, MusicXML, PDF, wav",
+  "Every export: MIDI, MusicXML, PDF, wav, mp3",
 ];
 
 export default function Pricing() {

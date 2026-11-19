@@ -55,6 +55,16 @@ export function audioBufferToWav(buf: AudioBuffer): Blob {
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
+  void deliverBlob(blob, filename);
+}
+
+async function deliverBlob(blob: Blob, filename: string) {
+  try {
+    const { shareFileIfNative } = await import("@/lib/nativeShare");
+    if (await shareFileIfNative(blob, filename)) return;
+  } catch {
+    // The share sheet is a phone convenience. The download below is the website path.
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
