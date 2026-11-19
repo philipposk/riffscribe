@@ -18,3 +18,12 @@ updates:
       # Next major upgrades are done by hand.
       - dependency-name: "next"
         update-types: ["version-update:semver-major"]
+      # Capacitor plugin JS must match the native shell in mobile/ (baked into the store
+      # builds, which load the live site). A major bump needs a new store build, so by hand.
+      - dependency-name: "@capacitor/*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      # Keep the Capacitor plugins on the same version as each other.
+      capacitor:
+        patterns:
+          - "@capacitor/*"

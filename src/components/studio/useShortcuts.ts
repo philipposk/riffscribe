@@ -130,16 +130,21 @@ export function ownedByTarget(path: readonly unknown[], key: string): boolean {
   return false;
 }
 
+/** Shortest loop the buttons and keys will set, in seconds; shorter ones (end at 0:00, start at the end) do nothing. */
+export const MIN_LOOP = 0.5;
+
 /** Loop start at the playhead: keep the end if it is still after it, otherwise loop the next 4 s. */
 export function loopFromStart(time: number, duration: number, loop: [number, number] | null): [number, number] | null {
   if (duration <= 0) return null;
-  return [time, loop && loop[1] > time ? loop[1] : Math.min(duration, time + 4)];
+  const r: [number, number] = [time, loop && loop[1] > time ? loop[1] : Math.min(duration, time + 4)];
+  return r[1] - r[0] >= MIN_LOOP ? r : null;
 }
 
 /** Loop end at the playhead: keep the start if it is still before it, otherwise loop the last 4 s. */
 export function loopToEnd(time: number, duration: number, loop: [number, number] | null): [number, number] | null {
   if (duration <= 0) return null;
-  return [loop && loop[0] < time ? loop[0] : Math.max(0, time - 4), time];
+  const r: [number, number] = [loop && loop[0] < time ? loop[0] : Math.max(0, time - 4), time];
+  return r[1] - r[0] >= MIN_LOOP ? r : null;
 }
 
 /** Speed one 5% step slower or faster, on the 5% grid, within 25–150%. */

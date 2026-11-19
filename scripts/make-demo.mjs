@@ -11,17 +11,14 @@
  * on it, so the "take the singer out" step has something real to chew on. Deterministic: the same
  * script always writes the same file.
  */
-import { createRequire } from "node:module";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sungLine, mixWithBacking } from "./eval-cello/lib/fixtures.mjs";
+// The ESM fork of lamejs (the same one the app uses); plain `lamejs` needs the lame.min.js trick.
+import { Mp3Encoder } from "@breezystack/lamejs";
 
-const require = createRequire(import.meta.url);
-// The package entry point is unbundled source that needs a bundler. The prebuilt file defines a
-// function that attaches itself to `lamejs`, so run it in a throwaway scope and take what it sets.
-const lamejs = new Function(`${readFileSync(require.resolve("lamejs/lame.min.js"), "utf8")}; return lamejs;`)();
+import { sungLine, mixWithBacking } from "./eval-cello/lib/fixtures.mjs";
 
 const SR = 44100;
 const SECONDS = 20;
@@ -55,7 +52,7 @@ const toInt16 = (x) => {
 const l = toInt16(left);
 const r = toInt16(right);
 
-const encoder = new lamejs.Mp3Encoder(2, SR, KBPS);
+const encoder = new Mp3Encoder(2, SR, KBPS);
 const chunks = [];
 for (let i = 0; i < l.length; i += 1152) {
   const buf = encoder.encodeBuffer(l.subarray(i, i + 1152), r.subarray(i, i + 1152));

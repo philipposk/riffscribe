@@ -15,14 +15,11 @@
  * the other three players and each of them opens the same parts, tempo and
  * markings against their own copy of the song.
  */
-import { isNativePlatform } from "../native";
+import { authRedirectTo, isNativePlatform, NATIVE_AUTH_REDIRECT } from "../native";
 import { supabase } from "../supabase/client";
 import type { Part, TranscriptionSettings } from "../types";
 import { deleteOwnChart, listOwnCharts, readChart, setChartShared } from "./chartAccess";
 import { writeChart } from "./chartSave";
-
-/** Custom scheme the phone shell registers. Add this exact URL to the Supabase redirect allow-list. */
-const NATIVE_AUTH_REDIRECT = "gr.sixseven.riffscribe://auth/callback";
 
 export const CHART_VERSION = 1;
 
@@ -88,7 +85,7 @@ export function onAuthChange(fn: (user: { id: string; email?: string } | null) =
 
 export async function signInWithGoogle(): Promise<void> {
   // Website, and any build where Capacitor is absent: redirect this tab.
-  // Email OTP below is unchanged either way.
+  // The email link below also comes back on the custom scheme in the shell.
   if (!(await isNativePlatform())) {
     const { error } = await db().auth.signInWithOAuth({
       provider: "google",
@@ -116,12 +113,14 @@ export async function signInWithGoogle(): Promise<void> {
   }
 }
 
-/** The address-only route, for anyone who would rather not use a Google account. */
+/**
+ * The address-only route, for anyone who would rather not use a Google account.
+ * In the shell the link returns on the custom scheme (see authRedirectTo), so
+ * it must be opened on the same phone.
+ */
 export async function signInWithEmail(email: string): Promise<void> {
-  const { error } = await db().auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: `${location.origin}/studio` },
-  });
+  const emailRedirectTo = authRedirectTo(await isNativePlatform(), location.origin);
+  const { error } = await db().auth.signInWithOtp({ email, options: { emailRedirectTo } });
   if (error) throw error;
 }
 

@@ -91,12 +91,18 @@ includes the native sign-in return.
 
 ## Before submit
 
-1. Add `gr.sixseven.riffscribe://auth/callback` to the Supabase redirect allow-list.
+1. Add and verify (on-device Google sign-in returns to the app)
+   `gr.sixseven.riffscribe://auth/callback` on the Supabase redirect allow-list.
 2. Deploy the web app so the shell's sign-in return, share sheet, and
    stem-split messages are on https://riffscribe.6x7.gr.
 3. Generate `ios/` and `android/`, run `npm run native-config`, then build in
    Xcode / Android Studio.
-4. Replace this draft's privacy answers with the store questionnaires after a
+4. Before `NEXT_PUBLIC_BILLING_ENABLED=true` on the website: confirm on a device
+   build that the account and pricing pages show no Upgrade, Manage billing or
+   withdraw controls in the shell (or implement StoreKit / Play Billing). The
+   shell loads the live site, so turning billing on reaches the app without an
+   update.
+5. Replace this draft's privacy answers with the store questionnaires after a
    lawyer or the existing site policy is checked against those forms.
 
 ## Store submission

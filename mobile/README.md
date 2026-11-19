@@ -104,8 +104,11 @@ bridge is up.
 ## Google sign-in
 
 Charts are optional. On the website, Google still redirects this tab to
-`{origin}/studio`. Email OTP is the same on the website and in the shell
-(`emailRedirectTo` `{origin}/studio`).
+`{origin}/studio`, and the email link uses `emailRedirectTo` `{origin}/studio`.
+In the shell the email link also uses `emailRedirectTo`
+**`gr.sixseven.riffscribe://auth/callback`**, so it returns to the app the same
+way as Google below. It must be opened on the same phone that asked for it: the
+PKCE verifier lives in that phone's WebView.
 
 In the shell, Google uses `skipBrowserRedirect` and
 `redirectTo` **`gr.sixseven.riffscribe://auth/callback`**, then `@capacitor/browser`
@@ -125,12 +128,18 @@ gr.sixseven.riffscribe://auth/callback
 ```
 
 Keep `https://riffscribe.6x7.gr/studio` on the list as well. That is the
-website Google redirect and the email link. Without the custom scheme on the
-allow-list, the phone returns an error instead of a code.
+website's Google redirect and email link only; in the shell the custom scheme
+covers both Google and the email link.
+
+Without the custom scheme, Supabase ignores `redirectTo` and sends the browser
+sheet to the project Site URL with `?code=`. The sheet shows the website signed
+out, the app never receives `appUrlOpen`, and there is no error. Verify the
+entry with a real Google sign-in on a device build before distributing it. On
+the shared 6x7 project, Site URL may not be riffscribe.
 
 The native branch is a dynamic import and only runs when `Capacitor.isNativePlatform()`
-is true. A normal browser has no Capacitor bridge, so Google and email OTP
-stay on the existing page redirect.
+is true. A normal browser has no Capacitor bridge, so Google and the email
+link stay on the existing page redirect.
 
 ## Exports
 

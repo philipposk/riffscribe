@@ -30,6 +30,8 @@ let modelSizeCache = null;
 function modelSize() {
   if (modelSizeCache == null) {
     modelSizeCache = 0;
+    // no model folder (npm ci --ignore-scripts, failed copy-assets): no cache can match, say so cleanly
+    if (!fs.existsSync(MODEL_DIR)) return 0;
     for (const f of fs.readdirSync(MODEL_DIR)) modelSizeCache += fs.statSync(path.join(MODEL_DIR, f)).size;
   }
   return modelSizeCache;

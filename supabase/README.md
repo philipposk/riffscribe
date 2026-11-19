@@ -5,8 +5,14 @@ next to ~18 other apps in one `public` schema. Everything riffscribe owns is
 prefixed `riffscribe_` (HANDOFF gotcha 7). The one shared table it writes is
 `subscriptions` (rows with `app = 'riffscribe'`).
 
-Every file is safe to run more than once. Apply them in this order, in the SQL
-editor or with `supabase db execute -f <file>`:
+Every file can be run more than once, but the base files (`schema.sql`,
+`accounts.sql`, `assistant_chats.sql`) recreate their original definitions,
+which the migrations later replace (the shared-chart listing policy, the plan
+lookup, delete-my-data, the song-cap lock, `search_path`). After re-running any
+base file, re-run every migration you had already applied, in order (0003 to
+0007; all are idempotent). Do not re-run a base file alone on the shared
+project. Apply them in this order, in the SQL editor or with
+`supabase db execute -f <file>`:
 
 | # | File | What it does | When |
 |---|------|--------------|------|

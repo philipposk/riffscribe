@@ -11,6 +11,7 @@
  * song time and can be compared directly.
  */
 import type { NoteEvent } from "../types";
+import { CONTOUR_BIN_OFFSET } from "./contour";
 
 export type Verdict = "clean" | "flat" | "sharp" | "early" | "late" | "missed" | "extra";
 
@@ -200,8 +201,10 @@ export function markTake(chart: NoteEvent[], played: NoteEvent[], opts: CompareO
 function centsFromBend(n: NoteEvent): number {
   if (!n.pitchBends || !n.pitchBends.length) return 0;
   const mean = n.pitchBends.reduce((s, b) => s + b, 0) / n.pitchBends.length;
-  // Bend units are model bins of a third of a semitone; scale to cents and clamp.
-  return Math.max(-100, Math.min(100, (mean / 3) * 100));
+  // Bend units are model bins of a third of a semitone. Basic Pitch measures
+  // them against the same bin mapping as the contour, so they carry the same
+  // one-bin sharp bias (CONTOUR_BIN_OFFSET); remove it, scale to cents, clamp.
+  return Math.max(-100, Math.min(100, (mean / 3 + CONTOUR_BIN_OFFSET) * 100));
 }
 
 /**

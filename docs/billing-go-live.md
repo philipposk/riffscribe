@@ -36,11 +36,11 @@ is public, and it is read when the site is built, so changing it needs a new dep
 
 | Variable | Off means | Needs before you turn it on |
 |---|---|---|
-| `NEXT_PUBLIC_BILLING_ENABLED` | Pro shows "Coming soon", checkout is closed | everything below up to the smoke purchase |
+| `NEXT_PUBLIC_BILLING_ENABLED` | Pro shows "Coming soon", checkout is closed | everything below up to the smoke purchase, and `STRIPE_SELF_SERVE_WITHDRAWAL` on |
 | `STRIPE_TAX_ENABLED` | no VAT added, no tax-id collection | a VAT registration (Denmark, and the EU One Stop Shop scheme above the EUR 10,000 cross-border threshold); a Stripe Tax registration that shows Collecting. Ask the accountant. Without an active registration Stripe silently collects 0. |
 | `STRIPE_TOS_CONSENT` | no "I agree to the terms" box at checkout | the terms URL under Stripe Settings, Public details |
 | `STRIPE_AUTO_REFUND_EFW` | an early fraud warning is only recorded | a decision: refunding a EUR 5 charge costs less than the dispute fee that usually follows |
-| `STRIPE_SELF_SERVE_WITHDRAWAL` | `/api/withdraw` is 404; the account page tells people to e-mail | legal sign-off on the button wording (EU rules require a clearly labelled online withdrawal function from 19 June 2026) |
+| `STRIPE_SELF_SERVE_WITHDRAWAL` | `/api/withdraw` is 404; the account page tells people to e-mail | legal sign-off on the button wording. Required before checkout opens: EU rules (Directive 2023/2673, CRD Art. 11a, in force since 19 June 2026) require a clearly labelled online withdrawal function |
 
 ## The order
 
@@ -86,10 +86,15 @@ is public, and it is read when the site is built, so changing it needs a new dep
    app `global` belong to other 6x7 apps: review those with their owners, do not blanket-update.
 6. **Smoke purchase** with your own card in live mode: subscribe, check the `subscriptions` row and the
    VAT line on the invoice, open the portal, cancel, then refund through the Dashboard and check that
-   Pro switches off. If anything is off, stop here; no customer has paid.
-7. **Open it:** set `NEXT_PUBLIC_BILLING_ENABLED=true` and redeploy. Then, one at a time and only when
-   its row in the flag table is satisfied, `STRIPE_TAX_ENABLED`, `STRIPE_TOS_CONSENT`,
-   `STRIPE_AUTO_REFUND_EFW`, `STRIPE_SELF_SERVE_WITHDRAWAL`.
+   Pro switches off. Subscribe again and use "Withdraw within 14 days" on `/account` (with
+   `STRIPE_SELF_SERVE_WITHDRAWAL=true` on Production): the payment is refunded and Pro ends. If anything
+   is off, stop here; no customer has paid.
+7. **Open it:** first set `STRIPE_SELF_SERVE_WITHDRAWAL=true` (its wording signed off) and check that
+   `/api/withdraw` no longer returns 404. Check in the iOS/Android shell that the account and pricing
+   pages show no Upgrade, Manage billing or withdraw controls (the shell loads the live site, so this
+   deploy reaches it without an app update). Then set `NEXT_PUBLIC_BILLING_ENABLED=true` and redeploy.
+   Then, one at a time and only when its row in the flag table is satisfied, `STRIPE_TAX_ENABLED`,
+   `STRIPE_TOS_CONSENT`, `STRIPE_AUTO_REFUND_EFW`.
 
 ## Before any of that
 
@@ -97,6 +102,8 @@ These are not code and block going live:
 
 - The legal identity block in `src/lib/company.ts` (name, CVR, address, VAT id) is empty. The terms and
   privacy pages fall back to an "operated by 6x7" line until it is filled in.
+- Legal sign-off on the self-serve withdrawal button wording. `STRIPE_SELF_SERVE_WITHDRAWAL` must be on
+  before or with `NEXT_PUBLIC_BILLING_ENABLED`; an e-mail address is not an online withdrawal function.
 - A lawyer's read of `src/app/terms/page.tsx` and `src/app/privacy/page.tsx`. The terms state a flat
   14-day full refund; that is a choice, not a legal requirement beyond the withdrawal right.
 - Row-level security on the shared `subscriptions` and `app_access` tables (they are not in this

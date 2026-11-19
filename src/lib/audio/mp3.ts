@@ -1,5 +1,6 @@
 /** 128 kbps stereo MP3 — smaller than wav for phones and sharing. */
-import lamejs from "lamejs";
+// The ESM fork: plain `lamejs` 1.2.1 throws "MPEGMode is not defined" once bundled.
+import { Mp3Encoder } from "@breezystack/lamejs";
 
 import type { Channels } from "./wav";
 
@@ -16,9 +17,9 @@ function toInt16(samples: Float32Array): Int16Array {
 export function encodeMp3(channels: Channels, sampleRate: number, kbps = 128): Blob {
   const left = toInt16(channels[0]);
   const right = toInt16(channels.length > 1 ? channels[1] : channels[0]);
-  const encoder = new lamejs.Mp3Encoder(2, sampleRate, kbps);
+  const encoder = new Mp3Encoder(2, sampleRate, kbps);
   const block = 1152;
-  const chunks: Int8Array[] = [];
+  const chunks: Uint8Array[] = [];
 
   for (let i = 0; i < left.length; i += block) {
     const l = left.subarray(i, i + block);

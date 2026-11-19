@@ -13,11 +13,16 @@ import type Stripe from "stripe";
 import { caller, serviceClient } from "@/lib/supabase/server";
 import { APP, CHECKOUT_TAG, SITE, billingConfigured, flag, liveMode, origin, stripe } from "@/lib/stripe";
 import { checkoutCustomer } from "@/lib/billingFlow";
+import { operatorBlocksBilling } from "@/lib/company";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   if (!billingConfigured()) return NextResponse.json({ error: "Upgrades are not open yet." }, { status: 503 });
+  if (operatorBlocksBilling(liveMode())) {
+    console.error("checkout: live key but operator identity (COMPANY) incomplete");
+    return NextResponse.json({ error: "Upgrades are not open yet." }, { status: 503 });
+  }
   const who = await caller(req);
   if (!who) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
 

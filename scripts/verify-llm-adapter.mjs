@@ -155,7 +155,9 @@ check("no OpenRouter key leaves Claude alone", chain("anthropic/claude-sonnet-5-
 check("the open model with only an Anthropic key uses the default", chain("openrouter/openai/gpt-oss-20b", true, false) === "anthropic/claude-haiku-5-5");
 check("no keys, no chain", chain("anthropic/claude-haiku-5-5", false, false) === "");
 check("cost: 1M Haiku input tokens is $0.10", estimateCost("anthropic/claude-haiku-5-5", 1_000_000, 0, 0) === 0.1);
-check("cost: cache reads at a tenth, output at its own price", estimateCost("anthropic/claude-opus-5-5", 0, 1_000_000, 1_000_000) === 20.4);
+check("cost: Opus cache reads at a twentieth, output at its own price", estimateCost("anthropic/claude-opus-5-5", 0, 1_000_000, 1_000_000) === 20.2);
+check("cost: 1M Sonnet cache reads is $0.10", estimateCost("anthropic/claude-sonnet-5-5", 0, 1_000_000, 0) === 0.1);
+check("every model has its own cache-read price", Object.values(MODELS).every((m) => typeof m.cacheRead === "number" && m.cacheRead <= m.input));
 check("cost: unknown prices are null, not zero", estimateCost("openrouter/openai/gpt-oss-20b", 1000, 0, 1000) === null && estimateCost("nope", 1, 1, 1) === null);
 
 /* --------------------------------------------- callAnthropic, local stand-in */
@@ -190,7 +192,7 @@ async function outcome(model = "claude-haiku-5-5") {
 reply = { status: 200, body: message([{ type: "thinking", thinking: "", signature: "s" }, { type: "text", text: "Splitting." }, { type: "tool_use", id: "tu1", name: "split_stems", input: { mode: "ai" } }], "tool_use") };
 const good = await outcome();
 check("a normal answer comes back as text and tool calls", good.ok?.text === "Splitting." && good.ok?.toolCalls[0]?.name === "split_stems", good.err?.message);
-check("usage counts cache writes as input and cache reads as cached", good.ok?.usage.input === 120 && good.ok?.usage.cached === 300 && good.ok?.usage.output === 40);
+check("usage counts cache writes as input at 1.25x and cache reads as cached", good.ok?.usage.input === 125 && good.ok?.usage.cached === 300 && good.ok?.usage.output === 40);
 const sent = seen[seen.length - 1]?.body ?? {};
 check("the request uses the bare model id and the task's ceiling", sent.model === "claude-haiku-5-5" && sent.max_tokens === 2048);
 check("effort goes in output_config", sent.output_config?.effort === "low");
@@ -215,9 +217,19 @@ check("a rejected tool schema hands over", isUnavailable(await outcome()));
 reply = { status: 400, body: apiError("invalid_request_error", "messages: roles must alternate") };
 const other400 = await outcome();
 check("any other 400 is final, not a fallback", other400.err && !isUnavailable(other400));
+const quiet = console.error;
+console.error = () => {};
 reply = { status: 401, body: apiError("authentication_error", "invalid x-api-key") };
-const auth = await outcome();
-check("a bad key is final, not a fallback", auth.err && !isUnavailable(auth));
+check("a bad key hands over", isUnavailable(await outcome()));
+reply = { status: 402, body: apiError("billing_error", "payment required") };
+check("a 402 hands over", isUnavailable(await outcome()));
+reply = { status: 403, body: apiError("permission_error", "no access to this model") };
+check("a 403 hands over", isUnavailable(await outcome()));
+reply = { status: 404, body: apiError("not_found_error", "model: claude-haiku-5-5") };
+check("a 404 hands over", isUnavailable(await outcome()));
+reply = { status: 400, body: apiError("invalid_request_error", "Your credit balance is too low to access the Anthropic API.") };
+check("a 400 about the credit balance hands over", isUnavailable(await outcome()));
+console.error = quiet;
 reply = { status: 200, body: message([], "refusal") };
 check("a refusal hands over", isUnavailable(await outcome()));
 server.close();

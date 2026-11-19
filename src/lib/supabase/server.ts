@@ -7,6 +7,10 @@
  * it (the widget sets its own headers and has no hook for ours).
  *
  * The token is checked with Supabase on every call, never just decoded.
+ *
+ * The cookie rides along on requests from any *.6x7.gr page (same site), so a
+ * route that changes something serious passes { cookie: false } and accepts
+ * only the bearer header, which another page cannot attach for us.
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
@@ -15,20 +19,28 @@ const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 export const AUTH_COOKIE = "rs_at";
 
-function tokenFrom(req: Request): string | null {
+export function tokenFrom(req: Request, allowCookie = true): string | null {
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (bearer) return bearer;
+  if (!allowCookie) return null;
   const cookie = req.headers.get("cookie") ?? "";
   const m = cookie.match(new RegExp(`(?:^|;\\s*)${AUTH_COOKIE}=([^;]+)`));
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+/** True when the browser says the request came from another origin (even a sibling *.6x7.gr page). */
+export function fromOtherOrigin(req: Request): boolean {
+  const site = req.headers.get("sec-fetch-site");
+  return site !== null && site !== "same-origin";
+}
+
 /** A client acting as the caller, so row-level security applies, plus their id. */
 export async function caller(
-  req: Request
+  req: Request,
+  opts: { cookie?: boolean } = {}
 ): Promise<{ db: SupabaseClient; user: { id: string; email?: string } } | null> {
   if (!URL || !ANON) return null;
-  const token = tokenFrom(req);
+  const token = tokenFrom(req, opts.cookie !== false);
   if (!token) return null;
   const db = createClient(URL, ANON, {
     auth: { persistSession: false, autoRefreshToken: false },

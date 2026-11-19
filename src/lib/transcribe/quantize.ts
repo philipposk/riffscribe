@@ -106,7 +106,18 @@ export function effectiveOffset(
   return s.offsetSeconds - Math.ceil((s.offsetSeconds - first) / secondsPerBar - 1e-9) * secondsPerBar;
 }
 
-export function quantize(notes: NoteEvent[], s: TranscriptionSettings): Sheet {
+/**
+ * How a single line picks one note where several sound at once. "highest" keeps the top
+ * note (a chordal part's melody); "louder" keeps the stronger one, for a line already
+ * cleaned up as one voice, where the higher note is as often the model's octave ghost.
+ */
+export type MonoStrategy = "louder" | "highest";
+
+/** A note this much weaker than the held note it sits inside, and this short, is dropped (as in cleanMonoLine). */
+const CONTAINED_DROP_AMP = 0.5;
+const CONTAINED_DROP_SEC = 0.12;
+
+export function quantize(notes: NoteEvent[], s: TranscriptionSettings & { monoStrategy?: MonoStrategy }): Sheet {
   const division = s.quantizeDivision || 16;
   const [beatsPerBar, beatValue] = s.timeSignature;
   const unitsPerBeat = division / beatValue;
@@ -117,24 +128,25 @@ export function quantize(notes: NoteEvent[], s: TranscriptionSettings): Sheet {
   const offsetSeconds = effectiveOffset(notes, s);
 
   // 1. snap to the grid
-  type Ev = { start: number; end: number; midi: number; amp: number };
+  type Ev = { start: number; end: number; midi: number; amp: number; sec: number };
   let events: Ev[] = notes.map((n) => {
     const start = Math.max(0, Math.round((n.startTimeSeconds - offsetSeconds) / secondsPerUnit));
     const end = Math.max(start + 1, Math.round((n.startTimeSeconds - offsetSeconds + n.durationSeconds) / secondsPerUnit));
-    return { start, end, midi: n.pitchMidi + s.transposeSemitones, amp: n.amplitude };
+    return { start, end, midi: n.pitchMidi + s.transposeSemitones, amp: n.amplitude, sec: n.durationSeconds };
   });
 
   if (s.monophonic) {
-    // One note at a time. On a shared onset keep the louder note — the higher
-    // one is as often the model's octave ghost of a sung note. A later note
-    // cuts the one before it, unless it is a weaker one wholly inside it.
-    events.sort((a, b) => a.start - b.start || b.amp - a.amp || b.midi - a.midi);
+    // One note at a time. On a shared onset keep the top note, or for a line written
+    // from a voice the louder one. A later note cuts the one before it; on a voice
+    // line a short, much weaker note wholly inside a held one is dropped instead.
+    const louder = s.monoStrategy === "louder";
+    events.sort((a, b) => a.start - b.start || (louder ? b.amp - a.amp || b.midi - a.midi : b.midi - a.midi));
     const mono: Ev[] = [];
     for (const e of events) {
       const prev = mono[mono.length - 1];
-      if (prev && e.start === prev.start) continue; // already have the louder note
+      if (prev && e.start === prev.start) continue; // already have the note this onset keeps
       if (prev && e.start < prev.end) {
-        if (e.end <= prev.end && e.amp < prev.amp) continue;
+        if (louder && e.end <= prev.end && e.amp < CONTAINED_DROP_AMP * prev.amp && e.sec < CONTAINED_DROP_SEC) continue;
         prev.end = e.start;
       }
       if (!prev || e.end > e.start) mono.push(e);

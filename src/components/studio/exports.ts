@@ -13,6 +13,7 @@ import { INSTRUMENTS, type Part } from "@/lib/types";
 import type {
   Busy, Channels, ExportFormat, GuideTrack, Loop, MixState, StemMode, TrackMeta,
 } from "./constants";
+import { humanError } from "./errors";
 
 export function exportMidi(parts: Part[], bpm: number, baseName: string) {
   if (!parts.length) return;
@@ -105,7 +106,8 @@ export async function prepareExport(x: AudioExport, channels: Channels) {
   return { left: l, right: r };
 }
 
-export async function downloadChannels(x: AudioExport, channels: Channels, name: string) {
+/** Answers whether the file was handed to the browser; a failure is shown with setError. */
+export async function downloadChannels(x: AudioExport, channels: Channels, name: string): Promise<boolean> {
   const { transport, setBusy, exportFormat, baseName } = x;
   const { suffix } = exportWindow(x);
   const needsBake = Math.abs(transport.rate - 1) >= 1e-4 || transport.semitones !== 0;
@@ -117,6 +119,10 @@ export async function downloadChannels(x: AudioExport, channels: Channels, name:
         ? encodeMp3([baked.left, baked.right], DEMUCS_SAMPLE_RATE)
         : encodeWav([baked.left, baked.right], DEMUCS_SAMPLE_RATE);
     downloadBlob(blob, `${baseName}-${name}${suffix}.${exportFormat}`);
+    return true;
+  } catch (e) {
+    x.setError(humanError(e, "export"));
+    return false;
   } finally {
     if (needsBake) setBusy(null);
   }

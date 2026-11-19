@@ -81,12 +81,14 @@ after the singer's loudness dip, the way transcribed notes really arrive, and it
 each join is briefly off pitch: a guide issue, left for the guide work). `roundtrip-score` builds its own sung melody and
 still uses the glide's start.
 
-**`monoline`** (slow) runs the vocal path's note settings and then the single-line clean-up, the
-way the app runs it when it has the model's pitch peaks: clean once, follow the singer's curve
-through that line (`trackContour`), clean again with that curve so each note takes its pitch from
-it. Gated: fragmentation <= 1.15 and no off-melody note at 40 cents of vibrato, fragmentation
-<= 1.25 and at most one off-melody note at 80 cents, F1 >= 0.85 on a plain line. `_nocontour`
-keys are the clean-up from the notes' own pitch bends only, `_highest` the "highest" strategy.
+**`monoline`** (slow) runs the vocal path's note settings and then the single-line clean-up the
+way the app runs it: `cleanMonoLine` alone, each note taking its pitch from its own pitch bends
+(the `_nocontour` keys; on real singing this beats reading pitch from the tracked curve). For
+comparison it also runs the clean-up with the singer's curve: clean once, follow the curve through
+that line (`trackContour`), clean again with that curve (the unsuffixed keys), and the same with
+the "highest" strategy (`_highest`). Gated, on the `_nocontour` keys: fragmentation <= 1.15 and no
+off-melody note at 40 cents of vibrato, fragmentation <= 1.25 and at most one off-melody note at
+80 cents, F1 >= 0.85 on a plain line. The contour variants are only guarded against the baseline.
 With real data it also scores vocadito: note F1, fragmentation, the share of notes sitting on an
 annotated note at a different pitch (`offPitch`), and lateness, raw and after each clean-up.
 

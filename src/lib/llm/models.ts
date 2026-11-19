@@ -19,6 +19,8 @@ export interface ModelInfo {
   input: number;
   /** US dollars per million output tokens. */
   output: number;
+  /** US dollars per million input tokens read from the prompt cache. */
+  cacheRead: number;
   /** False when the price above is a placeholder. */
   priceKnown: boolean;
 }
@@ -30,6 +32,7 @@ export const MODELS = {
     id: "claude-haiku-5-5",
     input: 0.1,
     output: 0.5,
+    cacheRead: 0.01,
     priceKnown: true,
   },
   "anthropic/claude-sonnet-5-5": {
@@ -38,6 +41,7 @@ export const MODELS = {
     id: "claude-sonnet-5-5",
     input: 2,
     output: 10,
+    cacheRead: 0.1,
     priceKnown: true,
   },
   "anthropic/claude-opus-5-5": {
@@ -46,6 +50,7 @@ export const MODELS = {
     id: "claude-opus-5-5",
     input: 4,
     output: 20,
+    cacheRead: 0.2,
     priceKnown: true,
   },
   "openrouter/openai/gpt-oss-20b": {
@@ -54,6 +59,7 @@ export const MODELS = {
     id: "openai/gpt-oss-20b",
     input: 0,
     output: 0,
+    cacheRead: 0,
     priceKnown: false,
   },
 } as const satisfies Record<string, ModelInfo>;
@@ -154,15 +160,12 @@ export function validateLlmSettings(json: unknown): { ok: true; value: LlmSettin
   return { ok: true, value };
 }
 
-/** Cache reads bill at a tenth of the input price on Claude models. */
-const CACHE_READ_FACTOR = 0.1;
-
 /** Estimated US dollars for a number of tokens, or null when the model's price is unknown. */
 export function estimateCost(model: string, input: number, cached: number, output: number): number | null {
   if (!isModelKey(model)) return null;
   const m: ModelInfo = MODELS[model];
   if (!m.priceKnown) return null;
-  const usd = (input * m.input + cached * m.input * CACHE_READ_FACTOR + output * m.output) / 1_000_000;
+  const usd = (input * m.input + cached * m.cacheRead + output * m.output) / 1_000_000;
   return Math.round(usd * 1_000_000) / 1_000_000;
 }
 
@@ -202,7 +205,10 @@ export interface LlmToolCall {
 }
 
 export interface LlmUsage {
-  /** Input tokens billed at the full rate (cache writes included). */
+  /**
+   * Input tokens at the full rate. Cache writes are counted in, weighted at
+   * 1.25 (their 5-minute price), so this is a billing figure, not a raw count.
+   */
   input: number;
   /** Input tokens read from the prompt cache. */
   cached: number;

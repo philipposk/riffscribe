@@ -71,9 +71,16 @@ for (const stage of stages) {
   results.push(rec);
   console.log(`\n== ${stage.name}${stage.slow ? " (slow)" : ""}`);
 
-  if (stage.slow && ci && !(stage.ready && (await stage.ready(ctx)))) {
+  // a ready() that throws (say, the model folder is missing) counts as not ready, not a crash
+  let isReady = false;
+  let readyErr = null;
+  if (stage.slow && ci) {
+    try { isReady = !!(stage.ready && (await stage.ready(ctx))); }
+    catch (e) { readyErr = e instanceof Error ? e.message : String(e); }
+  }
+  if (stage.slow && ci && !isReady) {
     rec.status = "skipped";
-    rec.note = "slow stage, inputs not cached (--ci)";
+    rec.note = readyErr ? `slow stage, ready() threw: ${readyErr}` : "slow stage, inputs not cached (--ci)";
     console.log(`   skipped: ${rec.note}`);
     continue;
   }

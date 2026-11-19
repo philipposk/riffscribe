@@ -26,6 +26,12 @@ export const COMPANY: {
 /** True once the legal name, CVR number and postal address are all filled in. */
 export const companyComplete = (): boolean => Boolean(COMPANY.legalName && COMPANY.cvr && COMPANY.address);
 
+/**
+ * Live billing must not take a consumer's money while the operator's identity
+ * is missing from the pages. Test-mode checkouts stay open.
+ */
+export const operatorBlocksBilling = (live: boolean): boolean => live && !companyComplete();
+
 /** The identity as one line, or null while it is incomplete. */
 export function companyLine(): string | null {
   if (!companyComplete()) return null;

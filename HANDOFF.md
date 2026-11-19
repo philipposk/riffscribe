@@ -183,8 +183,11 @@ branch. It is in, and it is the least exercised part of the release:
   only picks up its new behaviour once this release is deployed.
 - **The Supabase redirect allow-list must contain `gr.sixseven.riffscribe://auth/callback`**
   (Dashboard, Authentication, URL configuration, Redirect URLs), next to
-  `https://riffscribe.6x7.gr/studio`. Without it Google sign-in in the shell returns an error instead
-  of a code. Nobody has added it yet.
+  `https://riffscribe.6x7.gr/studio`. Without it Supabase ignores `redirectTo` and sends the browser
+  sheet to the project Site URL with `?code=`: the sheet shows the website signed out, the app never
+  receives `appUrlOpen`, and there is no error (on the shared 6x7 project, Site URL may not be
+  riffscribe). Verify it with a real Google sign-in on a device build. The email link uses the same
+  custom scheme in the shell. Nobody has added it yet.
 - **MP3 export** (`src/lib/audio/mp3.ts`, 128 kbps through `lamejs`, which is LGPL-3.0 — see
   `THIRD_PARTY_NOTICES.md`), and exports rendered at the practice speed and key.
 - **Mixer and overdub kept per song** (`src/lib/store/cache.ts`, `getSession` and `putSession`).
@@ -321,7 +324,8 @@ mounts only for signed-in users — its own 401/429 messages ("not configured", 
 - **SQL and its order** are in `supabase/README.md`. The base files `schema.sql`, `accounts.sql` and
   `assistant_chats.sql` come first (`accounts.sql` was applied to `fmrnqepyyjucnfbrqawl`;
   `assistant_chats.sql` — check, see "Not verified"). Then the numbered migrations in
-  `supabase/migrations/`:
+  `supabase/migrations/`. Re-running a base file undoes the migrations that replaced its definitions;
+  after one, re-run every migration already applied, in order:
 
   | File | What it does | When |
   |---|---|---|
@@ -433,8 +437,8 @@ Research behind the release plan (nothing was installed or cloned; star counts a
 
 | Item | Blocks |
 |---|---|
-| Company legal name, CVR, address and VAT id for `src/lib/company.ts`; which inbox is the contact (`admin@6x7.gr` assumed); a lawyer's review of the terms and privacy pages | Publishing the final legal pages; Stripe activation |
-| Apply `supabase/migrations/0003_review_fixes.sql` to `supabase/migrations/0007_admin.sql` to `fmrnqepyyjucnfbrqawl` in the order in `supabase/README.md`, **0004 and 0005 only after the release deploys**; confirm in the dashboard whether `assistant_chats.sql` and pg_cron are applied; seed `riffscribe_admins` | The shared-chart fix, the admin page, the customer mapping |
+| Company legal name, CVR, address and VAT id for `src/lib/company.ts`; which inbox is the contact (`admin@6x7.gr` assumed); a lawyer's review of the terms and privacy pages | Publishing the final legal pages; Stripe activation (with a live key, `/api/checkout` refuses until these three are set; `/api/health` shows `operator`) |
+| Apply `supabase/migrations/0003_review_fixes.sql` to `supabase/migrations/0007_admin.sql` to `fmrnqepyyjucnfbrqawl` in the order in `supabase/README.md`, **0004 and 0005 only after the release deploys**; confirm in the dashboard whether `assistant_chats.sql` and pg_cron are applied; seed `riffscribe_admins` | The shared-chart fix, the admin page, the customer mapping; privacy page section 5 (deletion scope, usage 24 mo, webhook ids 30 d) being true: 0003 before merge, pg_cron + 0005 right after deploy (check with `select jobname from cron.job where jobname like 'riffscribe-%'`) |
 | Add `gr.sixseven.riffscribe://auth/callback` to the Supabase redirect allow-list | Google sign-in in the phone shell |
 | Check row-level security on the shared `subscriptions` and `app_access` tables (not in this repo) | A browser-writable row there is a free Pro plan |
 | Stripe: which legal entity owns the shared 6x7 account; activation; live price; the webhook endpoint with the nine events and the pinned API version; portal; public-details URLs; e-mails; a restricted live key; delete the test-mode rows; one real purchase and refund | Going live (`docs/billing-go-live.md`) |

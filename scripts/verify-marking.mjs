@@ -4,7 +4,17 @@
  *
  * Run with: node --experimental-strip-types scripts/verify-marking.mjs
  */
-const src = await import("../src/lib/transcribe/compare.ts").catch(() => null);
+import { registerHooks } from "node:module";
+
+// compare.ts imports ./contour without an extension, as the app's bundler expects.
+registerHooks({
+  resolve(spec, ctx, next) {
+    if (spec.startsWith(".") && !/\.[cm]?[jt]s$/.test(spec) && ctx.parentURL?.includes("/src/")) spec += ".ts";
+    return next(spec, ctx);
+  },
+});
+
+const src = await import("../src/lib/transcribe/compare.ts").catch((e) => { console.log(e.message); return null; });
 if (!src) {
   console.log("run with: node --experimental-strip-types scripts/verify-marking.mjs");
   process.exit(1);
@@ -117,6 +127,22 @@ if (nothingWritten.extra !== 8) failed++;
   const ok = off === 0 && t.accuracy === 1;
   console.log(`${ok ? "ok  " : "FAIL"}  a transposed part played as written is clean: ${off} off`);
   if (!ok) failed++;
+}
+
+// Pitch bends carry Basic Pitch's one-bin (+33 cent) sharp bias. An in-tune
+// note whose bends all read +1 bin must come back clean, not 33 cents sharp;
+// one ~70 cents flat (bends about -1 bin) must still be marked flat.
+{
+  const inTune = CHART.map((n) => ({ ...n, pitchBends: [1, 1, 1, 1] }));
+  const t = markTake(CHART, inTune, OPTS);
+  const worst = Math.max(...t.judgements.map((j) => Math.abs(j.centsOff ?? 0)));
+  const ok = t.accuracy === 1 && worst < 1;
+  console.log(`${ok ? "ok  " : "FAIL"}  bends of +1 bin read as in tune: accuracy ${Math.round(t.accuracy * 100)}%, worst ${Math.round(worst)} cents`);
+  if (!ok) failed++;
+  const flat = markTake(CHART.slice(0, 1), [{ ...CHART[0], pitchBends: [-1, -1, -1] }], OPTS);
+  const ok2 = flat.judgements[0]?.verdict === "flat";
+  console.log(`${ok2 ? "ok  " : "FAIL"}  bends of -1 bin read as flat: ${flat.judgements[0]?.verdict} (${Math.round(flat.judgements[0]?.centsOff ?? 0)} cents)`);
+  if (!ok2) failed++;
 }
 
 // Practising four bars of a long chart: only the bars in the take are marked.

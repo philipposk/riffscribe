@@ -60,6 +60,9 @@ for (const p of ["/", "/studio", "/account"]) {
 }
 ok(!/immutable/.test(headersFor("/ort/ort-wasm-simd-threaded.jsep.wasm")["Cache-Control"] ?? ""), "/ort not immutable (fixed names)");
 ok(/immutable/.test(headersFor("/models/basic-pitch/model.json")["Cache-Control"] ?? ""), "/models still immutable");
+ok(headersFor("/_next/static/chunks/x.js")["Cross-Origin-Embedder-Policy"] === "credentialless", "worker chunks carry COEP");
+ok(headersFor("/ort/ort-wasm-simd-threaded.jsep.mjs")["Cross-Origin-Embedder-Policy"] === "credentialless", "ORT pthread worker carries COEP");
+ok(headersFor("/_next/static/chunks/x.js")["Cross-Origin-Opener-Policy"] === "same-origin-allow-popups", "worker chunks get no COOP same-origin");
 
 // ── isolation helpers ────────────────────────────────────────────────────────
 const iso = await import("../src/lib/isolation.ts");

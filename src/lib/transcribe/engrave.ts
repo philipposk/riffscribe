@@ -92,6 +92,9 @@ export function engraveParts(parts: Part[], settings: TranscriptionSettings): Pa
       instrument: part.instrument,
       transposeSemitones: shift,
       monophonic: part.monophonic ?? settings.monophonic,
+      // Only a part cleaned up as one line keeps the louder note; older, shared and chordal
+      // parts that follow the setting keep the top note, as they always have.
+      monoStrategy: part.monophonic === true ? "louder" : "highest",
     });
     if (instrument.tuning) {
       assignFrets(sheet, { tuning: instrument.tuning, maxFret: instrument.frets ?? 22, capo: settings.capo });

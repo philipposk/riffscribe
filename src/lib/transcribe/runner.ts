@@ -64,6 +64,78 @@ export function detectionLimits(minMidi?: number, maxMidi?: number): { maxHz: nu
 }
 
 const models = new Map<string, BasicPitchModel>();
+/** A model output as Basic Pitch types it, named without importing TensorFlow. */
+type Unwrappable = Parameters<BasicPitchModel["unwrapOutput"]>[0];
+
+/**
+ * The scope half of TensorFlow's engine: what `tf.tidy` is built on.
+ *
+ * Basic Pitch makes plenty of tensors we never see (the slice inside
+ * `unwrapOutput`, the batch slice the model runs on, every step of
+ * `prepareData`), and with no scope open the engine tracks none of them, so
+ * disposing what we are handed leaves most of each run behind. We cannot
+ * import TensorFlow for `tf.tidy` (see above), but the copy Basic Pitch loaded
+ * registers its engine on the global object, and that is enough.
+ */
+export interface ScopeEngine {
+  startScope(name?: string): void;
+  endScope(result?: unknown): void;
+  keep<T>(t: T): T;
+}
+
+/** Basic Pitch's TensorFlow engine, or null if none is loaded (then nothing is scoped). */
+export function tensorEngine(ns: object = globalThis): ScopeEngine | null {
+  const e = (ns as { _tfengine?: Partial<ScopeEngine> })._tfengine;
+  return e && typeof e.startScope === "function" && typeof e.endScope === "function" && typeof e.keep === "function"
+    ? (e as ScopeEngine)
+    : null;
+}
+
+/**
+ * `tf.tidy` without TensorFlow: run `fn` in a scope and dispose every tensor it
+ * made except the ones it returns. Those are kept, so no other scope can take
+ * them, and the caller disposes them. `fn` must be synchronous: an await inside
+ * an open scope would let other code's tensors land in it.
+ */
+export function scoped<T extends readonly object[]>(eng: ScopeEngine | null, fn: () => T): T {
+  if (!eng) return fn();
+  eng.startScope();
+  try {
+    const out = fn();
+    for (const t of out) eng.keep(t);
+    return out;
+  } finally {
+    eng.endScope();
+  }
+}
+
+let scopeQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * `scoped` for `prepareData`, which is async in name only: its work is done
+ * by the time it returns, but its result is only reachable through an await,
+ * so its scope stays open for a few microtasks. One at a time, so that two
+ * runs on the page cannot end each other's scope.
+ */
+export function scopedAsync<T>(
+  eng: ScopeEngine | null,
+  fn: () => Promise<T>,
+  survivors: (r: T) => readonly object[]
+): Promise<T> {
+  if (!eng) return fn();
+  const run = scopeQueue.then(async () => {
+    eng.startScope();
+    try {
+      const out = await fn();
+      for (const t of survivors(out)) eng.keep(t);
+      return out;
+    } finally {
+      eng.endScope();
+    }
+  });
+  scopeQueue = run.catch(() => undefined);
+  return run;
+}
 
 /** Hand control back to the browser properly, not just to the microtask queue. */
 const breathe = (): Promise<void> =>
@@ -112,8 +184,22 @@ export async function runTranscriptionFull(
   const onsets: number[][] = [];
   const contours: number[][] = [];
 
+  // Tensors are freed by hand: every step runs in an engine scope (see
+  // `scoped`), which disposes the intermediates Basic Pitch makes and never
+  // hands us, and we dispose the few tensors that come out. On the page
+  // fallback nothing else ever frees them, so without this every run would
+  // leave its framed input and all of its output behind in memory.
+  const eng = tensorEngine();
+  const free = (...ts: ({ dispose?: () => void } | null | undefined)[]) => {
+    for (const t of ts) t?.dispose?.();
+  };
+
   // Mirrors BasicPitch.evaluateModel, with a yield added between windows.
-  const [reshapedInput, audioOriginalLength] = await model.prepareData(mono22k);
+  const [reshapedInput, audioOriginalLength] = await scopedAsync(
+    eng,
+    () => model.prepareData(mono22k),
+    ([input]) => [input]
+  );
   const windows = reshapedInput.shape[0];
   // Basic Pitch's own arithmetic, copied exactly. ANNOTATIONS_FPS is
   // floor(22050 / 256) = 86, and that floor matters: deriving the rate as
@@ -125,39 +211,36 @@ export async function runTranscriptionFull(
   );
   let calculated = 0;
 
-  // Tensors are freed by hand: no tf.tidy without importing TensorFlow, and
-  // on the main-thread fallback nothing else ever frees them, so every run
-  // would leave its whole output behind in memory.
-  const free = (...ts: ({ dispose?: () => void } | null | undefined)[]) => {
-    for (const t of ts) t?.dispose?.();
-  };
   try {
+    const graph = await model.model;
     for (let i = 0; i < windows; i++) {
       onProgress?.(i / windows);
-      const [f, o, c] = await model.evaluateSingleFrame(reshapedInput, i);
-      const uf = model.unwrapOutput(f);
-      const uo = model.unwrapOutput(o);
-      const uc = model.unwrapOutput(c);
-      const cut: { dispose?: () => void }[] = [];
-      try {
-        const got = uf.shape[0];
-        if (calculated < nOutputFramesOriginal) {
-          let [sf, so, sc] = [uf, uo, uc];
-          if (got + calculated >= nOutputFramesOriginal) {
-            const keep = nOutputFramesOriginal - calculated;
-            sf = uf.slice([0, 0], [keep, -1]);
-            so = uo.slice([0, 0], [keep, -1]);
-            sc = uc.slice([0, 0], [keep, -1]);
-            cut.push(sf, so, sc);
-          }
-          frames.push(...(await sf.array()));
-          onsets.push(...(await so.array()));
-          contours.push(...(await sc.array()));
+      // Past the end of the audio: Basic Pitch keeps nothing from these windows either.
+      if (calculated >= nOutputFramesOriginal) continue;
+      // BasicPitch.evaluateSingleFrame, inlined: it awaits the model inside,
+      // and a scope must not stay open across an await. Output names are its own.
+      let got = 0;
+      const [sf, so, sc] = scoped(eng, () => {
+        const batch = reshapedInput.slice(i, 1);
+        const [f, o, c] = graph.execute(batch, ["Identity_1", "Identity_2", "Identity"]) as Unwrappable[];
+        let [uf, uo, uc] = [model.unwrapOutput(f), model.unwrapOutput(o), model.unwrapOutput(c)];
+        got = uf.shape[0];
+        if (got + calculated >= nOutputFramesOriginal) {
+          const keep = nOutputFramesOriginal - calculated;
+          uf = uf.slice([0, 0], [keep, -1]);
+          uo = uo.slice([0, 0], [keep, -1]);
+          uc = uc.slice([0, 0], [keep, -1]);
         }
-        calculated += got;
+        return [uf, uo, uc] as const;
+      });
+      try {
+        frames.push(...(await sf.array()));
+        onsets.push(...(await so.array()));
+        contours.push(...(await sc.array()));
       } finally {
-        free(f, o, c, uf, uo, uc, ...cut);
+        free(sf, so, sc);
       }
+      calculated += got;
       await breathe();
     }
   } catch (e) {

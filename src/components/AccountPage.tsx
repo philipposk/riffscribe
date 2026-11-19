@@ -8,12 +8,13 @@ import SignIn from "./SignIn";
 import { Meter } from "./AccountMenu";
 import { signOut } from "@/lib/store/charts";
 import { BILLING_LIVE } from "@/lib/billingLive";
-import { deleteAccount, openBillingPortal, startCheckout, useAccount, withdraw } from "@/lib/store/account";
+import { deleteAccount, NATIVE_PLAN_NOTE, openBillingPortal, startCheckout, useAccount, withdraw } from "@/lib/store/account";
+import { useIsNative } from "@/lib/native";
 import { PLANS, planLabel } from "@/lib/plans";
 import { COMPANY } from "@/lib/company";
 
 export default function AccountPage() {
-  const { user, account, ready, refresh } = useAccount();
+  const { user, account, ready, refresh, failed } = useAccount();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -24,6 +25,8 @@ export default function AccountPage() {
   const [withdrawNote, setWithdrawNote] = useState<string | null>(null);
   // Just paid: the webhook may not have landed. Hide Upgrade and poll briefly.
   const [pending, setPending] = useState(false);
+  // Phone shell: no Upgrade, Manage billing or withdraw (App Store / Play rules).
+  const native = useIsNative();
 
   useEffect(() => {
     const sub = new URLSearchParams(location.search).get("sub");
@@ -120,31 +123,38 @@ export default function AccountPage() {
         <p className="mb-4 text-xs text-faint">
           Transcribing, splitting stems and slowing down run on your own device, so they are unlimited on every plan.
         </p>
-        <div className="flex flex-wrap gap-2">
-          {free && BILLING_LIVE && !canUpgrade && (
-            <button className="btn btn-primary" disabled aria-disabled="true">
-              <Loader2 className="animate-spin" size={15} />
-              {pending ? "Activating Pro…" : "Upgrade to Pro"}
-            </button>
-          )}
-          {canUpgrade && BILLING_LIVE && (
-            <button className="btn btn-primary" disabled={!!busy} onClick={() => void run("up", startCheckout)}>
-              {busy === "up" && <Loader2 className="animate-spin" size={15} />}
-              Upgrade to Pro — {PLANS.pro.price}
-            </button>
-          )}
-          {free && !BILLING_LIVE && (
-            <button className="btn btn-primary" disabled aria-disabled="true">Pro — coming soon</button>
-          )}
-          {account?.has_billing && (
-            <button className="btn" disabled={!!busy} onClick={() => void run("portal", openBillingPortal)}>
-              {busy === "portal" && <Loader2 className="animate-spin" size={15} />}
-              Manage billing
-            </button>
-          )}
-          <Link className="btn" href="/pricing">Compare plans</Link>
-        </div>
-        {account?.has_billing && !free && BILLING_LIVE && (
+        {native ? (
+          <p className="text-sm text-white/55">{NATIVE_PLAN_NOTE}</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {!account && failed && !pending && BILLING_LIVE && (
+              <button className="btn" onClick={() => void refresh()}>Couldn&apos;t load your plan — Retry</button>
+            )}
+            {free && BILLING_LIVE && !canUpgrade && (pending || !failed) && (
+              <button className="btn btn-primary" disabled aria-disabled="true">
+                <Loader2 className="animate-spin" size={15} />
+                {pending ? "Activating Pro…" : "Upgrade to Pro"}
+              </button>
+            )}
+            {canUpgrade && BILLING_LIVE && (
+              <button className="btn btn-primary" disabled={!!busy} onClick={() => void run("up", startCheckout)}>
+                {busy === "up" && <Loader2 className="animate-spin" size={15} />}
+                Upgrade to Pro — {PLANS.pro.price}
+              </button>
+            )}
+            {free && !BILLING_LIVE && (
+              <button className="btn btn-primary" disabled aria-disabled="true">Pro — coming soon</button>
+            )}
+            {account?.has_billing && (
+              <button className="btn" disabled={!!busy} onClick={() => void run("portal", openBillingPortal)}>
+                {busy === "portal" && <Loader2 className="animate-spin" size={15} />}
+                Manage billing
+              </button>
+            )}
+            <Link className="btn" href="/pricing">Compare plans</Link>
+          </div>
+        )}
+        {account?.has_billing && !free && BILLING_LIVE && !native && (
           <div className="mt-3 text-xs text-faint">
             {!withdrawOpen ? (
               <button className="underline underline-offset-2 hover:text-white/70" onClick={() => setWithdrawOpen(true)}>

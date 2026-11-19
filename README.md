@@ -259,7 +259,7 @@ is built; the rest are server-only. The full commented list is `.env.example`.
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Accounts, saved and shared charts |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server writes: usage, subscriptions, admin settings, refunds |
 | `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` | The assistant (Claude first, OpenRouter as the fallback) |
-| `RIFFSCRIBE_ADMIN_BOOTSTRAP` | The first admin's user id, until an admin row exists |
+| `RIFFSCRIBE_ADMIN_BOOTSTRAP` | The first admin's user id; admin while set, so delete it once an admin row exists |
 | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_PRO`, `STRIPE_WEBHOOK_SECRET` | Billing |
 | `NEXT_PUBLIC_BILLING_ENABLED` | Opens Pro checkout (otherwise "Coming soon") |
 | `STRIPE_TAX_ENABLED`, `STRIPE_TOS_CONSENT`, `STRIPE_AUTO_REFUND_EFW`, `STRIPE_SELF_SERVE_WITHDRAWAL` | Checkout behaviour in live mode; each off unless `true` |

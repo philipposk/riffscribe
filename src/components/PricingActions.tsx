@@ -3,20 +3,25 @@ import { useState } from "react";
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
 
-import { startCheckout, useAccount } from "@/lib/store/account";
+import { NATIVE_PLAN_NOTE, startCheckout, useAccount } from "@/lib/store/account";
 import { BILLING_LIVE } from "@/lib/billingLive";
+import { useIsNative } from "@/lib/native";
 
 export default function PricingActions({ plan }: { plan: "free" | "pro" }) {
-  const { user, account } = useAccount();
+  const { user, account, failed, refresh } = useAccount();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const native = useIsNative();
 
   if (plan === "free") return <a className="btn" href="/studio">Open the studio</a>;
   if (account && account.plan !== "free") return <Link className="btn" href="/account">You're on Pro — manage</Link>;
+  // Phone shell: no purchase button, link or price prompt (App Store / Play rules).
+  if (native) return <p className="text-sm text-white/55">{NATIVE_PLAN_NOTE}</p>;
   if (!BILLING_LIVE) return <button className="btn btn-primary" disabled aria-disabled="true">Coming soon</button>;
   if (!user) return <Link className="btn btn-primary" href="/account">Sign in to upgrade</Link>;
   // Plan not loaded yet: offering Upgrade now could start a second subscription.
   if (!account) {
+    if (failed) return <button className="btn" onClick={() => void refresh()}>Couldn&apos;t load your plan — Retry</button>;
     return (
       <button className="btn btn-primary" disabled aria-disabled="true">
         <Loader2 className="animate-spin" size={15} /> Upgrade to Pro

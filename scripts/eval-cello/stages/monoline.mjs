@@ -2,17 +2,19 @@
  * The single-line clean-up (cleanMonoLine) on the same sung lines as notes-raw.
  *
  * Detection uses the settings the vocal path will use: onset 0.5, frame 0.3, minimum length
- * 7 frames, melodia off, range MIDI 36..96. Then the clean-up the way the app runs it when it has
- * the model's pitch peaks: `cleanMonoLine(notes)`, `trackContour(peaks, thatLine)`, and
- * `cleanMonoLine(notes, { contour })`, so every note takes its pitch from the singer's curve. The
- * right answer is the written melody, one note per sung note (each starting at the middle of the
- * glide into it; see lib/fixtures.mjs).
+ * 7 frames, melodia off, range MIDI 36..96. Then the clean-up the way the app runs it:
+ * `cleanMonoLine(notes)` alone, so every note takes its pitch from its own pitch bends
+ * (Studio.tsx; on real singing that beats re-reading it from the tracked curve). Those are the
+ * `_nocontour` keys. For comparison, the unsuffixed keys run the clean-up with the singer's curve:
+ * `cleanMonoLine(notes)`, `trackContour(peaks, thatLine)`, `cleanMonoLine(notes, { contour })`,
+ * and `_highest` the same with the "highest" strategy. The right answer is the written melody,
+ * one note per sung note (each starting at the middle of the glide into it; see
+ * lib/fixtures.mjs).
  *
- * Gated: with vibrato of 40 cents a held note must come out as one note (fragmentation <= 1.15)
- * and no note may land off the melody; at 80 cents fragmentation <= 1.25 and at most one stray;
- * a plain line (1 cent) must still score note F1 >= 0.85. Recorded alongside, ungated: the same
- * clean-up without a contour (`_nocontour`, pitch read from the notes' own pitch bends) and the
- * "highest" strategy (`_highest`, with the contour).
+ * Gated, on the shipped clean-up (`_nocontour`): with vibrato of 40 cents a held note must come
+ * out as one note (fragmentation <= 1.15) and no note may land off the melody; at 80 cents
+ * fragmentation <= 1.25 and at most one stray; a plain line (1 cent) must still score note
+ * F1 >= 0.85. The contour variants are only guarded against the baseline.
  *
  * With RIFFSCRIBE_EVAL_DATA set (a folder holding vocadito/), the same detection and clean-up
  * also run on the 40 real sung excerpts and are scored against the human note annotations
@@ -50,8 +52,20 @@ export async function ready() {
   return VIBRATO.every((v) => bp.hasCache(sungLine({ sr: SR, vibCents: v }).audio));
 }
 
+/** Key suffix of the clean-up the app ships (Studio.tsx: `cleanMonoLine(found)`, no contour). */
+export const SHIPPED = "_nocontour";
+
+/** Hard gates, on the shipped clean-up's keys. */
+export const GATES = [
+  { key: `fragmentation_vib40${SHIPPED}`, op: "<=", value: 1.15 },
+  { key: `fragmentation_vib80${SHIPPED}`, op: "<=", value: 1.25 },
+  { key: `offPitch_vib40${SHIPPED}`, op: "==", value: 0 },
+  { key: `offPitch_vib80${SHIPPED}`, op: "<=", value: 1 },
+  { key: `f1_vib1${SHIPPED}`, op: ">=", value: 0.85 },
+];
+
 /** The clean-ups compared: key suffix -> (notes, raw model output, seconds) -> line. */
-function cleanups(cleanMonoLine, pickPeaks, trackContour) {
+export function cleanups(cleanMonoLine, pickPeaks, trackContour) {
   const withContour = (strategy) => (notes, raw, seconds) => {
     const first = cleanMonoLine(notes, { strategy });
     const contour = trackContour(pickPeaks(raw.contours), first, seconds);
@@ -89,13 +103,7 @@ export async function run(ctx) {
   Object.assign(metrics, await realSinging(ctx, variants));
   return {
     metrics,
-    gates: [
-      { key: "fragmentation_vib40", op: "<=", value: 1.15 },
-      { key: "fragmentation_vib80", op: "<=", value: 1.25 },
-      { key: "offPitch_vib40", op: "==", value: 0 },
-      { key: "offPitch_vib80", op: "<=", value: 1 },
-      { key: "f1_vib1", op: ">=", value: 0.85 },
-    ],
+    gates: GATES,
   };
 }
 

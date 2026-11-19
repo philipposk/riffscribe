@@ -6,9 +6,10 @@
 
 Free: the whole studio runs in the browser with no account. Optional sign-in saves up to 10 songs and 100 assistant requests a month. Pro (€5/month, 1,000 songs, 2,000 assistant requests) is listed and becomes purchasable once billing is enabled.
 
-
-Everything runs inside the browser tab. No upload, no account, no server-side
-inference, no per-minute pricing — the audio never leaves the machine.
+Everything heavy runs inside the browser tab. No upload, no server-side
+inference for the audio work, no per-minute pricing — the audio never leaves
+the machine. The studio itself needs no account; signing in adds saved songs,
+the assistant and, once billing is open, Pro.
 
 ## What it does
 

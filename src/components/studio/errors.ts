@@ -2,7 +2,7 @@
  * What went wrong, said as a sentence with a next step. The original message is
  * kept in parentheses: it is what someone helping will ask for.
  */
-export type ErrorContext = "decode" | "split" | "transcribe" | "engine" | "record" | "chart";
+export type ErrorContext = "decode" | "split" | "transcribe" | "engine" | "record" | "chart" | "export";
 
 const NEXT_STEP: Record<ErrorContext, string> = {
   decode:
@@ -17,6 +17,8 @@ const NEXT_STEP: Record<ErrorContext, string> = {
     "The take could not be recorded. Check that the microphone is connected and allowed, then try again.",
   chart:
     "That song could not be opened. Check your connection, then open it again from My songs.",
+  export:
+    "The download could not be prepared. Try WAV instead of MP3, turn off the practice speed and key or the loop-only option, or export a single track, then try again.",
 };
 
 /** The error's own words, or "" when it has none worth showing. */

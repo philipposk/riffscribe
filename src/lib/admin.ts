@@ -2,9 +2,10 @@
  * Who may change the app's settings.
  *
  * An admin is a row in riffscribe_admins (migration 0007), checked through
- * riffscribe_is_admin() as the caller. Before that table exists, or before
- * anyone is in it, the one user whose id is RIFFSCRIBE_ADMIN_BOOTSTRAP is let
- * in so the first admin can set things up.
+ * riffscribe_is_admin() as the caller. The one user whose id is
+ * RIFFSCRIBE_ADMIN_BOOTSTRAP is also let in, for as long as it is set, whether
+ * or not the table has rows, so the first admin can set things up. Delete the
+ * variable once an admin row exists.
  */
 import "server-only";
 

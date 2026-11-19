@@ -17,9 +17,11 @@ interface Props {
   onSolo: (id: string | null) => void;
   /** Download this track on its own. */
   onDownload: (id: string) => void;
+  /** While a job runs: an export would replace its progress banner. */
+  downloadDisabled?: boolean;
 }
 
-export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: Props) {
+export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload, downloadDisabled }: Props) {
   return (
     <div className="grid gap-2">
       {tracks.map((t) => {
@@ -67,6 +69,7 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
             <button
               className="grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center text-faint hover:text-white"
               onClick={() => onDownload(t.id)}
+              disabled={downloadDisabled}
               title={`Download ${t.label} on its own`}
               aria-label={`Download ${t.label}`}
             >

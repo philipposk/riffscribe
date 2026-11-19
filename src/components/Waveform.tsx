@@ -1,6 +1,7 @@
 "use client";
 /** Waveform strip: click to seek, drag to set the practice loop. */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { loopFromStart, loopToEnd } from "./studio/useShortcuts";
 
 interface Props {
   peaks: Float32Array | null;
@@ -77,13 +78,14 @@ export default function Waveform({ peaks, duration, time, loop, onSeek, onLoop }
   const fmt = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
   // Keyboard and one-tap ways to set a loop: dragging a thin canvas is hard on touch and impossible by keyboard.
+  // Same rules as the [ and ] keys; a loop too short to play (end at 0:00, start at the end) is not set.
   const setLoopStart = () => {
-    if (duration <= 0) return;
-    onLoop([time, loop && loop[1] > time ? loop[1] : Math.min(duration, time + 4)]);
+    const next = loopFromStart(time, duration, loop);
+    if (next) onLoop(next);
   };
   const setLoopEnd = () => {
-    if (duration <= 0) return;
-    onLoop([loop && loop[0] < time ? loop[0] : Math.max(0, time - 4), time]);
+    const next = loopToEnd(time, duration, loop);
+    if (next) onLoop(next);
   };
 
   return (
@@ -136,10 +138,10 @@ export default function Waveform({ peaks, duration, time, loop, onSeek, onLoop }
       onLostPointerCapture={() => setDrag(null)}
     />
     <div className="mt-2 flex flex-wrap gap-2">
-      <button type="button" className="btn text-xs" onClick={setLoopStart} disabled={duration <= 0}>
+      <button type="button" className="btn text-xs" onClick={setLoopStart} disabled={!loopFromStart(time, duration, loop)}>
         Set loop start
       </button>
-      <button type="button" className="btn text-xs" onClick={setLoopEnd} disabled={duration <= 0}>
+      <button type="button" className="btn text-xs" onClick={setLoopEnd} disabled={!loopToEnd(time, duration, loop)}>
         Set loop end
       </button>
     </div>

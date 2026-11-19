@@ -49,6 +49,13 @@ const nextConfig: NextConfig = {
     },
     { source: "/studio/:path*", headers: isolationHeaders },
     {
+      // Worker entry scripts (stems, karaoke, guide, transcribe) are real /_next/static
+      // responses, and a dedicated worker with no COEP is refused inside the isolated
+      // studio. COEP only: these are never navigated to, so COOP is irrelevant here.
+      source: "/_next/static/:path*",
+      headers: [{ key: "Cross-Origin-Embedder-Policy", value: "credentialless" }],
+    },
+    {
       // Big, immutable ML assets — cache hard.
       source: "/models/:path*",
       headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
@@ -56,8 +63,12 @@ const nextConfig: NextConfig = {
     {
       // Fixed file names that change when onnxruntime-web is bumped, so not immutable:
       // the browser revalidates (a cheap 304) and can never pair a new loader with an old wasm.
+      // COEP because the threaded build starts its pthread worker from /ort/*.mjs.
       source: "/ort/:path*",
-      headers: [{ key: "Cache-Control", value: "public, max-age=0, must-revalidate" }],
+      headers: [
+        { key: "Cache-Control", value: "public, max-age=0, must-revalidate" },
+        { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
+      ],
     },
   ],
 };

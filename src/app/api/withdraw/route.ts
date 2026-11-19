@@ -7,10 +7,14 @@
  * fails, a retry repeats the refund harmlessly (same idempotency key, or an
  * "already refunded" answer), and the charge.refunded webhook ends the
  * subscription anyway.
+ *
+ * Bearer header only, never the rs_at cookie: the cookie is sent by any
+ * *.6x7.gr page, and a body-less POST needs no preflight, so a sibling page
+ * could otherwise refund and cancel a signed-in person's Pro.
  */
 import { NextResponse } from "next/server";
 
-import { caller, serviceClient } from "@/lib/supabase/server";
+import { caller, fromOtherOrigin, serviceClient } from "@/lib/supabase/server";
 import { APP, billingConfigured, flag, stripe } from "@/lib/stripe";
 import { ENDED_STATUSES, isOurs, withdrawalOpen } from "@/lib/billing/webhookLogic";
 
@@ -21,7 +25,8 @@ const idOf = (x: string | { id: string } | null | undefined) => (typeof x === "s
 export async function POST(req: Request) {
   if (!flag("STRIPE_SELF_SERVE_WITHDRAWAL")) return NextResponse.json({ error: "Not found." }, { status: 404 });
   if (!billingConfigured()) return NextResponse.json({ error: "Billing is not set up." }, { status: 503 });
-  const who = await caller(req);
+  if (fromOtherOrigin(req)) return NextResponse.json({ error: "Not allowed." }, { status: 403 });
+  const who = await caller(req, { cookie: false });
   if (!who) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
 
   const { data, error } = await serviceClient()

@@ -45,8 +45,9 @@ export interface AssistantContext {
   exportMidi: () => void;
   exportMusicXml: () => void;
   exportTex: () => void;
-  exportAudio: (kind: "backing" | "mix") => Promise<void>;
-  exportTrack: (id: string) => Promise<void>;
+  /** `format` overrides the export format state, which a just-made change has not reached yet. */
+  exportAudio: (kind: "backing" | "mix", format?: ExportFormat) => Promise<void>;
+  exportTrack: (id: string, format?: ExportFormat) => Promise<void>;
 }
 
 /**
@@ -176,16 +177,18 @@ export function buildAssistantActions(ctx: AssistantContext): AssistantActions {
 
     exportFile: (what) => {
       const w = what.toLowerCase();
-      if (w.includes("mp3")) setExportFormat("mp3");
-      else if (w.includes("wav")) setExportFormat("wav");
+      // Passed along as well as set: the state change has not reached this render's exports.
+      const fmt: ExportFormat | undefined = w.includes("mp3") ? "mp3" : w.includes("wav") ? "wav" : undefined;
+      if (fmt) setExportFormat(fmt);
       if (w.includes("midi")) { exportMidi(); return "MIDI downloaded."; }
       if (w.includes("xml")) { exportMusicXml(); return "MusicXML downloaded."; }
       if (w.includes("tex")) { exportTex(); return "alphaTex downloaded."; }
       if (w.includes("pdf") || w.includes("print")) { window.print(); return "Opened the print dialog."; }
-      if (w.includes("backing")) { void exportAudio("backing"); return "Backing track download started — at your current speed and key."; }
-      if (w.includes("mix")) { void exportAudio("mix"); return "Mix download started — at your current speed and key."; }
       const track = trackList.find((t) => w.includes(t.id) || w.includes(t.label.toLowerCase()));
-      if (track) { void exportTrack(track.id); return `${track.label} download started.`; }
+      if ((w.includes("backing") || w.includes("mix") || track) && busy) return `Wait for “${busy.label}” to finish, then ask again.`;
+      if (w.includes("backing")) { void exportAudio("backing", fmt); return "Backing track download started — at your current speed and key."; }
+      if (w.includes("mix")) { void exportAudio("mix", fmt); return "Mix download started — at your current speed and key."; }
+      if (track) { void exportTrack(track.id, fmt); return `${track.label} download started.`; }
       return `I can export midi, musicxml, alphatex, pdf, wav or mp3 (backing track, current mix, or one of: ${trackList.map((t) => t.id).join(", ")}). Audio exports match your practice speed and key.`;
     },
 

@@ -18,9 +18,10 @@ select id from auth.users where email = '<you>'
 on conflict do nothing;
 ```
 
-Until that table exists, or while it is empty, one user is let in by the environment variable
-`RIFFSCRIBE_ADMIN_BOOTSTRAP` (a user id, a uuid). Set it to your own id to reach the page before the
-migration has run; remove it once a row exists. Everybody else gets a 403 and the page shows nothing.
+One user is let in by the environment variable `RIFFSCRIBE_ADMIN_BOOTSTRAP` (a user id, a uuid) for
+as long as it is set, whether or not `riffscribe_admins` has rows. Set it to your own id to reach the
+page before the migration has run, and delete it from Vercel once your admin row exists. Everybody
+else gets a 403 and the page shows nothing.
 
 The page is `/admin` (`src/app/admin/page.tsx`, `src/components/AdminSettings.tsx`) and it talks to
 `/api/admin/settings` (`src/app/api/admin/settings/route.ts`). It shows the saved settings, the
@@ -36,21 +37,24 @@ saving clears that instance's cache. If the table is missing or unreadable the d
 
 ## The allowlist and costs
 
-The list is `MODELS` in `src/lib/llm/models.ts`. Prices there are US dollars per million tokens; the
-cache-read price is a tenth of the input price.
+The list is `MODELS` in `src/lib/llm/models.ts`. Prices there are US dollars per million tokens.
+Cache-read prices are set per model (a twentieth of input for Sonnet 5.5 and Opus 5.5, a tenth for
+Haiku 5.5). Cache writes bill at 1.25 times input, so the adapter counts written tokens into the input
+figure at that weight.
 
-| Model | Provider | Input | Output | Default for the assistant |
-|---|---|---:|---:|---|
-| Claude Haiku 5.5 | Anthropic | 0.10 | 0.50 | yes |
-| Claude Sonnet 5.5 | Anthropic | 2.00 | 10.00 | |
-| Claude Opus 5.5 | Anthropic | 4.00 | 20.00 | |
-| gpt-oss-20b | OpenRouter | not set | not set | the fallback |
+| Model | Provider | Input | Cache read | Output | Default for the assistant |
+|---|---|---:|---:|---:|---|
+| Claude Haiku 5.5 | Anthropic | 0.10 | 0.01 | 0.50 | yes |
+| Claude Sonnet 5.5 | Anthropic | 2.00 | 0.10 | 10.00 | |
+| Claude Opus 5.5 | Anthropic | 4.00 | 0.20 | 20.00 | |
+| gpt-oss-20b | OpenRouter | not set | not set | not set | the fallback |
 
-The prices are the ones written in the code. They were not checked against Anthropic's price list on
-the day this page was written; confirm them before relying on the cost column, and fix `models.ts` if
-they are stale.
+The Sonnet and Opus prices were checked against Anthropic's price list on 2026-11-19. The Haiku
+cache-read price follows Anthropic's general rule of a tenth of input and is not separately confirmed.
+Prices change; fix `models.ts` if they go stale.
 
-What a request costs: input tokens times the input price, plus output tokens times the output price.
+What a request costs: input tokens times the input price, plus cached tokens times the cache-read
+price, plus output tokens times the output price.
 The assistant sends the conversation, the studio's capabilities (the tools) and a system prompt, which
 is capped (`src/lib/assistantRequest.ts`: 24 messages, 40,000 characters of history, 700 output
 tokens). The system prompt is marked for the provider's prompt cache, so a repeated prefix is billed at the
@@ -83,8 +87,11 @@ is the default. Set a spend limit in the Anthropic console before any key goes i
 
 The next model is tried only when the Claude adapter throws `LlmUnavailable`: a rate limit, a
 connection failure or timeout, a server error (status 500 or above), a request the API rejects over
-the tool schema, or the model refusing. Any other error (an invalid key, for one) ends the round with a
-502 and no fallback. A request the model never answered is handed back to the
+the tool schema, the model refusing, or an account problem (an invalid or revoked key, no credit or a
+spend limit reached, no access to the model: status 401, 402, 403, 404, or a 400 about the credit
+balance). Account problems are logged at error level (`[llm] Claude account/key problem`) so they get
+noticed while the fallback answers. Any other error, a malformed request for one, ends the round with
+a 502 and no fallback. A request the model never answered is handed back to the
 player's monthly allowance (`riffscribe_refund_assistant`, migration 0003).
 
 When the player is on a fallback model the answer is the same shape, so nothing in the studio changes;
@@ -120,7 +127,7 @@ Missing table means no logging, never an error for the player.
 |---|---|
 | `ANTHROPIC_API_KEY` | Server only. Claude models. Without it the chain goes straight to the fallback. |
 | `OPENROUTER_API_KEY` | Server only. The fallback route. With neither key the widget does not appear. |
-| `RIFFSCRIBE_ADMIN_BOOTSTRAP` | The first admin's user id, until a `riffscribe_admins` row exists. |
+| `RIFFSCRIBE_ADMIN_BOOTSTRAP` | The first admin's user id. Admin while set; delete it once a `riffscribe_admins` row exists. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server only. Settings reads, usage logging, refunds. |
 
 `ASSISTANT_MODEL` no longer exists. Delete it from the Vercel project if it is still set.

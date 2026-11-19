@@ -20,7 +20,8 @@ import { useAccount } from "@/lib/store/account";
 import { findSong, lastSong, rememberSong } from "@/lib/store/lastSong";
 import { buildAssistantActions } from "./studio/assistantActions";
 import {
-  ENSEMBLES, STEM_LABEL, barsLabel, type Busy, type Channels, type GuideTrack, type Source, type StemMode,
+  ENSEMBLES, STEM_LABEL, barsLabel, type Busy, type Channels, type ExportFormat, type GuideTrack, type Source,
+  type StemMode,
 } from "./studio/constants";
 import * as exp from "./studio/exports";
 import LoadPanel from "./studio/LoadPanel";
@@ -49,11 +50,12 @@ import {
   DEMUCS_SAMPLE_RATE, SPLIT_PAUSED, partialKey, separateInstantAsync, separateResumable, type StemSet,
 } from "@/lib/audio/stems";
 import { BODY_SCALE } from "@/lib/audio/body";
+import { isEffectivelyMono, MONO_SPLIT_ERROR } from "@/lib/audio/karaoke";
 import { loudnessCurve } from "@/lib/audio/envelope";
 import { renderGuide } from "@/lib/audio/guideClient";
 import {
-  forget, getScore, getSession, getStems, packTrack, putScore, putSession, putStems, requestPersistence,
-  songKey, unpackTrack,
+  forgetSplit, getOverdub, getScore, getSession, getStems, packTrack, putOverdub, putScore, putSession,
+  putStems, requestPersistence, songKey, unpackTrack,
 } from "@/lib/store/cache";
 import { clearBlocks, doneBlocks, getBlock, putBlock } from "@/lib/store/partialSplit";
 import {
@@ -166,6 +168,8 @@ export default function Studio() {
   const handedOff = useRef(false);
   /** The song whose parts are being kept on this device; null while loading or after a trim. */
   const partsFor = useRef<string | null>(null);
+  /** The take as last stored for a song, so an unchanged (or just restored) take is not encoded again. */
+  const savedTake = useRef<{ key: string; track: { left: Float32Array; right: Float32Array } | null } | null>(null);
   const [restored, setRestored] = useState<string | null>(null);
 
   /** Bars of clicks before playback and before a take. 0 turns it off. */
@@ -324,21 +328,30 @@ export default function Studio() {
       }
       const savedSettings = readSavedSettings(await getScore<unknown>(id, "settings"));
       const session = await getSession(id);
+      // The take has its own entry; older saves kept it inside the session.
+      const take = (await getOverdub(id)) ?? session?.overdub ?? null;
       if (stale()) return;
       if (session) {
         setMix(session.mix);
         setSoloed(session.soloed);
-        if (session.overdub) {
-          const track = await unpackTrack(session.overdub, DEMUCS_SAMPLE_RATE);
-          if (stale()) return;
-          setOverdub(track);
-          setRestored((r) => `${r ? r + " " : ""}Mixer and your last take restored.`);
-        } else {
-          setOverdub(null);
-        }
       } else {
         setMix({});
         setSoloed(null);
+      }
+      if (take) {
+        const track = await unpackTrack(take, DEMUCS_SAMPLE_RATE);
+        if (stale()) return;
+        // Already stored: restoring it must not re-encode it.
+        savedTake.current = { key: id, track };
+        setOverdub(track);
+        setRestored((r) => `${r ? r + " " : ""}Mixer and your last take restored.`);
+        if (session?.overdub) {
+          // Move an older save's take to its own entry, so clearing the take later sticks.
+          void putOverdub(id, take);
+          void putSession(id, { mix: session.mix, soloed: session.soloed });
+        }
+      } else {
+        savedTake.current = { key: id, track: null };
         setOverdub(null);
       }
       partsFor.current = id;
@@ -364,7 +377,17 @@ export default function Studio() {
         setLoop(onLoad.value.loop);
         setLog(restoring ? `Brought back ${f.name} from last time.` : `Brought back your tempo and settings for ${f.name}.`);
       } else if (onLoad.kind === "detected") {
-        setSettings((s) => ({ ...s, bpm: onLoad.bpm, offsetSeconds: onLoad.offsetSeconds }));
+        // A song never seen before: the last song's sections, loop, capo and key must not
+        // carry over (and then be saved as this song's). The instrument is kept as a preference.
+        setSettings((s) => ({
+          ...s,
+          bpm: onLoad.bpm,
+          offsetSeconds: onLoad.offsetSeconds,
+          capo: DEFAULT_SETTINGS.capo,
+          transposeSemitones: DEFAULT_SETTINGS.transposeSemitones,
+        }));
+        setSections([]);
+        setLoop(null);
         setLog(restoring
           ? `Brought back ${f.name} from last time — tempo re-detected at ${tempo.bpm} BPM.`
           : `Detected ${tempo.bpm} BPM (confidence ${(tempo.confidence * 100).toFixed(0)}%)`);
@@ -388,14 +411,27 @@ export default function Studio() {
     if (key && partsFor.current === key) void putScore(key, "settings", { settings, sections, loop });
   }, [key, settings, sections, loop]);
 
-  /** Mixer faders and overdub take — same cache key as stems and parts. */
+  /** Mixer faders and solo — tiny, and debounced so a fader drag writes once, the last position. */
   useEffect(() => {
     if (!key || partsFor.current !== key) return;
+    const t = setTimeout(() => { void putSession(key, { mix, soloed }); }, 300);
+    return () => clearTimeout(t);
+  }, [key, mix, soloed]);
+
+  /** The overdub take: encoded only when the take itself changes, and the latest take wins. */
+  useEffect(() => {
+    if (!key || partsFor.current !== key) return;
+    const saved = savedTake.current;
+    if (saved && saved.key === key && saved.track === overdub) return;
+    let cancelled = false;
     void (async () => {
       const packed = overdub ? await packTrack(overdub, DEMUCS_SAMPLE_RATE) : null;
-      await putSession(key, { mix, soloed, overdub: packed });
-    })();
-  }, [key, mix, soloed, overdub]);
+      if (cancelled) return;
+      await putOverdub(key, packed);
+      savedTake.current = { key, track: overdub };
+    })().catch(() => { /* not kept this time; the next change tries again */ });
+    return () => { cancelled = true; };
+  }, [key, overdub]);
 
   /** Coming back to the studio: reopen the song that was loaded before. */
   useEffect(() => {
@@ -916,7 +952,9 @@ export default function Studio() {
       setLog("Instant split done. For a cleaner result, run the AI split.");
       return result;
     } catch (e) {
-      if (my === loadSeq.current) setError(humanError(e, "split"));
+      // A mono file is not a failed split: say only what to do instead.
+      const isMono = e instanceof Error && e.message === MONO_SPLIT_ERROR;
+      if (my === loadSeq.current) setError(isMono ? MONO_SPLIT_ERROR : humanError(e, "split"));
       return null;
     } finally {
       if (my === loadSeq.current) setBusy(null);
@@ -1063,7 +1101,8 @@ export default function Studio() {
   /** Throw away what we remembered, for when a split went badly. */
   async function forgetSong() {
     if (!key) return;
-    await forget(key);
+    // The notes written from those stems go too, or the next pass would reuse them.
+    await forgetSplit(key);
     setStems(null);
     setStemMode("none");
     setSource("mix");
@@ -1164,7 +1203,9 @@ export default function Studio() {
   /**
    * Write a part for `instrumentId` from one recording (a stem or the mix) and add it.
    *
-   * Instruments that hold their notes get one note at a time (or whatever `monophonic` says).
+   * New parts are one note at a time when the "single melody line" box is ticked (or `monophonic`
+   * says so). Picking an instrument that holds its notes ticks it (instrumentPatch), and it can
+   * still be unticked for double stops or chords.
    * A single line is cleaned up (cleanMonoLine), the singer's pitch curve is tracked through it
    * when there are model peaks, its loudness is read from the audio, and the whole line is moved
    * by octaves onto the instrument (placeInRegister). Resolves with the new part, or null.
@@ -1173,18 +1214,22 @@ export default function Studio() {
     channels: Channels,
     sourceName: Source,
     instrumentId: InstrumentId,
-    opts: { monophonic?: boolean } = {}
+    opts: { monophonic?: boolean; stem?: StemMode } = {}
   ): Promise<Part | null> {
     const inst = INSTRUMENTS[instrumentId];
     const my = loadSeq.current;
     const current = () => my === loadSeq.current;
-    const mono = opts.monophonic ?? (melodic(instrumentId) || settings.monophonic);
+    const mono = opts.monophonic ?? settings.monophonic;
     const voice = sourceName === "vocals";
     setError(null);
     setBusy({ label: "Listening for notes…", value: 0 });
     const startedAt = performance.now();
+    // Which split made the stem is part of the key: a Clean (AI) split's vocals must not get
+    // the notes an instant split's centre channel produced. `stem` is for callers that have just
+    // split, while the stemMode state is still the old one.
+    const split = sourceName === "mix" ? "mix" : (opts.stem ?? stemMode);
     const variant =
-      `${sourceName}:${instrumentId}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}` +
+      `${split}:${sourceName}:${instrumentId}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}` +
       `:v2:${voice ? "voice" : "inst"}`;
     const detect: TranscribeFullOptions = voice
       ? {
@@ -1233,7 +1278,9 @@ export default function Studio() {
       if (mono) {
         // One note at a time, held notes held, each note's pitch read from its own bends.
         // That beats re-reading it from the tracked curve on real singing (docs/eval-cello.md).
-        notes = cleanMonoLine(found);
+        // A voice (or an instrument that holds its notes) keeps the stronger note; a plucked or
+        // struck part made single-line keeps its top note, the melody over the chord.
+        notes = cleanMonoLine(found, voice || melodic(instrumentId) ? {} : { strategy: "highest" });
         const duration = channels.left.length / DEMUCS_SAMPLE_RATE;
         contour = peaks && notes.length ? trackContour(peaks, notes, duration) : null;
         if (contour) {
@@ -1315,7 +1362,10 @@ export default function Studio() {
     const part = parts.find((p) => p.id === id);
     if (!part || part.monophonic) return;
     rememberForUndo();
-    const notes = cleanMonoLine(part.notes);
+    const notes = cleanMonoLine(
+      part.notes,
+      part.source === "vocals" || melodic(part.instrument) ? {} : { strategy: "highest" },
+    );
     setParts((list) => list.map((p) => (p.id === id ? { ...p, notes, monophonic: true } : p)));
     setLog(`${INSTRUMENTS[part.instrument].label} now plays one note at a time (${notes.length} notes). Undo puts the chords back.`);
   }
@@ -1328,8 +1378,15 @@ export default function Studio() {
     if (!audio || busy) return;
     const wanted: StemMode = quality === "quick" ? "instant" : "ai";
     let set: StemSet | null = stems && (stemMode === wanted || stemMode === "ai") ? stems : null;
-    if (!set && quality === "quick") set = await splitInstant();
-    else if (!set) {
+    // Which split `set` came from: stemMode state is still the old one right after a split.
+    let usedMode: StemMode = stemMode;
+    // The instant split cannot separate a mono recording: the AI split can.
+    const mono = !set && quality === "quick" && isEffectivelyMono(audio.left, audio.right);
+    if (mono) setLog("Mono recording: using the AI split.");
+    if (!set && quality === "quick" && !mono) {
+      set = await splitInstant();
+      usedMode = "instant";
+    } else if (!set) {
       const choice = await askAiSplit();
       if (choice === "cancel") return;
       if (choice === "trim") {
@@ -1337,9 +1394,10 @@ export default function Studio() {
         return;
       }
       set = await aiSplitChecked();
+      usedMode = "ai";
     }
     if (!set) return;
-    const part = await transcribeFrom(set.vocals, "vocals", instrumentId, { monophonic: true });
+    const part = await transcribeFrom(set.vocals, "vocals", instrumentId, { monophonic: true, stem: usedMode });
     if (!part) return;
     const guide = `guide:${part.id}`;
     setMix((m) => ({
@@ -1671,13 +1729,19 @@ export default function Studio() {
     loop, loopOnlyExport, transport, exportFormat, baseName, setBusy, setError,
   });
 
-  function exportAudio(kind: "backing" | "mix") {
-    return exp.exportAudio(audioExport(), kind);
+  /**
+   * `format` is for callers that have just picked one: the state still holds the old one.
+   * Nothing exports while a job runs: the export's busy banner would replace the job's.
+   */
+  function exportAudio(kind: "backing" | "mix", format?: ExportFormat) {
+    if (busyRef.current) return Promise.resolve();
+    return exp.exportAudio({ ...audioExport(), exportFormat: format ?? exportFormat }, kind);
   }
 
   /** One track on its own — the stem, your part, your take, the click. */
-  function exportTrack(id: string) {
-    return exp.exportTrack(audioExport(), id);
+  function exportTrack(id: string, format?: ExportFormat) {
+    if (busyRef.current) return Promise.resolve();
+    return exp.exportTrack({ ...audioExport(), exportFormat: format ?? exportFormat }, id);
   }
 
   /** The one export menu, shown in the stems panel and the notes panel alike. */

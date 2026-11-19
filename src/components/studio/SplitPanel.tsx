@@ -85,6 +85,7 @@ export default function SplitPanel({
         soloed={activeSolo}
         onSolo={setSoloed}
         onDownload={exportTrack}
+        downloadDisabled={!!busy}
         onChange={(id, p) => setMix((m) => ({ ...m, [id]: { ...(m[id] ?? { gain: 1, muted: false }), ...p } }))}
       />
       <div className="mt-3 flex flex-wrap items-center gap-2">

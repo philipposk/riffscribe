@@ -196,6 +196,8 @@ function anthropic(): Anthropic {
 
 /** A tool definition the API rejected: another provider may still accept it. */
 const SCHEMA_ERROR = /input_schema|json schema|tools\.\d+/i;
+/** A 400 about the account's credit or spend limit, not about the request. */
+const ACCOUNT_ERROR = /credit balance|billing|usage limit|spend limit/i;
 
 /**
  * One round on a Claude model. `model` is the bare API id. Throws
@@ -249,6 +251,18 @@ export async function callAnthropic(o: {
     if (e instanceof Anthropic.APIError && typeof e.status === "number" && e.status >= 500) {
       throw new LlmUnavailable(`status_${e.status}`, e.message);
     }
+    // Key, credit or model-access problems: the fallback still works, so hand
+    // over, but log loudly so a revoked key or spent balance gets noticed.
+    if (
+      e instanceof Anthropic.AuthenticationError ||
+      e instanceof Anthropic.PaymentRequiredError ||
+      e instanceof Anthropic.PermissionDeniedError ||
+      e instanceof Anthropic.NotFoundError ||
+      (e instanceof Anthropic.BadRequestError && ACCOUNT_ERROR.test(e.message))
+    ) {
+      console.error(`[llm] Claude account/key problem (${e.status}): ${e.message.slice(0, 200)}`);
+      throw new LlmUnavailable(`account_${e.status}`, e.message);
+    }
     throw e;
   }
   if (stop === "refusal") throw new LlmUnavailable("refusal");
@@ -257,7 +271,8 @@ export async function callAnthropic(o: {
   return {
     ...read,
     usage: {
-      input: (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+      // Cache writes bill at 1.25x input (5-minute TTL); see LlmUsage.input.
+      input: (usage.input_tokens ?? 0) + Math.round((usage.cache_creation_input_tokens ?? 0) * 1.25),
       cached: usage.cache_read_input_tokens ?? 0,
       output: usage.output_tokens ?? 0,
     },

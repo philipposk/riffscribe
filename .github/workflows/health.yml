@@ -42,7 +42,8 @@ jobs:
           body="The health check could not load:$FAILED on $SITE. Run: $RUN_URL"
           existing=$(gh issue list --label ops-alert --state open --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "$body"
+            # Refresh the body instead of commenting: a comment every six hours is a notification every six hours.
+            gh issue edit "$existing" --body "$body"
           else
             gh issue create --label ops-alert --title "Riffscribe is not answering" --body "$body"
           fi

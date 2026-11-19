@@ -3,6 +3,8 @@ import { AudioLines, Ear, FileMusic, Gauge, MessageCircle, MicOff, Mic, Pencil, 
 import type { LucideIcon } from "lucide-react";
 
 import SiteHeader, { SiteFooter } from "@/components/SiteHeader";
+import { BILLING_LIVE } from "@/lib/billingLive";
+import { PLANS } from "@/lib/plans";
 
 // Only the home page is canonical to "/"; other pages keep their own URL.
 export const metadata: Metadata = { alternates: { canonical: "/" } };
@@ -69,7 +71,7 @@ export default function Home() {
       </h1>
       <p className="mt-5 max-w-2xl text-lg text-white/60">
         Take the singer out, and let your cello — or guitar, or sax — play the line while you
-        learn it. Free; Pro €5 a month for more saved songs.
+        learn it. Free.{BILLING_LIVE ? ` Pro ${PLANS.pro.price} for more saved songs.` : " Pro is coming soon."}
       </p>
 
       <div className="mt-8 flex flex-wrap gap-3">

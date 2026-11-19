@@ -8,6 +8,10 @@ import { supabase, savingConfigured } from "../supabase/client";
 import { currentUser, onAuthChange, signOut } from "./charts";
 import { trackAppAccessClient } from "../app-access-client";
 import { clearDeviceChats } from "../assistantHistory";
+import { isNativePlatform } from "../native";
+
+/** Store rules: the phone shell never sells or manages a subscription itself. */
+export const NATIVE_PLAN_NOTE = "Plans are managed on the riffscribe website.";
 
 export interface Account {
   plan: string;
@@ -41,6 +45,8 @@ export function useAccount() {
   const [user, setUser] = useState<User | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [ready, setReady] = useState(!savingConfigured);
+  // The plan could not be loaded: callers offer a retry instead of waiting forever.
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!savingConfigured) return;
@@ -49,8 +55,8 @@ export function useAccount() {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!user) { setAccount(null); return; }
-    try { setAccount(await getAccount()); } catch { /* the menu still works without numbers */ }
+    if (!user) { setAccount(null); setFailed(false); return; }
+    try { setAccount(await getAccount()); setFailed(false); } catch { setFailed(true); /* the menu still works without numbers */ }
   }, [user]);
 
   useEffect(() => {
@@ -59,7 +65,7 @@ export function useAccount() {
     return () => window.removeEventListener(ACCOUNT_CHANGED, refresh);
   }, [refresh]);
 
-  return { user, account, ready, refresh };
+  return { user, account, ready, refresh, failed };
 }
 
 /**
@@ -100,6 +106,7 @@ async function authed<T>(path: string, method: string): Promise<T> {
 }
 
 export async function startCheckout(): Promise<void> {
+  if (await isNativePlatform()) throw new Error(NATIVE_PLAN_NOTE);
   try {
     const { url } = await authed<{ url: string }>("/api/checkout", "POST");
     location.href = url;
@@ -115,6 +122,7 @@ export async function startCheckout(): Promise<void> {
 }
 
 export async function openBillingPortal(): Promise<void> {
+  if (await isNativePlatform()) throw new Error(NATIVE_PLAN_NOTE);
   const { url } = await authed<{ url: string }>("/api/portal", "POST");
   location.href = url;
 }
