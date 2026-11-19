@@ -3,9 +3,9 @@
  * Tuner and drone.
  *
  * Neither has anything to do with taking a recording apart, and both are the
- * first things a string player reaches for. They live behind one toggle so
- * they cost nothing — no microphone is opened and no oscillator started until
- * someone asks.
+ * first things a string player reaches for. They live in the studio's Tools
+ * sheet so they cost nothing — no microphone is opened and no oscillator
+ * started until someone asks. The sheet supplies the panel and the title.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, Music4, Square } from "lucide-react";
@@ -16,7 +16,12 @@ import { Drone, detectPitch, type Reading } from "@/lib/audio/tuner";
 /** Two octaves either side of middle C covers the tonic of anything sane. */
 const DRONE_RANGE = { min: 36, max: 84 };
 
-export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
+/**
+ * `active`: false when the sheet holding this is closed. The microphone closes with it
+ * (no recording light for a tuner nobody can see); a drone carries on, since playing
+ * against one is the point.
+ */
+export default function Tuner({ suggestedTonic, active = true }: { suggestedTonic?: number; active?: boolean }) {
   const [listening, setListening] = useState(false);
   const [reading, setReading] = useState<Reading | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +47,10 @@ export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
     setListening(false);
     setReading(null);
   }, []);
+
+  useEffect(() => {
+    if (!active) stopListening();
+  }, [active, stopListening]);
 
   useEffect(() => () => {
     stopListening();
@@ -103,10 +112,10 @@ export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
   const inTune = reading != null && Math.abs(cents) <= 5;
 
   return (
-    <section className="panel no-print mb-5 p-5">
-      <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-        <Music4 size={18} className="text-[var(--color-accent)]" /> Tune up
-      </h2>
+    <section className="no-print" aria-labelledby="tuner-title">
+      <h3 id="tuner-title" className="mb-3 flex items-center gap-2 text-base font-medium">
+        <Music4 size={18} className="text-[var(--color-accent)]" aria-hidden /> Tune up
+      </h3>
 
       <div className="grid gap-6 sm:grid-cols-2">
         {/* ---- tuner ---- */}

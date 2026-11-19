@@ -37,8 +37,14 @@ export default function RecordPanel({
             <Square size={15} /> Stop
           </button>
         ) : (
-          <button className="btn btn-primary" onClick={startRecording} disabled={!!busy}>
-            <Mic size={15} /> Record from here
+          // One press: asks for the microphone if it is not open yet, counts in, then records from the playhead.
+          <button
+            className="btn btn-primary"
+            onClick={() => void startRecording()}
+            disabled={!!busy}
+            title="Records from the playhead, after the count-in. Asks for the microphone the first time."
+          >
+            <Mic size={15} aria-hidden /> Record
           </button>
         )}
         {overdub && (

@@ -1,4 +1,4 @@
-import { Bookmark } from "lucide-react";
+import { Bookmark, Pencil } from "lucide-react";
 
 import Waveform from "../Waveform";
 import {
@@ -81,7 +81,18 @@ export default function PracticePanel({
                   onDoubleClick={() => setEditingSection(i)}
                   title={`${fmtTime(s.from)}–${fmtTime(s.to)} — double-click to rename`}
                 >
+                  {i < 9 && <span className="mr-1 text-white/30" aria-hidden>{i + 1}</span>}
                   {s.name}
+                </button>
+              )}
+              {editingSection !== i && (
+                <button
+                  className="px-1 py-1 text-white/30 hover:text-white/70"
+                  onClick={() => setEditingSection(i)}
+                  aria-label={`Rename ${s.name}`}
+                  title="Rename"
+                >
+                  <Pencil size={11} aria-hidden />
                 </button>
               )}
               <button

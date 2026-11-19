@@ -7,14 +7,13 @@
  * Every step runs locally in the browser — no upload, no account, no queue.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Music2 } from "lucide-react";
+import { CircleHelp, Music2, Wrench } from "lucide-react";
 
 import { useSearchParams } from "next/navigation";
 import type { AssistantActions } from "./Assistant";
 import { lendStudio } from "@/lib/assistantBridge";
 import type { MixTrack } from "./Mixer";
 import SaveBar from "./SaveBar";
-import Tuner from "./Tuner";
 import { HANDOFF_ID_KEY, HANDOFF_KEY } from "./SharedChart";
 import AccountMenu from "./AccountMenu";
 import { useAccount } from "@/lib/store/account";
@@ -32,6 +31,12 @@ import RecordPanel from "./studio/RecordPanel";
 import SplitPanel from "./studio/SplitPanel";
 import Recipes from "./studio/Recipes";
 import StatusBanners from "./studio/StatusBanners";
+import AiSplitConfirm, { type AiSplitChoice } from "./studio/AiSplitConfirm";
+import type { ExportMenuProps } from "./studio/ExportMenu";
+import HelpOverlay from "./studio/HelpOverlay";
+import ToolsSheet from "./studio/ToolsSheet";
+import { humanError } from "./studio/errors";
+import { loopFromStart, loopToEnd, stepRate, useShortcuts } from "./studio/useShortcuts";
 
 import { fileToAudioBuffer, peaks as peaksOf, toMono, toStereo } from "@/lib/audio/decode";
 import {
@@ -78,6 +83,23 @@ const melodic = (id: InstrumentId) => {
   const t = INSTRUMENTS[id].timbre;
   return t !== "plucked" && t !== "struck";
 };
+
+/** The song behind "Try the demo song" (public/demo/README.md). */
+const DEMO_URL = "/demo/riffscribe-demo.mp3";
+
+/**
+ * Set once the AI split's download has been agreed to in this tab: the confirm is
+ * asked once a session, not before every split.
+ */
+const AI_SPLIT_AGREED = "riffscribe:ai-split-agreed";
+
+function aiSplitAgreed(): boolean {
+  try { return sessionStorage.getItem(AI_SPLIT_AGREED) === "1"; } catch { return false; }
+}
+
+function agreeToAiSplit(): void {
+  try { sessionStorage.setItem(AI_SPLIT_AGREED, "1"); } catch { /* asked again next time, no harm */ }
+}
 
 /** What a guide render depends on: the same key means the same audio. */
 function guideKey(part: Part, length: number): string {
@@ -200,6 +222,14 @@ export default function Studio() {
   /** The source stem's loudness while the singer sings, per part written from a voice: the guide's level. */
   const targetRmsRef = useRef(new Map<string, number>());
   const partSeq = useRef(0);
+
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  /** The AI split confirm, while it waits for an answer. */
+  const [aiConfirmOpen, setAiConfirmOpen] = useState(false);
+  const aiConfirmAnswer = useRef<((c: AiSplitChoice) => void) | null>(null);
+  /** What to run once a "Trim to loop first" has produced the trimmed clip. */
+  const afterTrim = useRef<{ kind: "split" } | { kind: "replace"; instrument: InstrumentId } | null>(null);
 
   if (!engineRef.current && typeof window !== "undefined") engineRef.current = new PracticeEngine();
   if (!recorderRef.current && typeof window !== "undefined") recorderRef.current = new MicRecorder();
@@ -342,7 +372,7 @@ export default function Studio() {
         setLog(`Brought back ${f.name} from last time.`);
       }
     } catch (e) {
-      if (!stale()) setError(e instanceof Error ? e.message : "could not read that file");
+      if (!stale()) setError(humanError(e, "decode"));
     } finally {
       if (!stale()) setBusy(null);
     }
@@ -524,30 +554,69 @@ export default function Studio() {
    * assistant links each song it lists. Also works with the studio already
    * open: the address changes, the page stays.
    */
-  const songParam = useSearchParams().get("song");
+  const params = useSearchParams();
+  const songParam = params.get("song");
+  const demoParam = params.get("demo") === "1";
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  const audioRef = useRef(audio);
+  audioRef.current = audio;
+  const demoStarted = useRef(false);
+
+  /** The demo song, fetched from this site and loaded like a dropped file. */
+  const loadDemo = useCallback(async () => {
+    setError(null);
+    setBusy({ label: "Fetching the demo song…" });
+    try {
+      const res = await fetch(DEMO_URL);
+      if (!res.ok) throw new Error(`the site answered ${res.status}`);
+      const blob = await res.blob();
+      await loadFile(new File([blob], "Riffscribe demo.mp3", { type: "audio/mpeg" }));
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      setError(`The demo song could not be fetched. Check your connection and try again. (${detail})`);
+      setBusy(null);
+    }
+  }, [loadFile]);
+
   useEffect(() => {
-    if (!songParam) return;
-    handedOff.current = true; // set before lastSong() resolves, so it does not load over this
-    let cancelled = false;
-    void (async () => {
-      try {
+    if (songParam) {
+      handedOff.current = true; // set before lastSong() resolves, so it does not load over this
+      let cancelled = false;
+      void (async () => {
         const job = busyRef.current;
-        if (job) throw new Error(`Wait for “${job.label}” to finish, then open the song again.`);
-        const chart = await loadChart(songParam);
-        if (cancelled) return;
-        if (!chart) throw new Error("That song has gone — it may have been deleted.");
-        openChart(chart);
-        setChartId(songParam);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "could not open that song");
-      }
-      // Consumed, like the handoff above: a reload must not reopen it over whatever came next.
-      if (!cancelled) window.history.replaceState(null, "", "/studio");
-    })();
-    return () => { cancelled = true; };
-  }, [songParam, openChart]);
+        if (job) {
+          setError(`Wait for “${job.label}” to finish, then open the song again.`);
+        } else {
+          try {
+            const chart = await loadChart(songParam);
+            if (cancelled) return;
+            if (chart) {
+              openChart(chart);
+              setChartId(songParam);
+            } else {
+              setError("That song has gone — it may have been deleted.");
+            }
+          } catch (e) {
+            if (!cancelled) setError(humanError(e, "chart"));
+          }
+        }
+        // Consumed, like the handoff above: a reload must not reopen it over whatever came next.
+        if (!cancelled) window.history.replaceState(null, "", "/studio");
+      })();
+      return () => { cancelled = true; };
+    }
+    if (!demoParam || demoStarted.current) return;
+    demoStarted.current = true;
+    // A chart handed over from a shared link (the effect above this one) or a song already
+    // open wins: the demo is only for an empty studio.
+    if (handedOff.current || audioRef.current || busyRef.current) {
+      window.history.replaceState(null, "", "/studio");
+      return;
+    }
+    handedOff.current = true; // the last song must not load over the demo
+    void loadDemo().finally(() => window.history.replaceState(null, "", "/studio"));
+  }, [songParam, demoParam, openChart, loadDemo]);
 
   /* --------------------------------------------------------------- engine  */
 
@@ -600,7 +669,7 @@ export default function Studio() {
       (e) => {
         if (superseded) return;
         console.error("[riffscribe] guide render failed", e);
-        setError(e instanceof Error ? e.message : "could not play the part back");
+        setError(humanError(e, "engine"));
       }
     );
     return () => { superseded = true; };
@@ -679,7 +748,7 @@ export default function Studio() {
       }
     } catch (e) {
       console.error("[riffscribe] audio engine failed", e);
-      setError(e instanceof Error ? e.message : "could not start the audio engine");
+      setError(humanError(e, "engine"));
       return;
     }
     setMix((prev) => {
@@ -847,7 +916,7 @@ export default function Studio() {
       setLog("Instant split done. For a cleaner result, run the AI split.");
       return result;
     } catch (e) {
-      if (my === loadSeq.current) setError(e instanceof Error ? e.message : "instant split failed");
+      if (my === loadSeq.current) setError(humanError(e, "split"));
       return null;
     } finally {
       if (my === loadSeq.current) setBusy(null);
@@ -900,7 +969,7 @@ export default function Studio() {
       setError(
         native
           ? `This phone could not finish the AI stem split. The desktop site is the reliable place for it. Instant vocal removal still works on this phone. (${detail})`
-          : detail,
+          : humanError(e, "split"),
       );
       return null;
     } finally {
@@ -916,7 +985,26 @@ export default function Studio() {
    * A phone that reports 4 GB or less gets a warning and can still continue.
    */
   async function startAiSplit(): Promise<void> {
+    const choice = await askAiSplit();
+    if (choice === "cancel") return;
+    if (choice === "trim") {
+      if (trimToLoop()) afterTrim.current = { kind: "split" };
+      return;
+    }
     await aiSplitChecked();
+  }
+
+  /**
+   * Before the first AI split of the session on a song with no AI stems: what it downloads
+   * and how long it takes, with trimming to the loop as the quicker way. Resolves at once
+   * when already agreed.
+   */
+  function askAiSplit(): Promise<AiSplitChoice> {
+    if (aiSplitAgreed() || stemMode === "ai") return Promise.resolve("split");
+    return new Promise((resolve) => {
+      aiConfirmAnswer.current = resolve;
+      setAiConfirmOpen(true);
+    });
   }
 
   /** `startAiSplit`, resolving with the stems (null when the phone warning stopped it, or it failed). */
@@ -936,12 +1024,15 @@ export default function Studio() {
     setLog("Separation paused. Finished parts are kept — press the AI split again to carry on from there.");
   }
 
-  /** Cut the song down to the looped section — separation is slow, so this helps. */
-  function trimToLoop() {
-    if (!audio || !loop) return;
+  /** Cut the song down to the looped section — separation is slow, so this helps. Answers whether it did. */
+  function trimToLoop(): boolean {
+    if (!audio || !loop) return false;
     const a = Math.max(0, Math.floor(loop[0] * DEMUCS_SAMPLE_RATE));
     const b = Math.min(audio.left.length, Math.floor(loop[1] * DEMUCS_SAMPLE_RATE));
-    if (b - a < DEMUCS_SAMPLE_RATE) return;
+    if (b - a < DEMUCS_SAMPLE_RATE) {
+      setLog("That loop is under a second: set a longer one to trim to.");
+      return false;
+    }
     const base = trimRef.current?.[0] ?? 0;
     trimRef.current = [base + a, base + b];
     const left = audio.left.slice(a, b);
@@ -958,6 +1049,7 @@ export default function Studio() {
     setLoop(null);
     setSettings((s) => ({ ...s, offsetSeconds: 0 }));
     setLog(`Trimmed to ${Math.round((b - a) / DEMUCS_SAMPLE_RATE)}s. Separation and transcription will be much quicker.`);
+    return true;
   }
 
   /* ------------------------------------------------------------ transcribe */
@@ -1041,7 +1133,7 @@ export default function Studio() {
       setLog(summarise(r));
       return r;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not mark that take");
+      setError(humanError(e, "transcribe"));
       return null;
     } finally {
       setBusy(null);
@@ -1176,7 +1268,7 @@ export default function Studio() {
       setLog(`${notes.length} notes • ${k.name} • ${settings.bpm} BPM${moved} • ${how}`);
       return part;
     } catch (e) {
-      if (current()) setError(e instanceof Error ? e.message : "transcription failed");
+      if (current()) setError(humanError(e, "transcribe"));
       return null;
     } finally {
       if (current()) setBusy(null);
@@ -1235,9 +1327,17 @@ export default function Studio() {
   async function replaceVoice(instrumentId: InstrumentId, quality: "quick" | "clean") {
     if (!audio || busy) return;
     const wanted: StemMode = quality === "quick" ? "instant" : "ai";
-    const set = stems && (stemMode === wanted || stemMode === "ai")
-      ? stems
-      : quality === "quick" ? await splitInstant() : await aiSplitChecked();
+    let set: StemSet | null = stems && (stemMode === wanted || stemMode === "ai") ? stems : null;
+    if (!set && quality === "quick") set = await splitInstant();
+    else if (!set) {
+      const choice = await askAiSplit();
+      if (choice === "cancel") return;
+      if (choice === "trim") {
+        if (trimToLoop()) afterTrim.current = { kind: "replace", instrument: instrumentId };
+        return;
+      }
+      set = await aiSplitChecked();
+    }
     if (!set) return;
     const part = await transcribeFrom(set.vocals, "vocals", instrumentId, { monophonic: true });
     if (!part) return;
@@ -1252,6 +1352,27 @@ export default function Studio() {
     const label = INSTRUMENTS[instrumentId].label;
     setLog(`${label} now plays the vocal line. Use "Hear the singer" to compare.`);
   }
+
+  /** The first answer wins: closing the dialog reports "cancel" again after a button press. */
+  const answerAiSplit = useCallback((c: AiSplitChoice) => {
+    const resolve = aiConfirmAnswer.current;
+    aiConfirmAnswer.current = null;
+    setAiConfirmOpen(false);
+    if (!resolve) return;
+    if (c !== "cancel") agreeToAiSplit();
+    resolve(c);
+  }, []);
+
+  // "Trim to loop first": once the trimmed clip is in place, carry on with what was asked.
+  useEffect(() => {
+    const next = afterTrim.current;
+    if (!next || !audio) return;
+    afterTrim.current = null;
+    if (next.kind === "split") void aiSplitChecked();
+    else void replaceVoice(next.instrument, "clean");
+    // Runs once per new recording; the functions are this render's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audio]);
 
   /** The newest part written from the vocal as a single line: the one "Hear the singer" swaps with. */
   const voicePart = useMemo(
@@ -1477,7 +1598,7 @@ export default function Studio() {
       recorderRef.current.start();
     } catch (e) {
       recorderRef.current.release();
-      setError(e instanceof Error ? e.message : "could not start recording");
+      setError(humanError(e, "record"));
       return;
     }
     recStartRef.current = engine.state().time;
@@ -1493,7 +1614,7 @@ export default function Studio() {
     try {
       blob = await recorderRef.current.stop();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not stop the recording");
+      setError(humanError(e, "record"));
       return;
     } finally {
       recorderRef.current.release();
@@ -1522,7 +1643,7 @@ export default function Studio() {
           : `Take captured at ${Math.round(rate * 100)}% speed and mapped back to full tempo.`
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not process the recording");
+      setError(humanError(e, "record"));
     } finally {
       setBusy(null);
     }
@@ -1559,6 +1680,89 @@ export default function Studio() {
     return exp.exportTrack(audioExport(), id);
   }
 
+  /** The one export menu, shown in the stems panel and the notes panel alike. */
+  const exportMenu: ExportMenuProps = {
+    busy, hasParts: parts.length > 0, hasSheet: !!sheet, tex, exportMidi, exportMusicXml, exportTex,
+    hasStems: !!stems, exportAudio, exportFormat, setExportFormat, loop, loopOnlyExport, setLoopOnlyExport,
+  };
+
+  /* -------------------------------------------------------------- shortcuts */
+
+  /** Back to the start of the loop, or of the song. */
+  function toLoopStart() {
+    if (!audio) return false;
+    void engineRef.current?.seek(loop ? loop[0] : 0);
+  }
+
+  function seekBy(seconds: number) {
+    if (!audio) return false;
+    void engineRef.current?.seek(Math.max(0, Math.min(transport.duration, transport.time + seconds)));
+  }
+
+  function setLoopAt(which: "start" | "end") {
+    const next = (which === "start" ? loopFromStart : loopToEnd)(transport.time, transport.duration, loop);
+    if (!audio || !next) return false;
+    setLoop(next);
+  }
+
+  function nudgeRate(dir: 1 | -1) {
+    if (!audio) return false;
+    const r = stepRate(transport.rate, dir);
+    if (r === transport.rate) return;
+    void engineRef.current?.setRate(r);
+    setLog(`Speed ${Math.round(r * 100)}%.`);
+  }
+
+  /** Mute every part's guide, or bring them all back when every one is muted. */
+  function toggleGuides() {
+    const ids = trackList.filter((t) => t.id.startsWith("guide:")).map((t) => t.id);
+    if (!ids.length) return false;
+    const mute = ids.some((id) => !(mix[id]?.muted ?? false));
+    setMix((m) => {
+      const next = { ...m };
+      for (const id of ids) next[id] = { gain: m[id]?.gain ?? 0.85, muted: mute };
+      return next;
+    });
+    setLog(mute ? "Your parts are muted." : "Your parts are back on.");
+  }
+
+  function toggleVocals() {
+    if (!trackList.some((t) => t.id === "vocals")) return false;
+    const mute = !(mix.vocals?.muted ?? false);
+    setMix((m) => ({ ...m, vocals: { gain: m.vocals?.gain ?? 1, muted: mute } }));
+    setLog(mute ? "Vocals muted." : "Vocals back on.");
+  }
+
+  // Off while a dialog is up: its keys are its own.
+  useShortcuts({
+    playPause: () => { if (!audio) return false; void startPlaying(); },
+    home: toLoopStart,
+    restartLoop: toLoopStart,
+    back: () => seekBy(-5),
+    forward: () => seekBy(5),
+    loopStart: () => setLoopAt("start"),
+    loopEnd: () => setLoopAt("end"),
+    clearLoop: () => { if (!loop) return false; setLoop(null); },
+    slower: () => nudgeRate(-1),
+    faster: () => nudgeRate(1),
+    section: ({ n }) => {
+      const s = n ? sections[n - 1] : undefined;
+      if (!audio || !s) return false;
+      setLoop([s.from, s.to]);
+      void engineRef.current?.seek(s.from);
+      setLog(`Looping ${s.name}.`);
+    },
+    follow: () => {
+      const next = !playAlong;
+      setPlayAlong(next);
+      setLog(next ? "The score follows the music." : "The score stays where you put it.");
+    },
+    muteGuides: toggleGuides,
+    muteVocals: toggleVocals,
+    undo: () => { if (!undoStack.length) return false; undoEdit(); },
+    help: () => setHelpOpen(true),
+  }, !helpOpen && !toolsOpen && !aiConfirmOpen);
+
   /* -------------------------------------------------------------------- UI */
 
   const mixTracks: MixTrack[] = trackList.map((t) => ({
@@ -1589,6 +1793,12 @@ export default function Studio() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+      <a
+        href={audio ? "#studio-score" : "#studio-main"}
+        className="no-print sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-[var(--color-accent)] focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--color-on-accent)]"
+      >
+        {audio ? "Skip to the score" : "Skip to the studio"}
+      </a>
       <header className="no-print mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
@@ -1599,92 +1809,108 @@ export default function Studio() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <button type="button" className="btn" onClick={() => setToolsOpen(true)} aria-haspopup="dialog">
+            <Wrench size={15} aria-hidden /> Tools
+          </button>
+          {/* Help replaces the About button; About is a new-tab link inside it. */}
+          <button
+            type="button"
+            className="btn px-2.5"
+            onClick={() => setHelpOpen(true)}
+            aria-haspopup="dialog"
+            aria-label="Help and keyboard shortcuts"
+            title="Help and keyboard shortcuts (?)"
+          >
+            <CircleHelp size={16} aria-hidden />
+          </button>
           {/* New tabs: leaving this page would drop the loaded song and any split in progress. */}
-          <a className="btn" href="/" target="_blank" rel="noopener">About</a>
           <AccountMenu newTab />
         </div>
       </header>
 
-      <StatusBanners {...{ error, setError, busy, cancelSplitRef, cancelJob }} />
+      <main id="studio-main" tabIndex={-1} className="focus:outline-none">
+        <StatusBanners {...{ error, setError, busy, cancelSplitRef, cancelJob }} />
 
-      {/* 1 — load */}
-      <LoadPanel {...{ busy, loadFile, file, wantedSong, audio, helperUp, linkUrl, setLinkUrl, loadFromLink, log }} />
+        {/* 1 — load */}
+        <LoadPanel {...{ busy, loadFile, file, wantedSong, audio, helperUp, linkUrl, setLinkUrl, loadFromLink, loadDemo, log }} />
 
-      {audio && (
-        <Recipes
-          busy={busy}
-          instrument={recipeInstrument}
-          setInstrument={setRecipeInstrument}
-          replaceVoice={replaceVoice}
-          replacedBy={voicePart ? INSTRUMENTS[voicePart.instrument].label : null}
-          singerAudible={singerAudible}
-          toggleSinger={toggleSinger}
-        />
-      )}
+        {audio && (
+          <Recipes
+            busy={busy}
+            instrument={recipeInstrument}
+            setInstrument={setRecipeInstrument}
+            replaceVoice={replaceVoice}
+            replacedBy={voicePart ? INSTRUMENTS[voicePart.instrument].label : null}
+            singerAudible={singerAudible}
+            toggleSinger={toggleSinger}
+          />
+        )}
 
-      {/*
-        With a song loaded, saving sits under the notes it saves (after step 4).
-        Without one — a chart opened on a device that lacks the recording — it
-        stays up here so the work is still reachable.
-      */}
-      {!audio && (
-        <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />
-      )}
-
-      {/* Tuning up comes before everything, so this does not wait for a song. */}
-      <Tuner suggestedTonic={droneTonic} />
-
-      {audio && (
-        <>
-          {/* 2 — stems */}
-          <SplitPanel {...{
-            busy, runInstant, startAiSplit, aiSplitCautionGb, setAiSplitCautionGb, runDemucs, restored, forgetSong,
-            mixTracks, activeSolo, setSoloed, exportTrack, setMix, exportAudio, stems, exportFormat, setExportFormat,
-            loop, loopOnlyExport, setLoopOnlyExport,
-          }} />
-
-          {/* 3 — practise */}
-          <PracticePanel {...{
-            wavePeaks, transport, loop, engineRef, setLoop, trimToLoop, busy, nameLoop, sections, editingSection,
-            setSections, setEditingSection, countInBars, setCountInBars, trainer, setTrainer, setPasses, passes,
-          }} />
-
-          {/* 4 — transcribe */}
-          <PartsPanel {...{
-            source, setSource, stems, stemMode, settings, patch, zoom, setZoom, writtenTonic, parts, soundingTonic,
-            runTranscribe, busy, exportMidi, sheet, exportMusicXml, tex, exportTex, playAlong, setPlayAlong,
-            setPartInstrument, arrangeForEnsemble, ensembleSize, removePart, setEnsembleSize, transport, timeline,
-            setPickedBeat, pickedBeat, pickedNotes, nudgePicked, deletePicked, stepBeat, undoStack, undoEdit,
-            makeSingleLine,
-          }} />
-
+        {/*
+          With a song loaded, saving sits under the notes it saves (after step 4).
+          Without one — a chart opened on a device that lacks the recording — it
+          stays up here so the work is still reachable.
+        */}
+        {!audio && (
           <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />
+        )}
 
-          {/* 5 — record */}
-          <RecordPanel {...{
-            recording, stopRecording, startRecording, busy, overdub, setOverdub, nudgeMs, setNudgeMs, parts,
-            checkTake, checkPart, setCheckPart, report, loopWorstBars,
-          }} />
-        </>
-      )}
+        {audio && (
+          <>
+            {/* 2 — stems */}
+            <SplitPanel {...{
+              busy, runInstant, startAiSplit, aiSplitCautionGb, setAiSplitCautionGb, runDemucs, restored, forgetSong,
+              mixTracks, activeSolo, setSoloed, exportTrack, setMix, exportMenu,
+            }} />
 
-      {/*
-        The transport, always within reach. A player holding an instrument
-        cannot go hunting up the page for the play button, and the score is
-        long — so it follows you down the page instead.
-      */}
-      {audio && (
-        <PlayerBar
-          {...{ startPlaying, counting, transport, engineRef, loop, setLoop, trainer }}
-          onRate={(r) => void engineRef.current?.setRate(r)}
-          onSemitones={(s) => void engineRef.current?.setSemitones(s)}
-        />
-      )}
-      {audio && <div className="no-print h-20" style={{ paddingBottom: "env(safe-area-inset-bottom)" }} aria-hidden />}
+            {/* 3 — practise */}
+            <PracticePanel {...{
+              wavePeaks, transport, loop, engineRef, setLoop, trimToLoop, busy, nameLoop, sections, editingSection,
+              setSections, setEditingSection, countInBars, setCountInBars, trainer, setTrainer, setPasses, passes,
+            }} />
 
-      <footer className="no-print pb-10 pt-4 text-center text-xs text-white/30">
-        Basic Pitch (Spotify, Apache-2.0) · Demucs (Meta, MIT) · alphaTab (MPL-2.0) · Signalsmith Stretch (MIT)
-      </footer>
+            {/* 4 — transcribe */}
+            <PartsPanel {...{
+              source, setSource, stems, stemMode, settings, patch, zoom, setZoom, writtenTonic, parts, soundingTonic,
+              runTranscribe, busy, tex, exportMenu, playAlong, setPlayAlong,
+              setPartInstrument, arrangeForEnsemble, ensembleSize, removePart, setEnsembleSize, transport, timeline,
+              setPickedBeat, pickedBeat, pickedNotes, nudgePicked, deletePicked, stepBeat, undoStack, undoEdit,
+              makeSingleLine,
+            }} />
+
+            <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />
+
+            {/* 5 — record */}
+            <RecordPanel {...{
+              recording, stopRecording, startRecording, busy, overdub, setOverdub, nudgeMs, setNudgeMs, parts,
+              checkTake, checkPart, setCheckPart, report, loopWorstBars,
+            }} />
+          </>
+        )}
+
+        {/*
+          The transport, always within reach. A player holding an instrument
+          cannot go hunting up the page for the play button, and the score is
+          long — so it follows you down the page instead.
+        */}
+        {audio && (
+          <PlayerBar
+            {...{ startPlaying, counting, transport, engineRef, loop, setLoop, trainer }}
+            onRate={(r) => void engineRef.current?.setRate(r)}
+            onSemitones={(s) => void engineRef.current?.setSemitones(s)}
+          />
+        )}
+        {audio && <div className="no-print h-20" style={{ paddingBottom: "env(safe-area-inset-bottom)" }} aria-hidden />}
+      </main>
+
+      <ToolsSheet open={toolsOpen} onClose={() => setToolsOpen(false)} suggestedTonic={droneTonic} />
+      <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <AiSplitConfirm
+        open={aiConfirmOpen}
+        durationSeconds={audio ? audio.left.length / DEMUCS_SAMPLE_RATE : 0}
+        hasLoop={!!loop && loop[1] - loop[0] >= 1}
+        onChoice={answerAiSplit}
+      />
     </div>
   );
 }

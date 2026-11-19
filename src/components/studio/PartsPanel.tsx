@@ -1,8 +1,7 @@
-import { ChevronDown, ChevronUp, Download, FileMusic, Loader2, Printer, Trash2, Undo2, Users } from "lucide-react";
+import { ChevronDown, ChevronUp, FileMusic, Loader2, Trash2, Undo2, Users } from "lucide-react";
 
 import { noteName } from "@/lib/audio/analyze";
 import type { StemSet } from "@/lib/audio/stems";
-import type { Sheet } from "@/lib/transcribe/quantize";
 import { keyChoices, shortestShift } from "@/lib/transcribe/spelling";
 import {
   INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part, type TranscriptionSettings,
@@ -11,8 +10,9 @@ import ScoreView from "../ScoreView";
 import {
   STEM_LABEL, instrumentPatch, type Busy, type Setter, type Source, type StemMode, type TransportState,
 } from "./constants";
+import ExportMenu, { type ExportMenuProps } from "./ExportMenu";
 
-/** Step 4: transcription settings, the parts list, exports, the score and note fixing. */
+/** Step 4: transcription settings, the parts list, the export menu, the score and note fixing. */
 export interface PartsPanelProps {
   source: Source;
   setSource: Setter<Source>;
@@ -27,11 +27,9 @@ export interface PartsPanelProps {
   soundingTonic: number;
   runTranscribe: (from?: Source) => Promise<boolean>;
   busy: Busy;
-  exportMidi: () => void;
-  sheet: Sheet | null;
-  exportMusicXml: () => void;
   tex: string;
-  exportTex: () => void;
+  /** The same menu as the stems panel's, with the same handlers. */
+  exportMenu: ExportMenuProps;
   playAlong: boolean;
   setPlayAlong: Setter<boolean>;
   setPartInstrument: (id: string, instrument: InstrumentId) => void;
@@ -55,7 +53,7 @@ export interface PartsPanelProps {
 
 export default function PartsPanel({
   source, setSource, stems, stemMode, settings, patch, zoom, setZoom, writtenTonic, parts, soundingTonic,
-  runTranscribe, busy, exportMidi, sheet, exportMusicXml, tex, exportTex, playAlong, setPlayAlong,
+  runTranscribe, busy, tex, exportMenu, playAlong, setPlayAlong,
   setPartInstrument, arrangeForEnsemble, ensembleSize, removePart, setEnsembleSize, transport, timeline,
   setPickedBeat, pickedBeat, pickedNotes, nudgePicked, deletePicked, stepBeat, undoStack, undoEdit,
   makeSingleLine,
@@ -187,22 +185,10 @@ export default function PartsPanel({
       <div className="no-print mb-4 flex flex-wrap gap-2">
         <button className="btn btn-primary" onClick={() => void runTranscribe()} disabled={!!busy}>
           {busy?.label.startsWith("Listening") ? <Loader2 className="animate-spin" size={15} /> : <FileMusic size={15} />}
-          {busy?.label.startsWith("Listening")
-            ? `Transcribing… ${Math.round((busy.value ?? 0) * 100)}%`
-            : "Transcribe"}
+          {/* the busy banner shows how far it has got */}
+          {busy?.label.startsWith("Listening") ? "Transcribing…" : "Transcribe"}
         </button>
-        <button className="btn" onClick={exportMidi} disabled={!parts.length}>
-          <Download size={15} /> MIDI
-        </button>
-        <button className="btn" onClick={exportMusicXml} disabled={!sheet}>
-          <Download size={15} /> MusicXML
-        </button>
-        <button className="btn" onClick={exportTex} disabled={!tex}>
-          <Download size={15} /> alphaTex
-        </button>
-        <button className="btn" onClick={() => window.print()} disabled={!tex}>
-          <Printer size={15} /> Print / PDF
-        </button>
+        <ExportMenu {...exportMenu} />
         <label className="flex items-center gap-2 text-xs text-white/60">
           <input type="checkbox" checked={playAlong} onChange={(e) => setPlayAlong(e.target.checked)} />
           Follow the music
@@ -278,64 +264,66 @@ export default function PartsPanel({
         </div>
       )}
 
-      {tex ? (
-        <>
-          <ScoreView
-            tex={tex}
-            zoom={zoom}
-            playAlong={playAlong}
-            timeSeconds={transport.time}
-            timeline={timeline}
-            onPickBeat={setPickedBeat}
-            selectedBeat={pickedBeat}
-          />
-          <div className="no-print mt-3 flex flex-wrap items-center gap-2 text-sm">
-            {pickedNotes.length > 0 ? (
-              <>
-                <span className="text-white/60">
-                  {/* Tenths matter here: two notes a beat apart both read
-                      as the same mm:ss, which is confusing when you are
-                      picking one of them to correct. */}
-                  {pickedNotes.length === 1
-                    ? `${noteName(pickedNotes[0].pitchMidi)} at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`
-                    : `${pickedNotes.length} notes at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`}
+      <div id="studio-score" tabIndex={-1} className="scroll-mt-24 focus:outline-none">
+        {tex ? (
+          <>
+            <ScoreView
+              tex={tex}
+              zoom={zoom}
+              playAlong={playAlong}
+              timeSeconds={transport.time}
+              timeline={timeline}
+              onPickBeat={setPickedBeat}
+              selectedBeat={pickedBeat}
+            />
+            <div className="no-print mt-3 flex flex-wrap items-center gap-2 text-sm">
+              {pickedNotes.length > 0 ? (
+                <>
+                  <span className="text-white/60">
+                    {/* Tenths matter here: two notes a beat apart both read
+                        as the same mm:ss, which is confusing when you are
+                        picking one of them to correct. */}
+                    {pickedNotes.length === 1
+                      ? `${noteName(pickedNotes[0].pitchMidi)} at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`
+                      : `${pickedNotes.length} notes at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`}
+                  </span>
+                  <button className="btn text-xs" onClick={() => nudgePicked(1)} title="Up a semitone">
+                    <ChevronUp size={14} /> semitone
+                  </button>
+                  <button className="btn text-xs" onClick={() => nudgePicked(-1)} title="Down a semitone">
+                    <ChevronDown size={14} /> semitone
+                  </button>
+                  <button className="btn text-xs" onClick={() => nudgePicked(12)}>+ octave</button>
+                  <button className="btn text-xs" onClick={() => nudgePicked(-12)}>− octave</button>
+                  <button className="btn text-xs text-red-200" onClick={deletePicked}>
+                    <Trash2 size={13} /> Remove
+                  </button>
+                </>
+              ) : (
+                <span className="text-white/35">
+                  Click a note on the top staff to correct it — the model is a good first draft, not a transcriber.
                 </span>
-                <button className="btn text-xs" onClick={() => nudgePicked(1)} title="Up a semitone">
-                  <ChevronUp size={14} /> semitone
-                </button>
-                <button className="btn text-xs" onClick={() => nudgePicked(-1)} title="Down a semitone">
-                  <ChevronDown size={14} /> semitone
-                </button>
-                <button className="btn text-xs" onClick={() => nudgePicked(12)}>+ octave</button>
-                <button className="btn text-xs" onClick={() => nudgePicked(-12)}>− octave</button>
-                <button className="btn text-xs text-red-200" onClick={deletePicked}>
-                  <Trash2 size={13} /> Remove
-                </button>
-              </>
-            ) : (
-              <span className="text-white/35">
-                Click a note on the top staff to correct it — the model is a good first draft, not a transcriber.
+              )}
+              <span className="flex items-center gap-1" role="group" aria-label="Select a beat without the mouse">
+                <button className="btn py-0.5 text-xs" onClick={() => stepBeat(-1)} aria-label="Select the previous beat">‹ beat</button>
+                <button className="btn py-0.5 text-xs" onClick={() => stepBeat(1)} aria-label="Select the next beat">beat ›</button>
               </span>
-            )}
-            <span className="flex items-center gap-1" role="group" aria-label="Select a beat without the mouse">
-              <button className="btn py-0.5 text-xs" onClick={() => stepBeat(-1)} aria-label="Select the previous beat">‹ beat</button>
-              <button className="btn py-0.5 text-xs" onClick={() => stepBeat(1)} aria-label="Select the next beat">beat ›</button>
-            </span>
-            {undoStack.length > 0 && (
-              <button className="btn ml-auto text-xs" onClick={undoEdit}>
-                <Undo2 size={13} /> Undo
-              </button>
-            )}
-          </div>
-        </>
-      ) : (
-        <p className="text-sm text-white/40">
-          Run the transcriber to see notation and tablature here. Transcribe as many parts as you
-          like — pick a stem, choose an instrument, and each one is added as another staff on the
-          same score. One instrument at a time is where this model is strongest, so split the stems
-          first rather than transcribing the full mix.
-        </p>
-      )}
+              {undoStack.length > 0 && (
+                <button className="btn ml-auto text-xs" onClick={undoEdit}>
+                  <Undo2 size={13} /> Undo
+                </button>
+              )}
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-white/40">
+            Run the transcriber to see notation and tablature here. Transcribe as many parts as you
+            like — pick a stem, choose an instrument, and each one is added as another staff on the
+            same score. One instrument at a time is where this model is strongest, so split the stems
+            first rather than transcribing the full mix.
+          </p>
+        )}
+      </div>
     </section>
   );
 }

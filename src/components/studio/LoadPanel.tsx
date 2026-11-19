@@ -1,8 +1,8 @@
-import { Link as LinkIcon, Upload } from "lucide-react";
+import { Link as LinkIcon, Music, Upload } from "lucide-react";
 
 import type { Busy, Channels, Setter } from "./constants";
 
-/** Step 1: drop a file, or fetch one through the local helper. */
+/** Step 1: drop a file, try the demo song, or fetch one through the local helper. */
 export interface LoadPanelProps {
   busy: Busy;
   loadFile: (f: File, restoring?: boolean) => Promise<void>;
@@ -13,11 +13,13 @@ export interface LoadPanelProps {
   linkUrl: string;
   setLinkUrl: Setter<string>;
   loadFromLink: (link: string) => Promise<void>;
+  /** Load the bundled demo song. */
+  loadDemo: () => Promise<void>;
   log: string;
 }
 
 export default function LoadPanel({
-  busy, loadFile, file, wantedSong, audio, helperUp, linkUrl, setLinkUrl, loadFromLink, log,
+  busy, loadFile, file, wantedSong, audio, helperUp, linkUrl, setLinkUrl, loadFromLink, loadDemo, log,
 }: LoadPanelProps) {
   return (
     <section className="panel no-print mb-5 p-5">
@@ -46,6 +48,14 @@ export default function LoadPanel({
           onChange={(e) => { const f = e.target.files?.[0]; if (f && !busy) void loadFile(f); }}
         />
       </label>
+      {!file && (
+        <p className="mt-3 flex flex-wrap items-center gap-2 text-xs text-white/45">
+          <button type="button" className="btn py-1 text-xs" onClick={() => void loadDemo()} disabled={!!busy}>
+            <Music size={14} aria-hidden /> Try the demo song
+          </button>
+          No song to hand? A short synthesised tune, free to use.
+        </p>
+      )}
       {wantedSong && !audio && (
         <p className="mt-4 rounded-lg border border-[var(--color-accent)]/40 bg-[#1a1608] px-4 py-3 text-sm">
           Your notes are open. Drop <b>{wantedSong}</b> above to hear it with its stems — the recording
@@ -71,7 +81,8 @@ export default function LoadPanel({
           </button>
         </div>
       )}
-      {log && <p className="mt-3 text-xs text-white/45">{log}</p>}
+      {/* always in the page, so a screen reader hears each new line */}
+      <p role="status" aria-live="polite" className={log ? "mt-3 text-xs text-white/45" : "sr-only"}>{log}</p>
     </section>
   );
 }
