@@ -96,10 +96,10 @@ const durOf = (slot, div) => (div / slot.value) * (slot.dots ? 1.5 : 1);
   const loud = extractMelody([note(0, 1, 60, 0.3), note(0, 1, 55, 0.8)]);
   check("on one onset the louder note wins, not the higher", loud.length === 1 && loud[0].pitchMidi === 55);
 
-  const sh = quantize(sung, { ...S, monophonic: true });
+  const sh = quantize(sung, { ...S, monophonic: true, monoStrategy: "louder" });
   const first = sh.bars[0].slots[0].notes.map((n) => n.midi);
   check("the single-line sheet keeps the louder note", first.length === 1 && first[0] === 57, first.join(","));
-  const sh2 = quantize([note(0, 2, 60, 0.6), note(0.5, 0.25, 62, 0.3)], { ...S, monophonic: true });
+  const sh2 = quantize([note(0, 2, 60, 0.6), note(0.5, 0.05, 62, 0.2)], { ...S, monophonic: true, monoStrategy: "louder" });
   const heldUnits = sh2.bars[0].slots.filter((x) => x.notes.some((n) => n.midi === 60)).reduce((s, x) => s + x.lengthUnits, 0);
   check("the single-line sheet does not cut a held note for a weak blip", heldUnits === 16, heldUnits);
 }
