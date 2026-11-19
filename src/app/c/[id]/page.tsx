@@ -1,5 +1,9 @@
 import SharedChart from "@/components/SharedChart";
 
+// User content behind a link: readable by anyone who has it, not something to index.
+// (noindex, not a robots.txt Disallow, which would stop crawlers from seeing it.)
+export const metadata = { title: "Shared chart — Riffscribe", robots: { index: false, follow: false } };
+
 /**
  * Someone else's chart, opened from a link.
  *

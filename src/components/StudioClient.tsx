@@ -4,6 +4,9 @@
  * is loaded with ssr:false rather than rendered on the server first.
  */
 import dynamic from "next/dynamic";
+import { useEffect } from "react";
+
+import { studioNeedsReload } from "@/lib/isolation";
 
 const Studio = dynamic(() => import("./Studio"), {
   ssr: false,
@@ -13,5 +16,9 @@ const Studio = dynamic(() => import("./Studio"), {
 });
 
 export default function StudioClient() {
+  // Arrived by a client-side route change: this document is not cross-origin isolated.
+  useEffect(() => {
+    if (studioNeedsReload()) location.reload();
+  }, []);
   return <Studio />;
 }

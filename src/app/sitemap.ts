@@ -3,7 +3,7 @@ import type { MetadataRoute } from "next";
 const SITE_URL = "https://riffscribe.6x7.gr";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const routes = ["/", "/studio", "/songs", "/pricing", "/privacy", "/terms"];
+  const routes = ["/", "/studio", "/pricing", "/privacy", "/terms"];
   return routes.map((route) => ({
     url: `${SITE_URL}${route}`,
     changeFrequency: route === "/" ? "weekly" : "monthly",

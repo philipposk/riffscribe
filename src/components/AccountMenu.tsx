@@ -5,10 +5,10 @@
  */
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { FileMusic, LogOut, Settings } from "lucide-react";
+import { FileMusic, LogOut, Settings, ShieldCheck } from "lucide-react";
 
 import SignIn from "./SignIn";
-import { savingConfigured } from "@/lib/supabase/client";
+import { savingConfigured, supabase } from "@/lib/supabase/client";
 import { signOut } from "@/lib/store/charts";
 import { useAccount } from "@/lib/store/account";
 import { planLabel } from "@/lib/plans";
@@ -20,7 +20,7 @@ export function Meter({ label, used, limit }: { label: string; used: number; lim
     <div>
       <div className="mb-1 flex justify-between text-xs">
         <span className="text-white/60">{label}</span>
-        <span className="tabular-nums text-white/40">{used} / {limit}</span>
+        <span className="tabular-nums text-faint">{used} / {limit}</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded bg-white/10">
         <div className={`h-full ${colour}`} style={{ width: `${pct}%` }} />
@@ -35,6 +35,28 @@ export default function AccountMenu({ newTab = false }: { newTab?: boolean }) {
   const { user, account, ready, refresh } = useAccount();
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
+  // Admins get a link to /admin. Asked once per signed-in user, after the
+  // account loads; any error (or no migration 0007 yet) means no link.
+  const [adminId, setAdminId] = useState<string | null>(null);
+  const isAdmin = Boolean(user && adminId === user.id);
+  const askedFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    const id = user?.id ?? null;
+    if (!id || !account || askedFor.current === id) return;
+    askedFor.current = id;
+    void (async () => {
+      let yes = false;
+      try {
+        const res = await supabase()?.rpc("riffscribe_is_admin");
+        yes = !res?.error && res?.data === true;
+      } catch {
+        /* no link */
+      }
+      // The link shows only while this same person is signed in.
+      setAdminId((cur) => (yes ? id : cur === id ? null : cur));
+    })();
+  }, [user?.id, account]);
 
   useEffect(() => {
     if (!open) return;
@@ -70,7 +92,7 @@ export default function AccountMenu({ newTab = false }: { newTab?: boolean }) {
               <p className="truncate text-sm">{user.email}</p>
               {account && (
                 <>
-                  <p className="mb-3 mt-0.5 text-xs text-white/40">
+                  <p className="mb-3 mt-0.5 text-xs text-faint">
                     {planLabel(account.plan)} plan
                     {account.plan === "free" && (
                       <> · <Link className="text-[var(--color-accent)] hover:underline" href="/pricing" {...tab} onClick={() => setOpen(false)}>Upgrade</Link></>
@@ -84,16 +106,21 @@ export default function AccountMenu({ newTab = false }: { newTab?: boolean }) {
               )}
               <nav className="-mx-2 flex flex-col text-sm">
                 <Link className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5" href="/songs" {...tab} onClick={() => setOpen(false)}>
-                  <FileMusic size={14} className="text-white/40" /> My songs
+                  <FileMusic size={14} className="text-faint" /> My songs
                 </Link>
                 <Link className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5" href="/account" {...tab} onClick={() => setOpen(false)}>
-                  <Settings size={14} className="text-white/40" /> Account &amp; plan
+                  <Settings size={14} className="text-faint" /> Account &amp; plan
                 </Link>
+                {isAdmin && (
+                  <Link className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-white/5" href="/admin" {...tab} onClick={() => setOpen(false)}>
+                    <ShieldCheck size={14} className="text-faint" /> Admin
+                  </Link>
+                )}
                 <button
                   className="flex items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-white/5"
                   onClick={() => { setOpen(false); void signOut(); }}
                 >
-                  <LogOut size={14} className="text-white/40" /> Sign out
+                  <LogOut size={14} className="text-faint" /> Sign out
                 </button>
               </nav>
             </>

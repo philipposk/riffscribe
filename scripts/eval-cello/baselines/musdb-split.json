@@ -1,0 +1,12 @@
+{
+  "stage": "musdb-split",
+  "metrics": {
+    "clips": 50,
+    "monoSkipped": 0,
+    "meanVocalSdr": 0.05,
+    "medianVocalSdr": 0.56,
+    "meanBackingSdr": 5.16,
+    "meanVocalLeakDb": -11.45,
+    "mixtureAsVocalSdr": -5.2
+  }
+}

@@ -4,12 +4,22 @@
  *
  * Run with: node --experimental-strip-types scripts/verify-marking.mjs
  */
-const src = await import("../src/lib/transcribe/compare.ts").catch(() => null);
+import { registerHooks } from "node:module";
+
+// compare.ts imports ./contour without an extension, as the app's bundler expects.
+registerHooks({
+  resolve(spec, ctx, next) {
+    if (spec.startsWith(".") && !/\.[cm]?[jt]s$/.test(spec) && ctx.parentURL?.includes("/src/")) spec += ".ts";
+    return next(spec, ctx);
+  },
+});
+
+const src = await import("../src/lib/transcribe/compare.ts").catch((e) => { console.log(e.message); return null; });
 if (!src) {
   console.log("run with: node --experimental-strip-types scripts/verify-marking.mjs");
-  process.exit(0);
+  process.exit(1);
 }
-const { markTake, summarise, barsToRange } = src;
+const { markTake, summarise, barsToRange, barsToLoop, chartInWindow, takeSpan } = src;
 
 const BPM = 120;
 const OPTS = { bpm: BPM, beatsPerBar: 4, offsetSeconds: 0 };
@@ -94,5 +104,92 @@ if (!(silent.missed === 8 && silent.accuracy === 0)) failed++;
 const nothingWritten = markTake([], PLAYED, OPTS);
 console.log(`${nothingWritten.extra === 8 ? "ok  " : "FAIL"}  with no chart, everything played is extra: ${nothingWritten.extra}`);
 if (nothingWritten.extra !== 8) failed++;
+
+// A skipped note in a fast run must not shift every later note onto its
+// neighbour: three repeated C4 16ths, the first one not played.
+{
+  const sixteenth = beat / 4; // 0.125s
+  const chart = [0, 1, 2].map((i) => ({ startTimeSeconds: i * sixteenth, durationSeconds: 0.1, pitchMidi: 60, amplitude: 0.8 }));
+  const played = chart.slice(1).map((n) => ({ ...n }));
+  const run = markTake(chart, played, OPTS);
+  const v = (x) => run.judgements.filter((j) => j.verdict === x).length;
+  const ok = v("missed") === 1 && v("clean") === 2 && v("late") === 0 && !/dragging|rushing/.test(summarise(run));
+  console.log(`${ok ? "ok  " : "FAIL"}  one skipped 16th is one miss, not a cascade: missed ${v("missed")}, clean ${v("clean")}, late ${v("late")}`);
+  if (!ok) failed++;
+}
+
+// A part written a tone up (transposeSemitones 2): the player plays what is on
+// the page, so the take sounds a tone above the chart and must come back clean.
+{
+  const up = CHART.map((n) => ({ ...n, pitchMidi: n.pitchMidi + 2 }));
+  const t = markTake(CHART, up, { ...OPTS, transposeSemitones: 2 });
+  const off = t.judgements.filter((j) => j.verdict === "sharp" || j.verdict === "flat" || j.verdict === "missed").length;
+  const ok = off === 0 && t.accuracy === 1;
+  console.log(`${ok ? "ok  " : "FAIL"}  a transposed part played as written is clean: ${off} off`);
+  if (!ok) failed++;
+}
+
+// Pitch bends carry Basic Pitch's one-bin (+33 cent) sharp bias. An in-tune
+// note whose bends all read +1 bin must come back clean, not 33 cents sharp;
+// one ~70 cents flat (bends about -1 bin) must still be marked flat.
+{
+  const inTune = CHART.map((n) => ({ ...n, pitchBends: [1, 1, 1, 1] }));
+  const t = markTake(CHART, inTune, OPTS);
+  const worst = Math.max(...t.judgements.map((j) => Math.abs(j.centsOff ?? 0)));
+  const ok = t.accuracy === 1 && worst < 1;
+  console.log(`${ok ? "ok  " : "FAIL"}  bends of +1 bin read as in tune: accuracy ${Math.round(t.accuracy * 100)}%, worst ${Math.round(worst)} cents`);
+  if (!ok) failed++;
+  const flat = markTake(CHART.slice(0, 1), [{ ...CHART[0], pitchBends: [-1, -1, -1] }], OPTS);
+  const ok2 = flat.judgements[0]?.verdict === "flat";
+  console.log(`${ok2 ? "ok  " : "FAIL"}  bends of -1 bin read as flat: ${flat.judgements[0]?.verdict} (${Math.round(flat.judgements[0]?.centsOff ?? 0)} cents)`);
+  if (!ok2) failed++;
+}
+
+// Practising four bars of a long chart: only the bars in the take are marked.
+{
+  const long = Array.from({ length: 40 * 4 }, (_, i) => ({ startTimeSeconds: i * beat, durationSeconds: beat * 0.9, pitchMidi: 60 + (i % 5), amplitude: 0.8 }));
+  // bars 20-23 (1-based) = seconds 38..46
+  const start = 19 * 2, end = 23 * 2;
+  const inWin = chartInWindow(long, start, end);
+  const take = inWin.map((n) => ({ ...n }));
+  // two sharp notes in bar 20, the rest clean
+  take[0] = { ...take[0], pitchMidi: take[0].pitchMidi + 1 };
+  take[1] = { ...take[1], pitchMidi: take[1].pitchMidi + 1 };
+  const t = markTake(inWin, take, OPTS);
+  const barsNamed = t.worstBars.map((b) => b.bar);
+  const ok = inWin.length === 16 && t.missed === 0 && barsNamed.every((b) => b >= 20 && b <= 23) && barsNamed.length === 1;
+  console.log(`${ok ? "ok  " : "FAIL"}  a take over bars 20-23 is marked on those bars only: chart ${inWin.length}, missed ${t.missed}, worst ${barsNamed.join(",")}`);
+  if (!ok) failed++;
+}
+
+// The take's own window, read from the zero-padded full-song buffer.
+{
+  const sr = 100;
+  const l = new Float32Array(1000), r = new Float32Array(1000);
+  for (let i = 300; i < 520; i++) l[i] = 0.1;
+  r[530] = 0.05;
+  const span = takeSpan(l, r, sr);
+  const ok = span && Math.abs(span[0] - 3) < 1e-9 && Math.abs(span[1] - 5.31) < 1e-9 && takeSpan(new Float32Array(10), new Float32Array(10), sr) === null;
+  console.log(`${ok ? "ok  " : "FAIL"}  the take window is where the recording is: ${span}`);
+  if (!ok) failed++;
+}
+
+// Two weak bars far apart loop the worst cluster, not everything between.
+{
+  const bars = [
+    { bar: 41, notes: 4, clean: 0, accuracy: 0 },
+    { bar: 3, notes: 4, clean: 1, accuracy: 0.25 },
+    { bar: 4, notes: 4, clean: 2, accuracy: 0.5 },
+  ];
+  const looped = barsToLoop(bars);
+  const range = barsToRange(bars, OPTS);
+  const ok = looped.join(",") === "41" && range[0] === 80 && range[1] === 82;
+  console.log(`${ok ? "ok  " : "FAIL"}  far-apart weak bars loop the worst one only: bars ${looped.join(",")} -> ${range}`);
+  if (!ok) failed++;
+  const near = barsToLoop([{ bar: 5, notes: 2, clean: 0, accuracy: 0 }, { bar: 7, notes: 2, clean: 1, accuracy: 0.5 }]);
+  const ok2 = near.join(",") === "5,7";
+  console.log(`${ok2 ? "ok  " : "FAIL"}  weak bars one bar apart loop together: ${near.join(",")}`);
+  if (!ok2) failed++;
+}
 
 process.exit(failed ? 1 : 0);

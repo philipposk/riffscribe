@@ -6,10 +6,27 @@
   --color-line: #232833;
   --color-accent: #f0b429;
   --color-accent-2: #34d399;
+  --color-muted: rgb(255 255 255 / 0.62);
+  --color-faint: rgb(255 255 255 / 0.52);
+  --color-line-strong: #5a6170;
+  --color-accent-hover: #ffc844;
+  --color-on-accent: #16130a;
+  --color-select: #38bdf8;
+  --color-danger: #fca5a5;
+  --color-bar: #0c0f14;
 }
 
 :root {
   color-scheme: dark;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+html {
+  scroll-padding-block: 5rem 6rem;
 }
 
 html,
@@ -48,6 +65,11 @@ body {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.22);
 }
+@media (pointer: coarse) {
+  .btn {
+    min-height: 44px;
+  }
+}
 .btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -70,7 +92,7 @@ select,
 input[type="number"],
 input[type="text"] {
   background: #0b0e13;
-  border: 1px solid var(--color-line);
+  border: 1px solid var(--color-line-strong);
   border-radius: 0.55rem;
   padding: 0.35rem 0.55rem;
   font-size: 0.875rem;

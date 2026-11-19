@@ -110,7 +110,16 @@ export default function Assistant() {
         return; // the assistant is optional — the studio works without it
       }
       if (disposed) return;
-      const { PageAssistant, capability, escapeLinkText, markdownLink, supabaseChatHistoryAdapter } = mod;
+      const {
+        PageAssistant,
+        VOICE_SETTINGS_CHANGE_EVENT,
+        capability,
+        escapeLinkText,
+        getVoiceSettings,
+        markdownLink,
+        supabaseChatHistoryAdapter,
+        voiceOptionsFromSettings,
+      } = mod;
       // The studio's controls, while the studio is on screen. Its capabilities
       // are switched off otherwise, so the model only sees them while they work.
       const inStudio = () => studioActions() !== null;
@@ -395,7 +404,13 @@ export default function Assistant() {
         knowledge:
           "Riffscribe turns a recording into something you can practise: notation and tablature for your instrument, the song with your part removed, a pitch-preserving slow-down, and overdub recording. Everything runs in the browser; audio is never uploaded. You cannot load a song yourself — the player has to pick the file. You can list the songs they have saved; each one is a link that opens it in the studio. The studio's controls only exist while the studio page is open — on My songs, only the song list is on offer.",
         knowledgeUrl: "/llm.txt",
-        voice: true,
+        // Browser speech only. Riffscribe has no speech-to-text route, so with
+        // the default the widget would record and post the audio to one where the
+        // browser has no recogniser (Firefox) or its recogniser fails (an
+        // installed iOS app), then report "couldn't access the microphone".
+        // Without a server it says voice input isn't available, and never asks
+        // for the microphone first.
+        voice: { serverUrl: undefined },
         capabilities: caps,
         getPageState: () => {
           const s = studioActions();
@@ -422,6 +437,16 @@ export default function Assistant() {
           "Mute the vocals and export the backing track",
         ],
       });
+      // Saving any voice setting (read aloud, the voice pickers) makes the widget
+      // rebuild its voice from the settings with its own serverUrl, which would
+      // bring the missing speech-to-text route back. The widget's listener was
+      // added in init, so this one runs after it and strips the server again,
+      // keeping the rest of the stored settings.
+      const keepBrowserVoice = () =>
+        PageAssistant.configure({
+          voice: { ...voiceOptionsFromSettings("", getVoiceSettings()), serverUrl: undefined },
+        });
+      window.addEventListener(VOICE_SETTINGS_CHANGE_EVENT, keepBrowserVoice);
       // Signing in and out happens in the save bar, not the widget, so tell it
       // who is here now. Deferred a tick: supabase-js asks that its own calls
       // wait until this callback has returned, and the widget's check reads the
@@ -431,6 +456,7 @@ export default function Assistant() {
       });
       teardown = () => {
         stopAuth();
+        window.removeEventListener(VOICE_SETTINGS_CHANGE_EVENT, keepBrowserVoice);
         PageAssistant.destroy();
       };
     })();

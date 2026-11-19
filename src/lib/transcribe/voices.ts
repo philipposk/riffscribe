@@ -12,7 +12,7 @@
  * recovering the individual players from the recording. Nothing can do the
  * latter from a stereo mix.
  */
-import type { NoteEvent } from "../types";
+import type { Instrument, NoteEvent } from "../types";
 
 export interface VoiceSplit {
   index: number;
@@ -82,6 +82,60 @@ export function splitVoices(notes: NoteEvent[], voiceCount: number): VoiceSplit[
 
   for (const v of voices) v.notes.sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
   return voices;
+}
+
+/**
+ * The one line a single-line instrument actually played.
+ *
+ * On a sung or bowed note Basic Pitch often adds a weaker copy an octave, a
+ * twelfth or two octaves above — a harmonic, not a note. Keeping the highest
+ * note of every overlap, as a melody filter usually does, picks exactly those
+ * ghosts. Here a note is dropped when it sits a harmonic above a louder note
+ * it mostly overlaps; of what is left, a weak short note inside a held one is
+ * dropped rather than cutting the held note short, two notes on one onset keep
+ * the louder, and otherwise a new note ends the one before it (legato).
+ */
+const HARMONICS = new Set([12, 19, 24]);
+const SAME_ONSET = 0.05;
+
+export function extractMelody(notes: NoteEvent[]): NoteEvent[] {
+  const endOf = (n: NoteEvent) => n.startTimeSeconds + n.durationSeconds;
+  const weight = (n: NoteEvent) => n.amplitude * n.durationSeconds;
+  const overlap = (a: NoteEvent, b: NoteEvent) =>
+    Math.max(0, Math.min(endOf(a), endOf(b)) - Math.max(a.startTimeSeconds, b.startTimeSeconds));
+
+  const sorted = [...notes].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds || b.amplitude - a.amplitude);
+  const real = sorted.filter(
+    (g) =>
+      !sorted.some(
+        (f) =>
+          f !== g &&
+          f.amplitude > g.amplitude &&
+          HARMONICS.has(g.pitchMidi - f.pitchMidi) &&
+          overlap(f, g) > 0.5 * g.durationSeconds
+      )
+  );
+
+  const out: NoteEvent[] = [];
+  for (const n of real) {
+    const prev = out[out.length - 1];
+    if (prev && n.startTimeSeconds < endOf(prev)) {
+      if (n.startTimeSeconds - prev.startTimeSeconds <= SAME_ONSET) {
+        if (weight(n) > weight(prev)) out[out.length - 1] = { ...n };
+        continue;
+      }
+      if (endOf(n) <= endOf(prev) && weight(n) < weight(prev)) continue;
+      out[out.length - 1] = { ...prev, durationSeconds: n.startTimeSeconds - prev.startTimeSeconds };
+    }
+    out.push({ ...n });
+  }
+  return out;
+}
+
+/** Instruments that play one note at a time, whose parts get the single-line clean-up by default. */
+export function playsSingleLine(instrument: Instrument): boolean {
+  return instrument.timbre === "voice" || instrument.timbre === "bowed" || instrument.timbre === "breath" ||
+    instrument.timbre === "reed" || instrument.timbre === "brass";
 }
 
 /**

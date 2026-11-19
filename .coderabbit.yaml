@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-GB
+reviews:
+  profile: chill
+  path_filters:
+    - "!vendor/**"
+    - "!public/**"
+    - "!package-lock.json"
+    - "!mobile/**"
+  path_instructions:
+    - path: "supabase/**"
+      instructions: |
+        This Supabase project is shared by many apps in one public schema. Every object (table, function, policy, index, trigger) must be prefixed riffscribe_. Every table needs row level security with one policy per action limited to the owner. Functions that run with elevated rights must set search_path and revoke execute from public. Migrations must be idempotent and numbered; an existing migration must never be edited. Flag any trigger on auth.users, any policy that uses the service role from the client, and any column an owner can update that they should not (plan, admin flags).
+    - path: "src/app/api/**"
+      instructions: |
+        Every route that costs money (the assistant, any model call) needs a signed-in caller, a per-person cap and a request size cap. Never let the browser choose a model on the app's key; allowlist ids on the server. Look values up with Object.hasOwn, not map[key]. Never trust a client-sent price, plan, user id or amount. Mutations are POST with a same-origin check; nothing changes on a GET. The service-role client must not read user data that the caller's own client could read.
+    - path: "src/lib/billing/**"
+      instructions: |
+        Stripe code. The webhook must verify the signature on the raw body, be idempotent on event id, and handle out-of-order events. Test mode and live mode customers are separate. Checkout options that depend on a legal or tax decision stay behind their env flag and default off. Check that deleting data never resets usage counters, and that refunds and cancellations are reflected in the subscriptions table.
+    - path: "src/lib/audio/**"
+      instructions: |
+        Audio engine. Do not touch stretchLoader.ts or the offline-render path in engine.ts, never create a second AudioContext, and never import @tensorflow/tfjs (HANDOFF gotchas 1, 2, 3, 5).
+    - path: ".github/**"
+      instructions: |
+        Third-party actions must be pinned to a full commit SHA. Workflows get the least permissions they need. Never interpolate a branch name or issue text into a shell line; pass it through env.

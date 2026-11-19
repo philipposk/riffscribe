@@ -1,0 +1,11 @@
+{
+  "stage": "guide-baseline",
+  "metrics": {
+    "maxCents_0_1s": 6.7,
+    "maxCents_1_2s": 5.9,
+    "maxCents_2_3s": 5.9,
+    "maxCents_3_4s": 5.8,
+    "deterministic": 1,
+    "renderMs4min": 1037
+  }
+}

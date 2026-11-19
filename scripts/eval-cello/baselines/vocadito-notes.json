@@ -1,0 +1,9 @@
+{
+  "stage": "vocadito-notes",
+  "metrics": {
+    "excerpts": 40,
+    "meanNoteF1": 0.493,
+    "meanFragmentation": 1.04,
+    "meanLatenessMs": 6.1
+  }
+}

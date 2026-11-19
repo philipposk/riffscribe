@@ -40,6 +40,11 @@ export interface Sheet {
   unitsPerBar: number;
   /** Units per whole note (= quantize division). */
   division: number;
+  /**
+   * Song time of the first bar line. Earlier than the offset asked for when
+   * notes start before it, so a pickup gets a bar of its own.
+   */
+  offsetSeconds?: number;
 }
 
 /**
@@ -80,7 +85,39 @@ function decompose(units: number, table: ReturnType<typeof representable>) {
   return parts;
 }
 
-export function quantize(notes: NoteEvent[], s: TranscriptionSettings): Sheet {
+/**
+ * Where bar 1 starts, moved back by whole bars when notes begin before the
+ * offset asked for. Snapping those notes to the first bar line instead stacks
+ * a sung pickup into one chord on beat 1 and throws its rhythm away.
+ */
+export function effectiveOffset(
+  notes: NoteEvent[],
+  s: Pick<TranscriptionSettings, "bpm" | "timeSignature" | "offsetSeconds" | "quantizeDivision">
+): number {
+  if (!notes.length) return s.offsetSeconds;
+  let first = Infinity;
+  for (const n of notes) if (n.startTimeSeconds < first) first = n.startTimeSeconds;
+  const division = s.quantizeDivision || 16;
+  const [beatsPerBar, beatValue] = s.timeSignature;
+  const secondsPerUnit = 60 / s.bpm / (division / beatValue);
+  // a note a hair early still snaps onto the bar line; only move it for real pickups
+  if (Math.round((first - s.offsetSeconds) / secondsPerUnit) >= 0) return s.offsetSeconds;
+  const secondsPerBar = (60 / s.bpm) * beatsPerBar;
+  return s.offsetSeconds - Math.ceil((s.offsetSeconds - first) / secondsPerBar - 1e-9) * secondsPerBar;
+}
+
+/**
+ * How a single line picks one note where several sound at once. "highest" keeps the top
+ * note (a chordal part's melody); "louder" keeps the stronger one, for a line already
+ * cleaned up as one voice, where the higher note is as often the model's octave ghost.
+ */
+export type MonoStrategy = "louder" | "highest";
+
+/** A note this much weaker than the held note it sits inside, and this short, is dropped (as in cleanMonoLine). */
+const CONTAINED_DROP_AMP = 0.5;
+const CONTAINED_DROP_SEC = 0.12;
+
+export function quantize(notes: NoteEvent[], s: TranscriptionSettings & { monoStrategy?: MonoStrategy }): Sheet {
   const division = s.quantizeDivision || 16;
   const [beatsPerBar, beatValue] = s.timeSignature;
   const unitsPerBeat = division / beatValue;
@@ -88,30 +125,44 @@ export function quantize(notes: NoteEvent[], s: TranscriptionSettings): Sheet {
   const secondsPerBeat = 60 / s.bpm;
   const secondsPerUnit = secondsPerBeat / unitsPerBeat;
   const table = representable(division);
+  const offsetSeconds = effectiveOffset(notes, s);
 
   // 1. snap to the grid
-  type Ev = { start: number; end: number; midi: number };
+  type Ev = { start: number; end: number; midi: number; amp: number; sec: number };
   let events: Ev[] = notes.map((n) => {
-    const start = Math.max(0, Math.round((n.startTimeSeconds - s.offsetSeconds) / secondsPerUnit));
-    const end = Math.max(start + 1, Math.round((n.startTimeSeconds - s.offsetSeconds + n.durationSeconds) / secondsPerUnit));
-    return { start, end, midi: n.pitchMidi + s.transposeSemitones };
+    const start = Math.max(0, Math.round((n.startTimeSeconds - offsetSeconds) / secondsPerUnit));
+    const end = Math.max(start + 1, Math.round((n.startTimeSeconds - offsetSeconds + n.durationSeconds) / secondsPerUnit));
+    return { start, end, midi: n.pitchMidi + s.transposeSemitones, amp: n.amplitude, sec: n.durationSeconds };
   });
 
   if (s.monophonic) {
-    // keep the top line only — one note at a time, later notes cut earlier ones
-    events.sort((a, b) => a.start - b.start || b.midi - a.midi);
+    // One note at a time. On a shared onset keep the top note, or for a line written
+    // from a voice the louder one. A later note cuts the one before it; on a voice
+    // line a short, much weaker note wholly inside a held one is dropped instead.
+    const louder = s.monoStrategy === "louder";
+    events.sort((a, b) => a.start - b.start || (louder ? b.amp - a.amp || b.midi - a.midi : b.midi - a.midi));
     const mono: Ev[] = [];
     for (const e of events) {
       const prev = mono[mono.length - 1];
-      if (prev && e.start === prev.start) continue; // already have the higher note
-      if (prev && e.start < prev.end) prev.end = e.start;
+      if (prev && e.start === prev.start) continue; // already have the note this onset keeps
+      if (prev && e.start < prev.end) {
+        if (louder && e.end <= prev.end && e.amp < CONTAINED_DROP_AMP * prev.amp && e.sec < CONTAINED_DROP_SEC) continue;
+        prev.end = e.start;
+      }
       if (!prev || e.end > e.start) mono.push(e);
     }
     events = mono.filter((e) => e.end > e.start);
   }
 
   if (events.length === 0) {
-    return { bars: [{ index: 0, slots: [{ value: beatValue, dots: 0, notes: [], startUnits: 0, lengthUnits: unitsPerBar }] }], bpm: s.bpm, timeSignature: s.timeSignature, unitsPerBar, division };
+    // a full bar of rest, in real note values, so the bar adds up to the time signature
+    let at = 0;
+    const slots: SheetSlot[] = decompose(unitsPerBar, table).map((part) => {
+      const slot: SheetSlot = { value: part.value, dots: part.dots, notes: [], startUnits: at, lengthUnits: part.units };
+      at += part.units;
+      return slot;
+    });
+    return { bars: [{ index: 0, slots }], bpm: s.bpm, timeSignature: s.timeSignature, unitsPerBar, division, offsetSeconds };
   }
 
   // 2. build slot boundaries wherever anything starts or stops, plus bar lines
@@ -163,14 +214,17 @@ export function quantize(notes: NoteEvent[], s: TranscriptionSettings): Sheet {
     }
   }
 
-  return { bars, bpm: s.bpm, timeSignature: s.timeSignature, unitsPerBar, division };
+  return { bars, bpm: s.bpm, timeSignature: s.timeSignature, unitsPerBar, division, offsetSeconds };
 }
 
 /**
  * When each written beat sounds, in song time. Index N here is the Nth beat of
- * the generated score, which is what the play-along highlight tracks.
+ * the generated score, which is what the play-along highlight tracks. The
+ * sheet's own bar line wins over `offsetSeconds`, which is only a fallback for
+ * a sheet made before it carried one.
  */
-export function slotTimeline(sheet: Sheet, offsetSeconds: number) {
+export function slotTimeline(sheet: Sheet, fallbackOffsetSeconds: number) {
+  const offsetSeconds = sheet.offsetSeconds ?? fallbackOffsetSeconds;
   const [, beatValue] = sheet.timeSignature;
   const unitsPerBeat = sheet.division / beatValue;
   const secondsPerUnit = 60 / sheet.bpm / unitsPerBeat;

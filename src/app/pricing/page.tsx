@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Check } from "lucide-react";
 
 import SiteHeader, { SiteFooter } from "@/components/SiteHeader";
@@ -10,7 +11,7 @@ const ALWAYS = [
   "Unlimited transcription — notation and tab",
   "Unlimited stem splitting and vocal removal",
   "Slow-down, transpose, loop, tuner, play-along",
-  "Every export: MIDI, MusicXML, PDF, wav",
+  "Every export: MIDI, MusicXML, PDF, wav, mp3",
 ];
 
 export default function Pricing() {
@@ -44,7 +45,9 @@ export default function Pricing() {
             </section>
           ))}
         </div>
-        <p className="mt-6 text-xs text-white/35">Cancel any time from your account; Pro runs to the end of the month you paid for. Prices include VAT where it applies.</p>
+        <p className="mt-6 text-xs text-faint">Cancel any time from your account; Pro runs to the end of the month you paid for. Prices are shown in EUR. VAT is added or
+          included according to the invoice Stripe issues. Within 14 days of your first payment you can withdraw for a full refund; see{" "}
+          <Link className="underline" href="/terms#withdrawal">the terms</Link>.</p>
       </main>
       <SiteFooter />
     </>

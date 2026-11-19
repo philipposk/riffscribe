@@ -10,6 +10,8 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { missingAssets } from "./assets-required.mjs";
+
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pub = join(root, "public");
 const nm = join(root, "node_modules");
@@ -87,3 +89,12 @@ for (const j of jobs) await copyDir(j.from, j.to, j.optional);
 await copyAlphaTabScripts();
 await copyOrtWasm();
 await copySignalsmith();
+
+// Fail loudly if something the app needs is not there. Not during `npm install`
+// (postinstall), where a half-installed tree should not abort the install — the
+// build runs this again and enforces it.
+const missing = missingAssets(pub);
+if (missing.length) {
+  console.error(`[assets] missing after copy: ${missing.join(", ")}`);
+  if (process.env.npm_lifecycle_event !== "postinstall") process.exit(1);
+}

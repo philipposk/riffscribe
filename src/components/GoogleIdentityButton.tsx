@@ -11,6 +11,8 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { googlePopupUsableHere } from "@/lib/isolation";
+
 /** Shared 6x7 Supabase project's Google client (public; it is in every /authorize redirect). */
 export const DEFAULT_GOOGLE_CLIENT_ID =
   "387497462976-atlmglcgdgl9t9fhjdacj0vecn3d580d.apps.googleusercontent.com";
@@ -162,6 +164,8 @@ export function GoogleIdentityButton({
 
   useEffect(() => {
     if (forceFallback) return;
+    // The studio is cross-origin isolated, which breaks the popup's way back to this page.
+    if (!googlePopupUsableHere()) { setFailed(true); return; }
     let cancelled = false;
     (async () => {
       try {

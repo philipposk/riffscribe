@@ -48,13 +48,17 @@ export function encodeWav(channels: Channels, sampleRate: number): Blob {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-export function audioBufferToWav(buf: AudioBuffer): Blob {
-  const chans: Channels = [];
-  for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
-  return encodeWav(chans, buf.sampleRate);
+export function downloadBlob(blob: Blob, filename: string) {
+  void deliverBlob(blob, filename);
 }
 
-export function downloadBlob(blob: Blob, filename: string) {
+async function deliverBlob(blob: Blob, filename: string) {
+  try {
+    const { shareFileIfNative } = await import("@/lib/nativeShare");
+    if (await shareFileIfNative(blob, filename)) return;
+  } catch {
+    // The share sheet is a phone convenience. The download below is the website path.
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

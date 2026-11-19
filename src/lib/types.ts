@@ -191,6 +191,21 @@ export const DEFAULT_SETTINGS: TranscriptionSettings = {
  * harmony from another, or four voices arranged out of a single stem — and they
  * are engraved together as one score.
  */
+/** Top pitch-salience peaks per Basic Pitch frame; kept so a pitch curve can be re-tracked after note edits. */
+export interface ContourPeaks {
+  frames: number;          // number of model frames
+  k: number;               // peaks per frame (3)
+  midi: Float32Array;      // frames*k, fractional MIDI, 0 = no peak
+  strength: Float32Array;  // frames*k, 0..1
+}
+
+/** Continuous pitch and loudness of a single line on a uniform grid starting at t = 0. */
+export interface PitchContour {
+  fps: number;      // always 100
+  midi: number[];   // fractional MIDI per frame, 0 where unvoiced; rounded to 0.01
+  level: number[];  // linear RMS of the source stem per frame; rounded to 0.001; may be empty
+}
+
 export interface Part {
   id: string;
   /** Which stem it was heard in. */
@@ -203,4 +218,10 @@ export interface Part {
   fifths: number;
   keyName: string;
   keyMode: "major" | "minor";
+  /** One note at a time. Undefined = follow settings.monophonic. */
+  monophonic?: boolean;
+  /** The singer's curve when written from a vocal stem. Device-only: stripped from saved charts. */
+  contour?: PitchContour;
+  /** Octaves the line was moved to sit on the instrument (already applied to notes and contour). */
+  octaves?: number;
 }

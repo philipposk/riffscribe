@@ -7,7 +7,7 @@
 const src = await import("../src/lib/transcribe/spelling.ts").catch(() => null);
 if (!src) {
   console.log("run with: node --experimental-strip-types scripts/verify-spelling.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { spell, spellScientific, fifthsFor, keyName, shortestShift } = src;
 

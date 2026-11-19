@@ -311,6 +311,8 @@ export interface CachedSong {
   mode: string;
   rate: number;
   bytes: number;
+  /** The saved studio session's overdub, which lives in SCORES but counts here. */
+  sessionBytes?: number;
   at: number;
 }
 
@@ -351,7 +353,12 @@ export async function putStems(
     bytes += enc.data.byteLength;
   }
   await tx(STEMS, "readwrite", (s) => s.put(packed, key));
-  await tx(SONGS, "readwrite", (s) => s.put({ key, name, mode, rate, bytes, at: Date.now() } satisfies CachedSong));
+  // Re-splitting a song must not forget the size of the session saved with it.
+  const prev = await tx<CachedSong>(SONGS, "readonly", (s) => s.get(key) as IDBRequest<CachedSong>);
+  const sessionBytes = prev?.sessionBytes;
+  await tx(SONGS, "readwrite", (s) =>
+    s.put({ key, name, mode, rate, bytes, ...(sessionBytes ? { sessionBytes } : {}), at: Date.now() } satisfies CachedSong)
+  );
   void evict();
 }
 
@@ -376,6 +383,75 @@ export async function putScore<T>(key: string, variant: string, value: T): Promi
   await tx(SCORES, "readwrite", (s) => s.put(value, `${key}:${variant}`));
 }
 
+/* -------------------------------------------------------- Studio session */
+
+/** Mixer faders and solo. The take is kept apart (putOverdub), so a fader move does not re-encode it. */
+export interface SavedSession {
+  mix: Record<string, { gain: number; muted: boolean }>;
+  soloed: string | null;
+  /** Older saves only: the take, before it had an entry of its own. */
+  overdub?: EncodedTrack | null;
+}
+
+export async function getSession(key: string): Promise<SavedSession | null> {
+  return (await getScore<SavedSession>(key, "session")) ?? null;
+}
+
+export async function putSession(key: string, session: SavedSession): Promise<void> {
+  await putScore(key, "session", session);
+  // Only an older-style session carries the take; a mixer-only save leaves its size alone.
+  if (session.overdub !== undefined) await recordTakeBytes(key, session.overdub?.data.byteLength ?? 0);
+}
+
+/** The overdub can be tens of MB, so it counts toward the cache budget. */
+async function recordTakeBytes(key: string, sessionBytes: number): Promise<void> {
+  const song = await tx<CachedSong>(SONGS, "readonly", (s) => s.get(key) as IDBRequest<CachedSong>);
+  if (!song) return;
+  if ((song.sessionBytes ?? 0) === sessionBytes) return;
+  await tx(SONGS, "readwrite", (s) => s.put({ ...song, sessionBytes }));
+  void evict();
+}
+
+/** The last overdub take, encoded; null when there is none. */
+export async function getOverdub(key: string): Promise<EncodedTrack | null> {
+  return getScore<EncodedTrack>(key, "overdub");
+}
+
+/** Keep the take, or drop it when `enc` is null. */
+export async function putOverdub(key: string, enc: EncodedTrack | null): Promise<void> {
+  if (enc) await putScore(key, "overdub", enc);
+  else await tx(SCORES, "readwrite", (s) => s.delete(`${key}:overdub`));
+  await recordTakeBytes(key, enc?.data.byteLength ?? 0);
+}
+
+/** What a song keeps through "split it again": the user's work, not the model's passes. */
+export const KEPT_ON_RESPLIT = ["parts", "settings", "session", "overdub"] as const;
+
+/**
+ * "Split it again": forget the stems and every transcription made from them (whole song or
+ * trimmed, notes and peaks), so the next pass listens again; keep the parts, settings, mixer
+ * and take.
+ */
+export async function forgetSplit(key: string): Promise<void> {
+  const kept = await Promise.all(KEPT_ON_RESPLIT.map((v) => getScore<unknown>(key, v)));
+  await forget(key);
+  // Every pass made from the stems, whatever forget itself clears.
+  await tx(SCORES, "readwrite", (s) => s.delete(IDBKeyRange.bound(`${key}:`, `${key}:\uffff`)));
+  for (let i = 0; i < KEPT_ON_RESPLIT.length; i++) {
+    if (kept[i] != null) await putScore(key, KEPT_ON_RESPLIT[i], kept[i]);
+  }
+}
+
+/** Encode a stereo track for session storage (Opus when available). */
+export async function packTrack(track: Track, rate: number): Promise<EncodedTrack> {
+  return encodeTrack(track, rate);
+}
+
+/** Decode a track saved in a session back to float samples. */
+export async function unpackTrack(enc: EncodedTrack, wantRate: number): Promise<Track> {
+  return decodeTrack(enc, wantRate);
+}
+
 /* --------------------------------------------------------------- Eviction */
 
 export async function listSongs(): Promise<CachedSong[]> {
@@ -383,23 +459,40 @@ export async function listSongs(): Promise<CachedSong[]> {
   return (all ?? []).sort((a, b) => b.at - a.at);
 }
 
+/**
+ * The key range holding everything SCORES keeps for one song — `${key}:session`,
+ * `:parts`, `:settings`, the variants and their peaks. Song keys are SHA-256 hex,
+ * so no other song's keys can fall inside it.
+ */
+export function songScoreRange(key: string): [string, string] {
+  return [`${key}:`, `${key}:\uffff`];
+}
+
 export async function forget(key: string): Promise<void> {
   await tx(STEMS, "readwrite", (s) => s.delete(key));
   await tx(SONGS, "readwrite", (s) => s.delete(key));
+  const [lo, hi] = songScoreRange(key);
+  await tx(SCORES, "readwrite", (s) => s.delete(IDBKeyRange.bound(lo, hi)));
+}
+
+/** Bytes a song costs: its stems plus any saved overdub. */
+export function songBytes(song: Pick<CachedSong, "bytes" | "sessionBytes">): number {
+  return song.bytes + (song.sessionBytes ?? 0);
+}
+
+/** Which songs to drop (oldest first), given songs newest first. */
+export function pickEvictions(songs: CachedSong[], maxSongs = MAX_SONGS, maxBytes = MAX_BYTES): string[] {
+  let total = songs.reduce((s, x) => s + songBytes(x), 0);
+  const out: string[] = [];
+  for (let i = songs.length - 1; i >= 0; i--) {
+    if (i < maxSongs && total <= maxBytes) break;
+    out.push(songs[i].key);
+    total -= songBytes(songs[i]);
+  }
+  return out;
 }
 
 /** Drop the least recently opened songs once the cache outgrows its budget. */
 async function evict(): Promise<void> {
-  const songs = await listSongs(); // newest first
-  let total = songs.reduce((s, x) => s + x.bytes, 0);
-  for (let i = songs.length - 1; i >= 0; i--) {
-    if (i < MAX_SONGS && total <= MAX_BYTES) break;
-    await forget(songs[i].key);
-    total -= songs[i].bytes;
-  }
-}
-
-export async function cacheSize(): Promise<{ songs: number; bytes: number }> {
-  const songs = await listSongs();
-  return { songs: songs.length, bytes: songs.reduce((s, x) => s + x.bytes, 0) };
+  for (const key of pickEvictions(await listSongs())) await forget(key);
 }

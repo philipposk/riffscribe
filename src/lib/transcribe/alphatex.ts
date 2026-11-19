@@ -58,6 +58,8 @@ export interface TexOptions {
   midiProgram?: number;
   /** Staff name; defaults to the instrument's label. */
   trackName?: string;
+  /** Clef for this staff, when it differs from the instrument's usual one. */
+  clef?: Instrument["clef"];
 }
 
 /** One `\track` block — the staff header plus its bars. */
@@ -75,7 +77,7 @@ function trackBlock(sheet: Sheet, o: TexOptions, withMeta: boolean): string[] {
   } else {
     lines.push(`\\staff{score}`);
     lines.push(inst.id === "piano" ? `\\tuning piano` : `\\tuning voice`);
-    lines.push(`\\clef ${CLEF_TOKEN[inst.clef]}`);
+    lines.push(`\\clef ${CLEF_TOKEN[o.clef ?? inst.clef]}`);
   }
 
   const bars = sheet.bars.map((bar, i) => {

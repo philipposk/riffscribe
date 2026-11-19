@@ -1,76 +1,62 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import { AudioLines, Ear, FileMusic, Gauge, MessageCircle, MicOff, Mic, Pencil, Target } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 import SiteHeader, { SiteFooter } from "@/components/SiteHeader";
+import { BILLING_LIVE } from "@/lib/billingLive";
+import { PLANS } from "@/lib/plans";
 
 // Only the home page is canonical to "/"; other pages keep their own URL.
 export const metadata: Metadata = { alternates: { canonical: "/" } };
 
+const STEPS: { icon: LucideIcon; title: string; body: string }[] = [
+  {
+    icon: MicOff,
+    title: "Remove the voice",
+    body: "Instant mode takes about a second and needs no download. The AI split runs Meta\u2019s Demucs right in your browser and hands you vocals, drums, bass and the rest as separate tracks, so you can silence the singer and keep the band.",
+  },
+  {
+    icon: AudioLines,
+    title: "Hear the line on your instrument",
+    body: "Riffscribe writes down what the singer sang, then plays that line back in the voice of your cello, guitar or sax. You learn the phrasing from a player\u2019s sound, not from a vocal you cannot copy.",
+  },
+  {
+    icon: Gauge,
+    title: "Practise slow, then up to speed",
+    body: "Drop to 25% speed and the key stays where it was. Loop the four bars you keep fluffing, and let the speed trainer nudge the tempo up each clean pass until you reach full speed.",
+  },
+];
 
-const FEATURES = [
+const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
   {
+    icon: Ear,
     title: "Hear it, read it",
-    body: "Basic Pitch — Spotify's note-detection model — listens to the audio and writes out the notes. You get standard notation and tablature side by side, with the frets chosen so your hand barely moves. Guitar, bass, uke, mandolin, banjo, piano, voice, violin, viola, violoncello, double bass, flute, clarinet, sax, trumpet, trombone.",
+    body: "Basic Pitch, Spotify\u2019s note-detection model, writes out the notes. You get notation and tablature side by side, for guitar, bass, piano, voice, strings, woodwind and brass.",
   },
   {
-    title: "Mute the singer",
-    body: "Two ways. Instant takes about a second and needs no download. The AI split runs Meta's Demucs right here and hands you four separate tracks — vocals, drums, bass, and everything else — so you can silence any of them.",
-  },
-  {
-    title: "Slow, not slurred",
-    body: "Drop to 25% speed and the key stays exactly where it was. Or move the whole song up or down twelve semitones without touching the tempo. Loop the four bars you keep fluffing.",
-  },
-  {
-    title: "Play along, keep the take",
-    body: "Record your own part over the backing track. Record it at half speed if you need to — it gets stretched back to full tempo without turning you into a chipmunk — then mix it and export a wav.",
-  },
-  {
-    title: "In the key you want",
-    body: "Pick the key the part should be written in and the notes and the key signature move together. Accidentals are spelled for that key \u2014 E flat in a flat key, not D sharp \u2014 and transposing instruments are handled, so a clarinet or trumpet part is written where those players expect to read it.",
-  },
-  {
+    icon: Pencil,
     title: "Fix what it mishears",
-    body: "Automatic transcription is a first draft. Click any note on the staff and move it a semitone or an octave, or take it out \u2014 with an undo. No round trip through MuseScore to correct one wrong note.",
+    body: "Automatic transcription is a first draft. Click a note on the staff and move it a semitone or an octave, or take it out, with an undo.",
   },
   {
-    title: "Tune up first",
-    body: "A tuner with a proper needle, and a drone you can play against, set to the key of whatever you loaded. For intonation the drone is worth more than the meter: a note a few cents out beats audibly against it long before it looks wrong on a dial.",
+    icon: Mic,
+    title: "Play along, keep the take",
+    body: "Record your own part over the backing track, even at half speed. It is stretched back to full tempo without turning you into a chipmunk, then mixed and exported as a wav.",
   },
   {
+    icon: Target,
     title: "Tells you how it went",
-    body: "Play it, then ask how you did. Your take is marked against the written part: what was clean, what you missed, what sat flat or came in late, whether you rush or drag, and which bars are weakest — with one press to loop those and go again.",
+    body: "Your take is marked against the written part: what was clean, what you missed, what sat flat or came in late, and which bars are weakest, with one press to loop those and go again.",
   },
   {
-    title: "Practises the way you do",
-    body: "A count-in so you can come in with the music. A speed trainer that nudges the tempo up 5% every clean pass until you reach full speed. Named sections, so it is \u201cthe chorus\u201d and not \u201csomewhere around 2:14\u201d. And the transport stays pinned to the bottom \u2014 you are holding an instrument, not a mouse.",
-  },
-  {
-    title: "Only takes a song apart once",
-    body: "Separating costs minutes, so the stems are kept on your machine and come straight back the next time you open that song \u2014 even if you renamed the file. About 12 MB for a four-minute song, not the 340 MB the raw audio would take.",
-  },
-  {
-    title: "Send it to the other players",
-    body: "Sign in and your chart is saved \u2014 parts, tempo, key, sections, loops. Share the link and each player opens the same writing against their own copy of the song. Only the notes travel; the recording never leaves your machine.",
-  },
-  {
-    title: "Reads along with you",
-    body: "Turn on follow-the-music and the score scrolls itself, highlighting the beat being played, so you can keep both hands on the instrument. The part is played back in your instrument's voice too — mute it once you can hold the line yourself.",
-  },
-  {
-    title: "A part each, or a whole quartet",
-    body: "Write out as many parts as you like \u2014 the bass from one stem, the harmony from another \u2014 and they engrave as one score, a staff each. Any part can then be split into voices and handed to a duo, trio, quartet or quintet. That is arranging one line across players, not pulling the original musicians back out of the recording; nothing can do the latter.",
-  },
-  {
+    icon: FileMusic,
     title: "Takes your file anywhere",
-    body: "Export MIDI, MusicXML for MuseScore or Guitar Pro, alphaTex, printable PDF, and wav \u2014 every part on its own staff, and audio as the whole mix, the backing track, one row of the mixer, or just the bars you looped.",
+    body: "Export MIDI, MusicXML for MuseScore or Guitar Pro, alphaTex, a printable PDF and wav, with every part on its own staff.",
   },
   {
+    icon: MessageCircle,
     title: "Or just ask",
-    body: "There is an assistant in the corner that works the studio for you. \u201cSplit the stems and write the bass part out.\u201d \u201cSlow it to 60% and loop the first eight bars.\u201d It presses the same buttons you would.",
-  },
-  {
-    title: "Nothing leaves the room",
-    body: "No upload, no queue, no per-minute pricing, and no account needed to transcribe. The models run inside the browser tab, so the song stays on your machine.",
+    body: "An assistant in the corner works the studio for you: \u201cSlow it to 60% and loop the first eight bars.\u201d It presses the same buttons you would. The assistant needs a free account.",
   },
 ];
 
@@ -81,23 +67,37 @@ export default function Home() {
     <main className="mx-auto max-w-5xl px-5 py-12 sm:px-8">
       <p className="mb-4 text-xs uppercase tracking-[0.2em] text-[var(--color-accent)]">Riffscribe</p>
       <h1 className="max-w-3xl text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
-        Give it a song. Get the sheet music, the tab, and a backing track.
+        Learn any part by ear.
       </h1>
       <p className="mt-5 max-w-2xl text-lg text-white/60">
-        Riffscribe listens to a recording and writes down what it hears — notes on a stave and
-        numbers on a fretboard. Then it strips the vocals out, slows the whole thing down without
-        dropping the pitch, records you playing over the top, and tells you which bars you still
-        need to work on.
+        Take the singer out, and let your cello — or guitar, or sax — play the line while you
+        learn it. Free.{BILLING_LIVE ? ` Pro ${PLANS.pro.price} for more saved songs.` : " Pro is coming soon."}
       </p>
 
       <div className="mt-8 flex flex-wrap gap-3">
-        <Link className="btn btn-primary" href="/studio">Open the studio</Link>
+        <a className="btn btn-primary" href="/studio?demo=1">Try the demo song</a>
+        <a className="btn" href="/studio">Open your own</a>
+      </div>
+      <p className="mt-3 text-xs text-faint">
+        Runs in your browser. Nothing is uploaded, and no account is needed to transcribe.
+      </p>
+
+      <div className="mt-14 grid gap-4 sm:grid-cols-3">
+        {STEPS.map((s) => (
+          <section key={s.title} className="panel p-5">
+            <s.icon className="mb-3 text-[var(--color-accent)]" size={22} aria-hidden="true" />
+            <h2 className="mb-2 text-base font-medium text-white">{s.title}</h2>
+            <p className="text-sm leading-relaxed text-white/55">{s.body}</p>
+          </section>
+        ))}
       </div>
 
-      <div className="mt-14 grid gap-4 sm:grid-cols-2">
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {FEATURES.map((f) => (
-          <section key={f.title} className="panel p-5">
-            <h2 className="mb-2 text-base font-medium text-white">{f.title}</h2>
+          <section key={f.title} className="panel p-4">
+            <h2 className="mb-1.5 flex items-center gap-2 text-sm font-medium text-white">
+              <f.icon className="text-white/50" size={15} aria-hidden="true" /> {f.title}
+            </h2>
             <p className="text-sm leading-relaxed text-white/55">{f.body}</p>
           </section>
         ))}
@@ -113,7 +113,7 @@ export default function Home() {
         </p>
       </section>
 
-      <footer className="mt-12 text-xs text-white/30">
+      <footer className="mt-12 text-xs text-faint">
         Built on Basic Pitch (Spotify, Apache-2.0), Demucs (Meta, MIT), alphaTab (MPL-2.0) and
         Signalsmith Stretch (MIT).
       </footer>

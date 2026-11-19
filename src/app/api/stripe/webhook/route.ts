@@ -2,48 +2,43 @@
  * Stripe → the shared 6x7 `subscriptions` table.
  *
  * Stripe sends no session, so this authenticates by signature and writes with
- * the service role. The Stripe account is shared across 6x7 apps and every
- * app's webhook sees every event: act only on ours, and never grant a plan
- * from missing or foreign metadata.
+ * the service role. The decisions live in `billing/webhookLogic.ts`; this file
+ * only wires in the real Stripe calls. Every Stripe write made from here has
+ * an idempotency key derived from the event id, so a retried event repeats
+ * nothing.
  */
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 
 import { serviceClient } from "@/lib/supabase/server";
-import { APP, stripe } from "@/lib/stripe";
+import { APP, flag, liveMode, stripe } from "@/lib/stripe";
+import { handleWebhookEvent } from "@/lib/billing/webhookLogic";
 
 export const runtime = "nodejs";
 
-async function upsert(sub: Stripe.Subscription, eventCreated: number) {
-  const userId = sub.metadata?.supabase_user_id;
-  if (!userId || sub.metadata?.app !== APP || sub.metadata?.plan !== "pro") return;
-  const item = sub.items?.data?.[0] as (Stripe.SubscriptionItem & { current_period_end?: number }) | undefined;
-  const periodEnd = item?.current_period_end;
+const idOf = (x: string | { id: string } | null | undefined) => (typeof x === "string" ? x : x?.id ?? null);
 
-  const db = serviceClient();
-  const { data: existing } = await db
-    .from("subscriptions")
-    .select("updated_at")
-    .eq("user_id", userId)
-    .eq("app", APP)
-    .maybeSingle();
-  // Out-of-order delivery: an older event must not overwrite a newer state.
-  const storedAt = existing?.updated_at ? new Date(existing.updated_at).getTime() : 0;
-  if (storedAt && eventCreated * 1000 < storedAt - 1000) return;
+/** Charge → payment intent → invoice payment → invoice → subscription (the dahlia object graph). */
+async function subscriptionForCharge(chargeId: string): Promise<string | null> {
+  const ch = await stripe().charges.retrieve(chargeId);
+  const pi = idOf(ch.payment_intent);
+  if (!pi) return null;
+  const pays = await stripe().invoicePayments.list({ payment: { type: "payment_intent", payment_intent: pi }, limit: 1 });
+  const invoice = pays.data[0]?.invoice;
+  if (!invoice) return null;
+  const inv = typeof invoice === "string" ? await stripe().invoices.retrieve(invoice) : invoice;
+  if ("deleted" in inv && inv.deleted) return null;
+  return idOf((inv as Stripe.Invoice).parent?.subscription_details?.subscription);
+}
 
-  await db.from("subscriptions").upsert(
-    {
-      user_id: userId,
-      app: APP,
-      plan: "pro",
-      status: sub.status,
-      stripe_customer_id: typeof sub.customer === "string" ? sub.customer : sub.customer?.id,
-      stripe_subscription_id: sub.id,
-      current_period_end: periodEnd ? new Date(periodEnd * 1000).toISOString() : null,
-      updated_at: new Date(eventCreated * 1000).toISOString(),
-    },
-    { onConflict: "user_id,app" }
-  );
+async function refundCharge(chargeId: string, idempotencyKey: string): Promise<void> {
+  const ch = await stripe().charges.retrieve(chargeId);
+  if (ch.refunded) return;
+  try {
+    await stripe().refunds.create({ charge: chargeId, reason: "fraudulent" }, { idempotencyKey });
+  } catch (e) {
+    if ((e as { code?: string }).code !== "charge_already_refunded") throw e;
+  }
 }
 
 export async function POST(req: Request) {
@@ -58,29 +53,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `signature: ${(e as Error).message}` }, { status: 400 });
   }
 
-  const relevant =
-    event.type === "checkout.session.completed" || event.type.startsWith("customer.subscription.");
-  if (!relevant) return NextResponse.json({ received: true });
-
-  // Stripe re-delivers; the first insert wins and repeats are no-ops.
-  const seen = await serviceClient().from("riffscribe_webhook_events").insert({ id: event.id, created: event.created });
-  if (seen.error) return NextResponse.json({ received: true, duplicate: true });
-
-  try {
-    if (event.type === "checkout.session.completed") {
-      const s = event.data.object as Stripe.Checkout.Session;
-      if (s.subscription && s.metadata?.app === APP) {
-        const sub = await stripe().subscriptions.retrieve(s.subscription as string);
-        sub.metadata = { ...sub.metadata, ...s.metadata };
-        await upsert(sub, event.created);
-      }
-    } else {
-      await upsert(event.data.object as Stripe.Subscription, event.created);
-    }
-  } catch (e) {
-    // Let Stripe retry: forget the event so the retry is not treated as a duplicate.
-    await serviceClient().from("riffscribe_webhook_events").delete().eq("id", event.id);
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
-  }
-  return NextResponse.json({ received: true });
+  const { status, body } = await handleWebhookEvent(event, {
+    db: serviceClient(),
+    app: APP,
+    live: liveMode(),
+    autoRefundEfw: flag("STRIPE_AUTO_REFUND_EFW"),
+    retrieveSubscription: (id) => stripe().subscriptions.retrieve(id),
+    cancelSubscription: (id, idempotencyKey) => stripe().subscriptions.cancel(id, {}, { idempotencyKey }),
+    subscriptionForCharge,
+    refundCharge,
+  });
+  return NextResponse.json(body, { status });
 }

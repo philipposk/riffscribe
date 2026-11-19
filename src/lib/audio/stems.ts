@@ -1,5 +1,4 @@
 /** Main-thread client for the Demucs worker + the instant karaoke fallback. */
-import { splitCenter } from "./karaoke";
 import type { StemName } from "../types";
 
 export const DEMUCS_SAMPLE_RATE = 44100;
@@ -16,51 +15,6 @@ export interface SeparateProgress {
 }
 
 export type StemSet = Record<StemName, { left: Float32Array; right: Float32Array }>;
-
-export function separateWithDemucs(
-  left: Float32Array,
-  right: Float32Array,
-  onProgress: (p: SeparateProgress) => void
-): { promise: Promise<StemSet>; cancel: () => void } {
-  const worker = new Worker(new URL("../workers/stems.worker.ts", import.meta.url), {
-    type: "module",
-  });
-
-  const promise = new Promise<StemSet>((resolve, reject) => {
-    worker.onerror = (e) => reject(new Error(e.message || "stem worker crashed"));
-    worker.onmessage = (e) => {
-      const m = e.data;
-      switch (m.type) {
-        case "download":
-          onProgress({ phase: "download", value: m.total ? m.loaded / m.total : undefined, message: `${(m.loaded / 1e6).toFixed(0)} MB` });
-          break;
-        case "preparing":
-          onProgress({ phase: "prepare" });
-          break;
-        case "progress":
-          onProgress({ phase: "separate", value: m.progress, message: `chunk ${m.segment}/${m.segments}` });
-          break;
-        case "log":
-          onProgress({ phase: "log", message: `${m.phase}: ${m.message}` });
-          break;
-        case "done":
-          resolve(m.stems as StemSet);
-          worker.terminate();
-          break;
-        case "error":
-          reject(new Error(m.message));
-          worker.terminate();
-          break;
-      }
-    };
-    worker.postMessage({ type: "separate", left, right, modelUrl: MODEL_URL }, [
-      left.buffer,
-      right.buffer,
-    ]);
-  });
-
-  return { promise, cancel: () => worker.terminate() };
-}
 
 /*
  * Resumable AI split.
@@ -132,7 +86,8 @@ export function separateResumable(
         } else if (m.type === "progress") {
           onProgress({
             phase: "separate",
-            value: (b + m.progress) / plan.length,
+            // demucs-web runs one more window than it counts, so its own progress overshoots 1
+            value: (b + Math.min(1, m.progress)) / plan.length,
             message: `part ${b + 1}/${plan.length} — finished parts are kept if you stop`,
           });
         } else if (m.type === "log") {
@@ -152,25 +107,19 @@ export function separateResumable(
       const resumed = plan.findIndex((_, b) => !have.has(b));
       if (resumed > 0) onProgress({ phase: "log", message: `resuming from part ${resumed + 1}`, resumedFrom: resumed });
 
-      const results: StemSet[] = [];
-      for (let b = 0; b < plan.length; b++) {
-        if (cancelled) throw new Error(SPLIT_PAUSED);
-        const { start, end } = plan[b];
-        let res = have.has(b) ? ((await store.get(key, b, DEMUCS_SAMPLE_RATE)) as StemSet | null) : null;
-        if (!res) {
-          res = await runBlock(left.slice(start, end), right.slice(start, end), b);
-          await store.put(key, b, res, DEMUCS_SAMPLE_RATE);
-        }
-        results.push(res);
-      }
-
-      // Stitch: every block weighted 1 except a linear ramp across each overlap.
-      const names = Object.keys(results[0]) as (keyof StemSet)[];
-      const out = Object.fromEntries(
-        names.map((n) => [n, { left: new Float32Array(total), right: new Float32Array(total) }])
-      ) as StemSet;
+      // Stitch each block in as it arrives, so only one block's stems are held besides the
+      // output: every block weighted 1 except a linear ramp across each overlap.
+      let out: StemSet | null = null;
+      let names: (keyof StemSet)[] = [];
       const weight = new Float32Array(total);
-      plan.forEach(({ start, end }, b) => {
+      const addBlock = (b: number, res: StemSet) => {
+        if (!out) {
+          names = Object.keys(res) as (keyof StemSet)[];
+          out = Object.fromEntries(
+            names.map((n) => [n, { left: new Float32Array(total), right: new Float32Array(total) }])
+          ) as StemSet;
+        }
+        const { start, end } = plan[b];
         const fadeIn = b > 0 ? plan[b - 1].end - start : 0;
         const fadeOut = b < plan.length - 1 ? end - plan[b + 1].start : 0;
         for (let i = 0; i < end - start; i++) {
@@ -179,17 +128,31 @@ export function separateResumable(
           if (fadeOut > 0 && i >= end - start - fadeOut) w = Math.min(w, (end - start - i - 0.5) / fadeOut);
           weight[start + i] += w;
           for (const n of names) {
-            out[n].left[start + i] += results[b][n].left[i] * w;
-            out[n].right[start + i] += results[b][n].right[i] * w;
+            out[n].left[start + i] += res[n].left[i] * w;
+            out[n].right[start + i] += res[n].right[i] * w;
           }
         }
-      });
+      };
+
+      for (let b = 0; b < plan.length; b++) {
+        if (cancelled) throw new Error(SPLIT_PAUSED);
+        const { start, end } = plan[b];
+        let res = have.has(b) ? ((await store.get(key, b, DEMUCS_SAMPLE_RATE)) as StemSet | null) : null;
+        if (!res) {
+          res = await runBlock(left.slice(start, end), right.slice(start, end), b);
+          await store.put(key, b, res, DEMUCS_SAMPLE_RATE);
+        }
+        addBlock(b, res);
+      }
+
+      const stitched = out as StemSet | null;
+      if (!stitched) throw new Error("stem separation produced nothing");
       for (let i = 0; i < total; i++) {
         const w = weight[i] || 1;
-        if (w !== 1) for (const n of names) { out[n].left[i] /= w; out[n].right[i] /= w; }
+        if (w !== 1) for (const n of names) { stitched[n].left[i] /= w; stitched[n].right[i] /= w; }
       }
       await store.clear(key);
-      return out;
+      return stitched;
     } finally {
       worker.terminate();
     }
@@ -203,17 +166,6 @@ export function separateResumable(
       abort?.(new Error(SPLIT_PAUSED));
     },
   };
-}
-
-/** Zero-download alternative: pull the centred vocal out with phase maths. */
-export function separateInstant(
-  left: Float32Array,
-  right: Float32Array,
-  sampleRate: number,
-  strength = 2
-): StemSet {
-  const { instrumental, center } = splitCenter(left, right, sampleRate, { strength });
-  return packInstant(left.length, instrumental, center);
 }
 
 function packInstant(

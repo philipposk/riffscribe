@@ -1,6 +1,7 @@
 "use client";
 /** Waveform strip: click to seek, drag to set the practice loop. */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { loopFromStart, loopToEnd } from "./studio/useShortcuts";
 
 interface Props {
   peaks: Float32Array | null;
@@ -74,18 +75,57 @@ export default function Waveform({ peaks, duration, time, loop, onSeek, onLoop }
     return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * duration;
   };
 
+  const fmt = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+
+  // Keyboard and one-tap ways to set a loop: dragging a thin canvas is hard on touch and impossible by keyboard.
+  // Same rules as the [ and ] keys; a loop too short to play (end at 0:00, start at the end) is not set.
+  const setLoopStart = () => {
+    const next = loopFromStart(time, duration, loop);
+    if (next) onLoop(next);
+  };
+  const setLoopEnd = () => {
+    const next = loopToEnd(time, duration, loop);
+    if (next) onLoop(next);
+  };
+
   return (
+    <div>
     <canvas
       ref={canvas}
-      className="h-24 w-full cursor-crosshair rounded-lg border border-[var(--color-line)]"
+      // touch-none: without it a finger drag scrolls the page (or is cancelled) instead of drawing a loop.
+      className="h-24 w-full cursor-crosshair touch-none rounded-lg border border-[var(--color-line)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+      style={{ touchAction: "none" }}
+      role="slider"
+      tabIndex={0}
+      aria-label="Song position"
+      aria-valuemin={0}
+      aria-valuemax={Math.round(duration)}
+      aria-valuenow={Math.round(time)}
+      aria-valuetext={`${fmt(time)} of ${fmt(duration)}`}
+      onKeyDown={(e) => {
+        if (duration <= 0) return;
+        const step = e.shiftKey ? 1 : 5;
+        let to: number | null = null;
+        if (e.key === "ArrowRight" || e.key === "ArrowUp") to = time + step;
+        else if (e.key === "ArrowLeft" || e.key === "ArrowDown") to = time - step;
+        else if (e.key === "Home") to = 0;
+        else if (e.key === "End") to = duration;
+        if (to === null) return;
+        e.preventDefault();
+        onSeek(Math.max(0, Math.min(duration, to)));
+      }}
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId);
         setDrag({ from: posFor(e), to: posFor(e) });
       }}
-      onPointerMove={(e) => drag && setDrag({ ...drag, to: posFor(e) })}
+      onPointerMove={(e) => {
+        // A drag that lost its pointer (cancelled, or released elsewhere) must not keep resizing.
+        if (drag && e.currentTarget.hasPointerCapture(e.pointerId)) setDrag({ ...drag, to: posFor(e) });
+      }}
       onPointerUp={(e) => {
+        if (!drag) return;
         const p = posFor(e);
-        if (drag && Math.abs(p - drag.from) > duration * 0.01) {
+        if (Math.abs(p - drag.from) > duration * 0.01) {
           onLoop([Math.min(drag.from, p), Math.max(drag.from, p)]);
         } else {
           onSeek(p);
@@ -93,6 +133,18 @@ export default function Waveform({ peaks, duration, time, loop, onSeek, onLoop }
         }
         setDrag(null);
       }}
+      // The browser took the gesture, or the pointer was lost: abandon the half-drawn loop.
+      onPointerCancel={() => setDrag(null)}
+      onLostPointerCapture={() => setDrag(null)}
     />
+    <div className="mt-2 flex flex-wrap gap-2">
+      <button type="button" className="btn text-xs" onClick={setLoopStart} disabled={!loopFromStart(time, duration, loop)}>
+        Set loop start
+      </button>
+      <button type="button" className="btn text-xs" onClick={setLoopEnd} disabled={!loopToEnd(time, duration, loop)}>
+        Set loop end
+      </button>
+    </div>
+    </div>
   );
 }

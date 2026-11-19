@@ -3,9 +3,9 @@
  * Tuner and drone.
  *
  * Neither has anything to do with taking a recording apart, and both are the
- * first things a string player reaches for. They live behind one toggle so
- * they cost nothing — no microphone is opened and no oscillator started until
- * someone asks.
+ * first things a string player reaches for. They live in the studio's Tools
+ * sheet so they cost nothing — no microphone is opened and no oscillator
+ * started until someone asks. The sheet supplies the panel and the title.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, Music4, Square } from "lucide-react";
@@ -16,7 +16,12 @@ import { Drone, detectPitch, type Reading } from "@/lib/audio/tuner";
 /** Two octaves either side of middle C covers the tonic of anything sane. */
 const DRONE_RANGE = { min: 36, max: 84 };
 
-export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
+/**
+ * `active`: false when the sheet holding this is closed. The microphone closes with it
+ * (no recording light for a tuner nobody can see); a drone carries on, since playing
+ * against one is the point.
+ */
+export default function Tuner({ suggestedTonic, active = true }: { suggestedTonic?: number; active?: boolean }) {
   const [listening, setListening] = useState(false);
   const [reading, setReading] = useState<Reading | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +47,10 @@ export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
     setListening(false);
     setReading(null);
   }, []);
+
+  useEffect(() => {
+    if (!active) stopListening();
+  }, [active, stopListening]);
 
   useEffect(() => () => {
     stopListening();
@@ -103,10 +112,10 @@ export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
   const inTune = reading != null && Math.abs(cents) <= 5;
 
   return (
-    <section className="panel no-print mb-5 p-5">
-      <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-        <Music4 size={18} className="text-[var(--color-accent)]" /> Tune up
-      </h2>
+    <section className="no-print" aria-labelledby="tuner-title">
+      <h3 id="tuner-title" className="mb-3 flex items-center gap-2 text-base font-medium">
+        <Music4 size={18} className="text-[var(--color-accent)]" aria-hidden /> Tune up
+      </h3>
 
       <div className="grid gap-6 sm:grid-cols-2">
         {/* ---- tuner ---- */}
@@ -127,7 +136,7 @@ export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
             <div className="font-mono text-4xl tabular-nums text-white">
               {reading ? noteName(reading.midi) : "—"}
             </div>
-            <div className="mt-1 text-xs text-white/40">
+            <div className="mt-1 text-xs text-faint">
               {reading ? `${reading.hz.toFixed(1)} Hz` : listening ? "play a note" : "not listening"}
             </div>
 
@@ -145,9 +154,9 @@ export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
                 />
               )}
             </div>
-            <div className="mt-2 flex justify-between text-[10px] text-white/25">
+            <div className="mt-2 flex justify-between text-[10px] text-faint">
               <span>−50c</span>
-              <span className={inTune ? "text-emerald-300" : "text-white/45"}>
+              <span className={inTune ? "text-emerald-300" : "text-faint"}>
                 {reading ? `${cents > 0 ? "+" : ""}${cents}c` : ""}
               </span>
               <span>+50c</span>
@@ -168,13 +177,15 @@ export default function Tuner({ suggestedTonic }: { suggestedTonic?: number }) {
           <input
             type="range"
             className="w-full"
+            aria-label="Drone pitch"
+            aria-valuetext={noteName(droneMidi)}
             min={DRONE_RANGE.min}
             max={DRONE_RANGE.max}
             step={1}
             value={droneMidi}
             onChange={(e) => setDroneMidi(Number(e.target.value))}
           />
-          <p className="mt-2 text-xs text-white/40">
+          <p className="mt-2 text-xs text-faint">
             Hold a drone on the key of the piece and play against it. A note a few cents out beats
             audibly against a drone long before it looks wrong on any meter — which is why this is
             worth more than the needle for intonation.

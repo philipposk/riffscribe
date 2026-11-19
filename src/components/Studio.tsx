@@ -7,81 +7,121 @@
  * Every step runs locally in the browser — no upload, no account, no queue.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Bookmark, Check, ChevronDown, ChevronUp, Download, FileMusic, Link as LinkIcon, Loader2, Mic,
-  Music2, Pause, Play, Printer, Repeat, RotateCcw, Scissors, Square, Target,
-  Trash2, Undo2,
-  Upload, Users, Wand2,
-} from "lucide-react";
+import { CircleHelp, Music2, Wrench } from "lucide-react";
 
 import { useSearchParams } from "next/navigation";
 import type { AssistantActions } from "./Assistant";
 import { lendStudio } from "@/lib/assistantBridge";
-import Mixer, { type MixTrack } from "./Mixer";
+import type { MixTrack } from "./Mixer";
 import SaveBar from "./SaveBar";
-import Tuner from "./Tuner";
 import { HANDOFF_ID_KEY, HANDOFF_KEY } from "./SharedChart";
 import AccountMenu from "./AccountMenu";
 import { useAccount } from "@/lib/store/account";
 import { findSong, lastSong, rememberSong } from "@/lib/store/lastSong";
-import ScoreView from "./ScoreView";
-import Transport from "./Transport";
-import Waveform from "./Waveform";
+import { buildAssistantActions } from "./studio/assistantActions";
+import {
+  ENSEMBLES, STEM_LABEL, barsLabel, type Busy, type Channels, type ExportFormat, type GuideTrack, type Source,
+  type StemMode,
+} from "./studio/constants";
+import * as exp from "./studio/exports";
+import LoadPanel from "./studio/LoadPanel";
+import PartsPanel from "./studio/PartsPanel";
+import PlayerBar from "./studio/PlayerBar";
+import PracticePanel from "./studio/PracticePanel";
+import RecordPanel from "./studio/RecordPanel";
+import SplitPanel from "./studio/SplitPanel";
+import Recipes from "./studio/Recipes";
+import StatusBanners from "./studio/StatusBanners";
+import AiSplitConfirm, { type AiSplitChoice } from "./studio/AiSplitConfirm";
+import type { ExportMenuProps } from "./studio/ExportMenu";
+import HelpOverlay from "./studio/HelpOverlay";
+import ToolsSheet from "./studio/ToolsSheet";
+import { humanError } from "./studio/errors";
+import { loopFromStart, loopToEnd, stepRate, useShortcuts } from "./studio/useShortcuts";
 
 import { fileToAudioBuffer, peaks as peaksOf, toMono, toStereo } from "@/lib/audio/decode";
 import {
-  estimateKey, estimateTempo, chromaFromNotes, noteName, PITCH_NAMES,
+  estimateKey, estimateTempo, chromaFromNotes, PITCH_NAMES,
 } from "@/lib/audio/analyze";
 import { PracticeEngine, makeClickTrack, type EngineTrack } from "@/lib/audio/engine";
-import { countIn, countInSeconds } from "@/lib/audio/countin";
-import { MicRecorder, estimateLatency, placeTake, stretchOffline } from "@/lib/audio/recorder";
+import { countIn } from "@/lib/audio/countin";
+import { MicRecorder, estimateLatency, foldLoopTake, placeTake, stretchOffline } from "@/lib/audio/recorder";
 import {
-  DEMUCS_SAMPLE_RATE, SPLIT_PAUSED, mixStems, partialKey, separateInstantAsync, separateResumable, type StemSet,
+  DEMUCS_SAMPLE_RATE, SPLIT_PAUSED, partialKey, separateInstantAsync, separateResumable, type StemSet,
 } from "@/lib/audio/stems";
-import { synthesizeGuide } from "@/lib/audio/guide";
+import { BODY_SCALE } from "@/lib/audio/body";
+import { isEffectivelyMono, MONO_SPLIT_ERROR } from "@/lib/audio/karaoke";
+import { loudnessCurve } from "@/lib/audio/envelope";
+import { renderGuide } from "@/lib/audio/guideClient";
 import {
-  forget, getScore, getStems, putScore, putStems, requestPersistence, songKey,
+  forgetSplit, getOverdub, getScore, getSession, getStems, packTrack, putOverdub, putScore, putSession,
+  putStems, requestPersistence, songKey, unpackTrack,
 } from "@/lib/store/cache";
 import { clearBlocks, doneBlocks, getBlock, putBlock } from "@/lib/store/partialSplit";
-import { downloadBlob, encodeWav } from "@/lib/audio/wav";
 import {
-  channelsToAudioBuffer, lastTranscriptionRanIn, toModelInput, transcribeAudio,
+  channelsToAudioBuffer, lastTranscriptionRanIn, toModelInput, transcribeAudio, transcribeAudioFull,
+  type TranscribeFullOptions,
 } from "@/lib/transcribe/basicPitch";
-import { partsToMidi } from "@/lib/transcribe/midi";
-import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
+import { trackContour } from "@/lib/transcribe/contour";
+import { cleanMonoLine } from "@/lib/transcribe/monoline";
+import { placeInRegister } from "@/lib/transcribe/register";
 import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
-import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcribe/compare";
+import { barsToLoop, barsToRange, chartInWindow, markTake, summarise, takeSpan, type TakeReport } from "@/lib/transcribe/compare";
+import { consolidateMonophonic } from "@/lib/transcribe/cleanup";
 import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
-import { keyChoices, keyName, shortestShift } from "@/lib/transcribe/spelling";
-import { CHART_VERSION, loadChart, type Chart } from "@/lib/store/charts";
-import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
+import { isNativePlatform, nativeDeviceMemoryGb } from "@/lib/native";
 import {
-  DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part,
-  type TranscriptionSettings,
+  keepChartLink, liveSolo, readSavedSettings, settingsOnLoad, trainerStep,
+} from "@/lib/studioState";
+import { CHART_VERSION, loadChart, type Chart } from "@/lib/store/charts";
+import { extractMelody, fitToRange, playsSingleLine, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
+import {
+  DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type ContourPeaks, type InstrumentId, type NoteEvent, type Part,
+  type PitchContour, type TranscriptionSettings,
 } from "@/lib/types";
 
-type Busy = { label: string; value?: number } | null;
-type StemMode = "none" | "instant" | "ai";
-type Source = "mix" | "vocals" | "drums" | "bass" | "other";
-
-const STEM_LABEL: Record<string, { label: string; hint: string }> = {
-  vocals: { label: "Vocals", hint: "lead + backing voices" },
-  drums: { label: "Drums", hint: "kit and percussion" },
-  bass: { label: "Bass", hint: "bass guitar / synth bass" },
-  other: { label: "Everything else", hint: "guitars, keys, strings" },
-  original: { label: "Song", hint: "the original mix" },
-  click: { label: "Click", hint: "metronome, follows the speed" },
-  overdub: { label: "Your take", hint: "what you recorded" },
-  guide: { label: "Your part", hint: "the transcription, played back" },
+/** Instruments that hold their notes (not plucked or struck): they play one line, and vocals are their first choice. */
+const melodic = (id: InstrumentId) => {
+  const t = INSTRUMENTS[id].timbre;
+  return t !== "plucked" && t !== "struck";
 };
 
-/** Which instruments a voice split is handed to, top line first. */
-const ENSEMBLES: Record<number, InstrumentId[]> = {
-  2: ["violin", "cello"],
-  3: ["violin", "viola", "cello"],
-  4: ["violin", "violin", "viola", "cello"],
-  5: ["violin", "violin", "viola", "cello", "double-bass"],
-};
+/** The song behind "Try the demo song" (public/demo/README.md). */
+const DEMO_URL = "/demo/riffscribe-demo.mp3";
+
+/**
+ * Set once the AI split's download has been agreed to in this tab: the confirm is
+ * asked once a session, not before every split.
+ */
+const AI_SPLIT_AGREED = "riffscribe:ai-split-agreed";
+
+function aiSplitAgreed(): boolean {
+  try { return sessionStorage.getItem(AI_SPLIT_AGREED) === "1"; } catch { return false; }
+}
+
+function agreeToAiSplit(): void {
+  try { sessionStorage.setItem(AI_SPLIT_AGREED, "1"); } catch { /* asked again next time, no harm */ }
+}
+
+/** What a guide render depends on: the same key means the same audio. */
+function guideKey(part: Part, length: number): string {
+  let sum = 0;
+  for (const n of part.notes) sum += n.startTimeSeconds + n.pitchMidi + n.durationSeconds;
+  return `${part.id}|${part.instrument}|${part.notes.length}|${sum.toFixed(4)}|${part.contour?.midi.length ?? 0}|${length}`;
+}
+
+/** RMS of a recording over the frames where the singer's curve is voiced. */
+function voicedRms(mono: Float32Array, contour: PitchContour, sampleRate: number): number | null {
+  const hop = sampleRate / contour.fps;
+  let acc = 0, count = 0;
+  for (let j = 0; j < contour.midi.length; j++) {
+    if (!(contour.midi[j] > 0)) continue;
+    const a = Math.floor(j * hop), b = Math.min(mono.length, Math.floor((j + 1) * hop));
+    for (let i = a; i < b; i++) acc += mono[i] * mono[i];
+    count += Math.max(0, b - a);
+  }
+  return count ? Math.sqrt(acc / count) : null;
+}
 
 export default function Studio() {
   const [file, setFile] = useState<File | null>(null);
@@ -91,11 +131,18 @@ export default function Studio() {
   const [stemMode, setStemMode] = useState<StemMode>("none");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Set when a native phone reports ≤4 GB and the user has not confirmed the AI split. */
+  const [aiSplitCautionGb, setAiSplitCautionGb] = useState<number | null>(null);
   const [log, setLog] = useState<string>("");
 
   const [parts, setParts] = useState<Part[]>([]);
   const [settings, setSettings] = useState<TranscriptionSettings>(DEFAULT_SETTINGS);
+  /** For callbacks that outlive a render (loadFile): the settings as they are now. */
+  const settingsRef = useRef(settings);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
   const [ensembleSize, setEnsembleSize] = useState(4);
+  /** The instrument "Replace the voice" writes for. */
+  const [recipeInstrument, setRecipeInstrument] = useState<InstrumentId>("cello");
   const [source, setSource] = useState<Source>("mix");
   const [zoom, setZoom] = useState(1);
 
@@ -106,11 +153,11 @@ export default function Studio() {
   }>({ playing: false, time: 0, duration: 0, rate: 1, semitones: 0, rendering: null });
   const [loop, setLoop] = useState<[number, number] | null>(null);
 
-  const [recArmed, setRecArmed] = useState(false);
   const [recording, setRecording] = useState(false);
   const [overdub, setOverdub] = useState<{ left: Float32Array; right: Float32Array } | null>(null);
   const [nudgeMs, setNudgeMs] = useState(0);
   const [loopOnlyExport, setLoopOnlyExport] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"wav" | "mp3">("wav");
   const [playAlong, setPlayAlong] = useState(true);
   const [linkUrl, setLinkUrl] = useState("");
   const [helperUp, setHelperUp] = useState<boolean | null>(null);
@@ -121,12 +168,16 @@ export default function Studio() {
   const handedOff = useRef(false);
   /** The song whose parts are being kept on this device; null while loading or after a trim. */
   const partsFor = useRef<string | null>(null);
+  /** The take as last stored for a song, so an unchanged (or just restored) take is not encoded again. */
+  const savedTake = useRef<{ key: string; track: { left: Float32Array; right: Float32Array } | null } | null>(null);
   const [restored, setRestored] = useState<string | null>(null);
 
   /** Bars of clicks before playback and before a take. 0 turns it off. */
   const [countInBars, setCountInBars] = useState(1);
   const [counting, setCounting] = useState(false);
   const countRef = useRef<{ cancel: () => void } | null>(null);
+  /** Identifies the count-in that may go on to start playback; null once it is cancelled. */
+  const countToken = useRef<object | null>(null);
 
   /**
    * The speed trainer: every time the loop comes round, nudge the tempo up a
@@ -153,6 +204,8 @@ export default function Studio() {
 
   /** The saved chart this session is editing, once there is one. */
   const [chartId, setChartId] = useState<string | null>(null);
+  /** The song that chart was written from. Loading any other song detaches the chart. */
+  const chartSongRef = useRef<string | null>(null);
   // Signed in, there are saved songs the assistant can point to.
   const { user: signedIn } = useAccount();
 
@@ -160,7 +213,27 @@ export default function Studio() {
   const recorderRef = useRef<MicRecorder | null>(null);
   const recStartRef = useRef(0);
   const cancelSplitRef = useRef<(() => void) | null>(null);
+  /** Bumped by every song load: work that finds it changed belongs to a song no longer open. */
+  const loadSeq = useRef(0);
+  /** The samples of the original song a trim kept, [start, end), or null when not trimmed. */
+  const trimRef = useRef<[number, number] | null>(null);
+  /** The loop that was repeating when the take started, so the take can be folded back onto it. */
+  const recLoopRef = useRef<[number, number] | null>(null);
+  /** The recording the engine's tracks were loaded from: a new one is a new song, not an edit. */
+  const engineAudioRef = useRef<unknown>(null);
+  /** Synthesised guide per part id, with what it was rendered from, so editing one part does not re-render the others. */
+  const guideCache = useRef(new Map<string, { key: string; audio: unknown; track: GuideTrack }>());
+  /** The source stem's loudness while the singer sings, per part written from a voice: the guide's level. */
+  const targetRmsRef = useRef(new Map<string, number>());
   const partSeq = useRef(0);
+
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  /** The AI split confirm, while it waits for an answer. */
+  const [aiConfirmOpen, setAiConfirmOpen] = useState(false);
+  const aiConfirmAnswer = useRef<((c: AiSplitChoice) => void) | null>(null);
+  /** What to run once a "Trim to loop first" has produced the trimmed clip. */
+  const afterTrim = useRef<{ kind: "split" } | { kind: "replace"; instrument: InstrumentId } | null>(null);
 
   if (!engineRef.current && typeof window !== "undefined") engineRef.current = new PracticeEngine();
   if (!recorderRef.current && typeof window !== "undefined") recorderRef.current = new MicRecorder();
@@ -174,22 +247,47 @@ export default function Studio() {
     return () => { void e.dispose(); };
   }, []);
 
+  // Leaving the studio: stop a count-in that would otherwise go on to start playback,
+  // and close the microphone.
+  useEffect(() => {
+    const recorder = recorderRef.current;
+    return () => {
+      countToken.current = null;
+      countRef.current?.cancel();
+      recorder?.release();
+    };
+  }, []);
+
+  /** Edits belong to the parts they were made on: new parts or a new song start with none. */
+  const resetEdits = useCallback(() => {
+    setUndoStack([]);
+    setPickedBeat(null);
+  }, []);
+
   /* ------------------------------------------------------------------ load */
 
   /** `restoring`: bringing back the last song on return — keep whatever chart is open. */
   const loadFile = useCallback(async (f: File, restoring = false) => {
+    // A later load wins: every step below stops once another song has started loading.
+    const my = ++loadSeq.current;
+    const stale = () => my !== loadSeq.current;
+    // A split still running belongs to the song being replaced.
+    cancelSplitRef.current?.();
+    cancelSplitRef.current = null;
     setError(null);
     setBusy({ label: `Decoding ${f.name}…` });
     try {
       const buf = await fileToAudioBuffer(f);
       const stereo = await toStereo(buf, DEMUCS_SAMPLE_RATE);
+      if (stale()) return;
+      trimRef.current = null;
       setFile(f);
       setAudio({ left: stereo.left, right: stereo.right });
       setWavePeaks(peaksOf(toMono(stereo.left, stereo.right), 2200));
       setStems(null);
       setStemMode("none");
       if (!restoring) setParts([]);
-      setOverdub(null);
+      resetEdits();
       setSource("mix");
       setRestored(null);
       partsFor.current = null;
@@ -197,28 +295,69 @@ export default function Studio() {
       // Have we taken this song apart before? Separating costs minutes, so it
       // is worth a moment's hashing to find out.
       const id = await songKey(f);
+      if (stale()) return;
+      // A different song is a new chart: "Save changes" must not overwrite the one that was open.
+      if (!restoring && !keepChartLink(chartSongRef.current, id)) {
+        setChartId(null);
+        chartSongRef.current = null;
+      }
       setKey(id);
       setWantedSong(null);
       if (!restoring) void rememberSong(id, f);
       setBusy({ label: "Looking for work you have already done…" });
-      const cached = await getStems(id, DEMUCS_SAMPLE_RATE);
+      const found = await getStems(id, DEMUCS_SAMPLE_RATE);
+      if (stale()) return;
+      // Stems of another length are not this recording's: older versions saved a trimmed
+      // clip's split under the whole song's key. Treat those as not cached.
+      const firstStem = found ? Object.values(found.stems)[0] : undefined;
+      const cached = firstStem && Math.abs(firstStem.left.length - stereo.left.length) <= DEMUCS_SAMPLE_RATE * 0.05 ? found : null;
       if (cached) {
         setStems(cached.stems as StemSet);
         setStemMode(cached.mode as StemMode);
-        setSource("other");
+        setSource(melodic(settingsRef.current.instrument) ? "vocals" : "other");
         setRestored(cached.mode === "ai" ? "Stems restored from this device — no need to split again." : "Instant split restored from this device.");
       }
       // Transcribed parts come back too, unless a saved chart just brought its own.
       if (!restoring || !handedOff.current) {
         const saved = await getScore<Part[]>(id, "parts");
+        if (stale()) return;
         if (saved?.length) {
           setParts(saved);
           setRestored((r) => `${r ? r + " " : ""}${saved.length} transcribed ${saved.length === 1 ? "part" : "parts"} restored.`);
         }
       }
+      const savedSettings = readSavedSettings(await getScore<unknown>(id, "settings"));
+      const session = await getSession(id);
+      // The take has its own entry; older saves kept it inside the session.
+      const take = (await getOverdub(id)) ?? session?.overdub ?? null;
+      if (stale()) return;
+      if (session) {
+        setMix(session.mix);
+        setSoloed(session.soloed);
+      } else {
+        setMix({});
+        setSoloed(null);
+      }
+      if (take) {
+        const track = await unpackTrack(take, DEMUCS_SAMPLE_RATE);
+        if (stale()) return;
+        // Already stored: restoring it must not re-encode it.
+        savedTake.current = { key: id, track };
+        setOverdub(track);
+        setRestored((r) => `${r ? r + " " : ""}Mixer and your last take restored.`);
+        if (session?.overdub) {
+          // Move an older save's take to its own entry, so clearing the take later sticks.
+          void putOverdub(id, take);
+          void putSession(id, { mix: session.mix, soloed: session.soloed });
+        }
+      } else {
+        savedTake.current = { key: id, track: null };
+        setOverdub(null);
+      }
       partsFor.current = id;
       if (!cached) {
         const partial = await doneBlocks(partialKey(id, stereo.left.length));
+        if (stale()) return;
         if (partial.size) {
           setRestored(
             `An AI split of this song stopped partway — ${partial.size} ${partial.size === 1 ? "part is" : "parts are"} kept. ` +
@@ -229,23 +368,70 @@ export default function Studio() {
 
       const mono = toMono(stereo.left, stereo.right);
       const tempo = estimateTempo(mono, DEMUCS_SAMPLE_RATE);
-      if (!restoring) {
-        setSettings((s) => ({ ...s, bpm: tempo.bpm, offsetSeconds: tempo.offsetSeconds }));
-        setLog(`Detected ${tempo.bpm} BPM (confidence ${(tempo.confidence * 100).toFixed(0)}%)`);
+      // Tempo, offset, key choices, sections and loop are kept per song like the parts are —
+      // the parts' notes are in seconds and only mean anything against the tempo they were written at.
+      const onLoad = settingsOnLoad(savedSettings, restoring && handedOff.current, tempo);
+      if (onLoad.kind === "saved") {
+        setSettings({ ...DEFAULT_SETTINGS, ...(onLoad.value.settings as unknown as TranscriptionSettings) });
+        setSections(onLoad.value.sections);
+        setLoop(onLoad.value.loop);
+        setLog(restoring ? `Brought back ${f.name} from last time.` : `Brought back your tempo and settings for ${f.name}.`);
+      } else if (onLoad.kind === "detected") {
+        // A song never seen before: the last song's sections, loop, capo and key must not
+        // carry over (and then be saved as this song's). The instrument is kept as a preference.
+        setSettings((s) => ({
+          ...s,
+          bpm: onLoad.bpm,
+          offsetSeconds: onLoad.offsetSeconds,
+          capo: DEFAULT_SETTINGS.capo,
+          transposeSemitones: DEFAULT_SETTINGS.transposeSemitones,
+        }));
+        setSections([]);
+        setLoop(null);
+        setLog(restoring
+          ? `Brought back ${f.name} from last time — tempo re-detected at ${tempo.bpm} BPM.`
+          : `Detected ${tempo.bpm} BPM (confidence ${(tempo.confidence * 100).toFixed(0)}%)`);
       } else {
         setLog(`Brought back ${f.name} from last time.`);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not read that file");
+      if (!stale()) setError(humanError(e, "decode"));
     } finally {
-      setBusy(null);
+      if (!stale()) setBusy(null);
     }
-  }, []);
+  }, [resetEdits]);
 
   /** Keep this song's parts on the device, so reopening it brings them back. */
   useEffect(() => {
     if (key && partsFor.current === key) void putScore(key, "parts", parts);
   }, [key, parts]);
+
+  /** Tempo, offset, key choices, sections and loop — separate from the session so a BPM edit does not re-encode the take. */
+  useEffect(() => {
+    if (key && partsFor.current === key) void putScore(key, "settings", { settings, sections, loop });
+  }, [key, settings, sections, loop]);
+
+  /** Mixer faders and solo — tiny, and debounced so a fader drag writes once, the last position. */
+  useEffect(() => {
+    if (!key || partsFor.current !== key) return;
+    const t = setTimeout(() => { void putSession(key, { mix, soloed }); }, 300);
+    return () => clearTimeout(t);
+  }, [key, mix, soloed]);
+
+  /** The overdub take: encoded only when the take itself changes, and the latest take wins. */
+  useEffect(() => {
+    if (!key || partsFor.current !== key) return;
+    const saved = savedTake.current;
+    if (saved && saved.key === key && saved.track === overdub) return;
+    let cancelled = false;
+    void (async () => {
+      const packed = overdub ? await packTrack(overdub, DEMUCS_SAMPLE_RATE) : null;
+      if (cancelled) return;
+      await putOverdub(key, packed);
+      savedTake.current = { key, track: overdub };
+    })().catch(() => { /* not kept this time; the next change tries again */ });
+    return () => { cancelled = true; };
+  }, [key, overdub]);
 
   /** Coming back to the studio: reopen the song that was loaded before. */
   useEffect(() => {
@@ -317,6 +503,12 @@ export default function Studio() {
     return 57 + ((pc - 9 + 12) % 12); // 57 is A3
   }, [parts]);
 
+  /** SaveBar reports the chart it saved or dropped; remember which song it belongs to. */
+  const linkChart = useCallback((id: string | null) => {
+    setChartId(id);
+    chartSongRef.current = id ? key ?? chartSongRef.current : null;
+  }, [key]);
+
   /* ---------------------------------------------------------------- charts */
 
   /** Everything worth keeping about a song, and nothing that weighs anything. */
@@ -326,7 +518,8 @@ export default function Studio() {
       version: CHART_VERSION,
       title: file?.name.replace(/\.[^.]+$/, "") || "Untitled",
       settings,
-      parts,
+      // the singer's curve is device-only: heavy, and only meaningful next to the recording
+      parts: parts.map(({ contour: _contour, ...rest }) => rest),
       sections,
       loop,
       songKey: key ?? undefined,
@@ -335,6 +528,11 @@ export default function Studio() {
   }, [parts, settings, sections, loop, file, key]);
 
   const openChart = useCallback((chart: Chart) => {
+    // Until the chart's own song is loaded, whatever is open belongs to another song:
+    // its cache must not be overwritten with these parts, and its edits must not undo into them.
+    partsFor.current = null;
+    chartSongRef.current = chart.songKey ?? null;
+    resetEdits();
     setSettings(chart.settings);
     setParts(chart.parts);
     setSections(chart.sections ?? []);
@@ -363,7 +561,7 @@ export default function Studio() {
         setLog(`Opened ${title}.`);
       }
     })();
-  }, [loadFile]);
+  }, [loadFile, resetEdits]);
 
   /** A chart arriving from a shared link, handed over through session storage. */
   useEffect(() => {
@@ -392,46 +590,126 @@ export default function Studio() {
    * assistant links each song it lists. Also works with the studio already
    * open: the address changes, the page stays.
    */
-  const songParam = useSearchParams().get("song");
+  const params = useSearchParams();
+  const songParam = params.get("song");
+  const demoParam = params.get("demo") === "1";
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  const audioRef = useRef(audio);
+  audioRef.current = audio;
+  const demoStarted = useRef(false);
+
+  /** The demo song, fetched from this site and loaded like a dropped file. */
+  const loadDemo = useCallback(async () => {
+    setError(null);
+    setBusy({ label: "Fetching the demo song…" });
+    try {
+      const res = await fetch(DEMO_URL);
+      if (!res.ok) throw new Error(`the site answered ${res.status}`);
+      const blob = await res.blob();
+      await loadFile(new File([blob], "Riffscribe demo.mp3", { type: "audio/mpeg" }));
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      setError(`The demo song could not be fetched. Check your connection and try again. (${detail})`);
+      setBusy(null);
+    }
+  }, [loadFile]);
+
   useEffect(() => {
-    if (!songParam) return;
-    handedOff.current = true; // set before lastSong() resolves, so it does not load over this
-    let cancelled = false;
-    void (async () => {
-      try {
+    if (songParam) {
+      handedOff.current = true; // set before lastSong() resolves, so it does not load over this
+      let cancelled = false;
+      void (async () => {
         const job = busyRef.current;
-        if (job) throw new Error(`Wait for “${job.label}” to finish, then open the song again.`);
-        const chart = await loadChart(songParam);
-        if (cancelled) return;
-        if (!chart) throw new Error("That song has gone — it may have been deleted.");
-        openChart(chart);
-        setChartId(songParam);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "could not open that song");
-      }
-      // Consumed, like the handoff above: a reload must not reopen it over whatever came next.
-      if (!cancelled) window.history.replaceState(null, "", "/studio");
-    })();
-    return () => { cancelled = true; };
-  }, [songParam, openChart]);
+        if (job) {
+          setError(`Wait for “${job.label}” to finish, then open the song again.`);
+        } else {
+          try {
+            const chart = await loadChart(songParam);
+            if (cancelled) return;
+            if (chart) {
+              openChart(chart);
+              setChartId(songParam);
+            } else {
+              setError("That song has gone — it may have been deleted.");
+            }
+          } catch (e) {
+            if (!cancelled) setError(humanError(e, "chart"));
+          }
+        }
+        // Consumed, like the handoff above: a reload must not reopen it over whatever came next.
+        if (!cancelled) window.history.replaceState(null, "", "/studio");
+      })();
+      return () => { cancelled = true; };
+    }
+    if (!demoParam || demoStarted.current) return;
+    demoStarted.current = true;
+    // A chart handed over from a shared link (the effect above this one) or a song already
+    // open wins: the demo is only for an empty studio.
+    if (handedOff.current || audioRef.current || busyRef.current) {
+      window.history.replaceState(null, "", "/studio");
+      return;
+    }
+    handedOff.current = true; // the last song must not load over the demo
+    void loadDemo().finally(() => window.history.replaceState(null, "", "/studio"));
+  }, [songParam, demoParam, openChart, loadDemo]);
 
   /* --------------------------------------------------------------- engine  */
 
-  /** One synthesised line per part, so each can be heard on its own. */
-  const guideTracks = useMemo(() => {
-    if (!audio) return [] as { id: string; left: Float32Array; right: Float32Array }[];
-    return parts.map((part) => {
-      const [left, right] = synthesizeGuide(part.notes, {
+  /**
+   * One synthesised line per part, so each can be heard on its own. At sounding pitch: the
+   * "write it in" transposition only changes the notation, and the engine's transpose moves
+   * the guide together with the backing. Rendered off the page (guideClient); a part whose
+   * notes, instrument and curve are unchanged reuses its earlier render (and the engine then
+   * does not re-render it either).
+   */
+  const [rendered, setRendered] = useState<{ audio: unknown; tracks: GuideTrack[] }>({ audio: null, tracks: [] });
+  // renders made for another recording are never handed to the engine
+  const guideTracks = useMemo(
+    () => (audio && rendered.audio === audio ? rendered.tracks : ([] as GuideTrack[])),
+    [audio, rendered]
+  );
+  useEffect(() => {
+    if (!audio) return;
+    let superseded = false;
+    const cache = guideCache.current;
+    const live = new Set(parts.map((p) => p.id));
+    for (const id of [...cache.keys()]) if (!live.has(id)) cache.delete(id);
+    const length = audio.left.length;
+    const jobs = parts.map(async (part): Promise<GuideTrack> => {
+      const k = guideKey(part, length);
+      const hit = cache.get(part.id);
+      if (hit && hit.key === k && hit.audio === audio) return hit.track;
+      let targetRms = part.contour ? targetRmsRef.current.get(part.id) : undefined;
+      // a part brought back from this device: measure its source stem again, as when it was written
+      const stem = stems && part.source !== "mix" ? stems[part.source as keyof StemSet] : null;
+      if (part.contour && targetRms === undefined && stem && stem.left.length === length) {
+        targetRms = voicedRms(toMono(stem.left, stem.right), part.contour, DEMUCS_SAMPLE_RATE) ?? undefined;
+        if (targetRms) targetRmsRef.current.set(part.id, targetRms);
+      }
+      const [left, right] = await renderGuide(part.notes, {
         timbre: INSTRUMENTS[part.instrument].timbre,
         sampleRate: DEMUCS_SAMPLE_RATE,
-        lengthSamples: audio.left.length,
-        transposeSemitones: settings.transposeSemitones,
+        lengthSamples: length,
+        contour: part.contour ?? null,
+        bodyScale: (BODY_SCALE as Partial<Record<InstrumentId, number>>)[part.instrument] ?? 1,
+        ...(targetRms ? { targetRms } : {}),
       });
-      return { id: `guide:${part.id}`, left, right };
+      const track = { id: `guide:${part.id}`, left, right };
+      // valid for its key whether or not this run is still current
+      cache.set(part.id, { key: k, audio, track });
+      return track;
     });
-  }, [audio, parts, settings.transposeSemitones]);
+    Promise.all(jobs).then(
+      (tracks) => { if (!superseded) setRendered({ audio, tracks }); },
+      (e) => {
+        if (superseded) return;
+        console.error("[riffscribe] guide render failed", e);
+        setError(humanError(e, "engine"));
+      }
+    );
+    return () => { superseded = true; };
+  }, [audio, parts, stems]);
 
   const trackList = useMemo<{ id: string; label: string; hint?: string }[]>(() => {
     const out: { id: string; label: string; hint?: string }[] = [];
@@ -443,17 +721,26 @@ export default function Studio() {
     } else if (audio) {
       out.push({ id: "original", ...STEM_LABEL.original });
     }
+    const seen = new Map<InstrumentId, number>();
     for (const part of parts) {
+      const nth = (seen.get(part.instrument) ?? 0) + 1;
+      seen.set(part.instrument, nth);
+      const line = part.source === "mix" ? "full mix" : STEM_LABEL[part.source]?.label.toLowerCase() ?? part.source;
       out.push({
         id: `guide:${part.id}`,
-        label: `${INSTRUMENTS[part.instrument].label}`,
-        hint: `written from ${part.source === "mix" ? "the full mix" : part.source}`,
+        label: `${INSTRUMENTS[part.instrument].label} · plays the ${line} line${nth > 1 ? ` (${nth})` : ""}`,
+        hint: part.contour
+          ? `follows the ${part.source === "vocals" ? "singer" : "recording"}'s pitch and loudness`
+          : "the transcription, played back",
       });
     }
     if (audio) out.push({ id: "click", ...STEM_LABEL.click });
     if (overdub) out.push({ id: "overdub", ...STEM_LABEL.overdub });
     return out;
   }, [stems, stemMode, audio, overdub, parts]);
+
+  /** The solo that still points at a track. A leftover id would silence every row with no solo button lit. */
+  const activeSolo = useMemo(() => liveSolo(soloed, trackList.map((t) => t.id)), [soloed, trackList]);
 
   const clickTrack = useMemo(() => {
     if (!audio) return null;
@@ -487,10 +774,17 @@ export default function Studio() {
     if (overdub) push("overdub", overdub.left, overdub.right);
 
     try {
-      await engine.load(tracks, DEMUCS_SAMPLE_RATE);
+      // A new recording starts over; anything else (a chart edit, a BPM change, a finished
+      // split) only swaps the tracks that changed, so playback and slowed renders carry on.
+      if (engineAudioRef.current !== audio) {
+        engineAudioRef.current = audio;
+        await engine.load(tracks, DEMUCS_SAMPLE_RATE);
+      } else {
+        await engine.updateTracks(tracks, DEMUCS_SAMPLE_RATE);
+      }
     } catch (e) {
       console.error("[riffscribe] audio engine failed", e);
-      setError(e instanceof Error ? e.message : "could not start the audio engine");
+      setError(humanError(e, "engine"));
       return;
     }
     setMix((prev) => {
@@ -508,7 +802,7 @@ export default function Studio() {
     });
   }, [audio, stems, stemMode, overdub, trackList, clickTrack, guideTracks]);
 
-  // rebuilding tears down the audio graph, so coalesce bursts (e.g. typing a BPM)
+  // each rebuild re-renders the tracks that changed, so coalesce bursts (e.g. typing a BPM)
   useEffect(() => {
     const id = setTimeout(() => void rebuildEngine(), 350);
     return () => clearTimeout(id);
@@ -521,10 +815,10 @@ export default function Studio() {
     for (const t of trackList) {
       const m = mix[t.id];
       if (!m) continue;
-      const audible = !m.muted && (soloed === null || soloed === t.id);
+      const audible = !m.muted && (activeSolo === null || activeSolo === t.id);
       engine.setGain(t.id, audible ? m.gain : 0);
     }
-  }, [mix, soloed, trackList]);
+  }, [mix, activeSolo, trackList]);
 
   useEffect(() => { void engineRef.current?.setLoop(loop); }, [loop]);
 
@@ -542,31 +836,60 @@ export default function Studio() {
     if (!wrapped) return;
     setPasses((n) => n + 1);
     if (!trainer) return;
-    const next = Math.min(trainer.target, Math.round((transport.rate + trainer.step) * 100) / 100);
-    if (next > transport.rate) {
-      void engineRef.current?.setRate(next);
-      setLog(`Clean pass — up to ${Math.round(next * 100)}%.`);
-    } else if (transport.rate >= trainer.target) {
+    const step = trainerStep(transport.rate, trainer);
+    if (step.kind === "up") {
+      void engineRef.current?.setRate(step.rate); // already rendered by the effect below, so this does not stall
+      setLog(`Pass done — up to ${Math.round(step.rate * 100)}%.`);
+    } else if (step.kind === "done") {
       setTrainer(null);
       setLog(`You are up to ${Math.round(trainer.target * 100)}%. Trainer off.`);
     }
   }, [transport.time, transport.playing, transport.rate, loop, trainer]);
 
+  // Rendering a speed stretches the whole song, which takes a while. Do the next step's
+  // render in the background while this pass plays, so the wrap into it is instant.
+  useEffect(() => {
+    if (!trainer || !loop || !transport.playing) return;
+    const step = trainerStep(transport.rate, trainer);
+    if (step.kind === "up") void engineRef.current?.prepareRate(step.rate);
+  }, [trainer, loop, transport.playing, transport.rate]);
+
+  // The trainer works on a loop; without one it would ramp the speed on the next loop set.
+  useEffect(() => {
+    if (!loop && trainer) {
+      setTrainer(null);
+      setLog("Loop cleared. Trainer off.");
+    }
+  }, [loop, trainer]);
+
   /** Play, but count it in first so you can come in with it. */
   const startPlaying = useCallback(async () => {
     const engine = engineRef.current;
     if (!engine) return;
-    if (transport.playing) {
-      countRef.current?.cancel();
+    // Pressed again during the count-in: that is "stop", not a second count-in.
+    if (countRef.current) {
+      countToken.current = null;
+      countRef.current.cancel();
+      countRef.current = null;
       setCounting(false);
+      return;
+    }
+    if (transport.playing) {
       await engine.pause();
       return;
     }
+    // Start the audio context now, inside the click: after a count-in the gesture has
+    // expired and iOS Safari would leave it suspended.
+    engine.warm();
     if (countInBars > 0) {
+      const token = {};
+      countToken.current = token;
       setCounting(true);
       const c = countIn(settings.bpm, transport.rate, settings.timeSignature[0], countInBars);
       countRef.current = c;
       await c.done;
+      if (countToken.current !== token) return; // cancelled while counting
+      countToken.current = null;
       countRef.current = null;
       setCounting(false);
     }
@@ -588,8 +911,30 @@ export default function Studio() {
 
   /* -------------------------------------------------------------- separate */
 
-  async function runInstant() {
-    if (!audio) return;
+  /**
+   * Where work on the audio as it is now is kept on this device. A clip trimmed to a loop
+   * is not the song its key was hashed from, so it gets a key of its own.
+   */
+  function workKey(): string | null {
+    const trim = trimRef.current;
+    return key && trim ? `${key}:trim:${trim[0]}-${trim[1]}` : key;
+  }
+
+  /** Each job below answers whether it finished, so the assistant does not report success after a failure. */
+  async function runInstant(): Promise<boolean> {
+    return !!(await splitInstant());
+  }
+
+  async function runDemucs(): Promise<boolean> {
+    return !!(await splitAi());
+  }
+
+  /** The instant split; resolves with the stems, or null when it failed or another song was loaded. */
+  async function splitInstant(): Promise<StemSet | null> {
+    if (!audio) return null;
+    // Results are for this song as it is now: a song loaded meanwhile must not get them.
+    const my = loadSeq.current;
+    const trimmed = !!trimRef.current;
     setError(null);
     setBusy({ label: "Pulling the centre channel out…" });
     try {
@@ -598,31 +943,42 @@ export default function Studio() {
         Float32Array.from(audio.right),
         DEMUCS_SAMPLE_RATE
       );
+      // The stem cache is whole songs only: a trimmed clip's split would come back for the whole song.
+      if (key && file && !trimmed) void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "instant");
+      if (my !== loadSeq.current) return null;
       setStems(result);
       setStemMode("instant");
-      setSource("other");
+      setSource(melodic(settings.instrument) ? "vocals" : "other");
       setLog("Instant split done. For a cleaner result, run the AI split.");
-      if (key && file) void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "instant");
+      return result;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "instant split failed");
+      // A mono file is not a failed split: say only what to do instead.
+      const isMono = e instanceof Error && e.message === MONO_SPLIT_ERROR;
+      if (my === loadSeq.current) setError(isMono ? MONO_SPLIT_ERROR : humanError(e, "split"));
+      return null;
     } finally {
-      setBusy(null);
+      if (my === loadSeq.current) setBusy(null);
     }
   }
 
-  async function runDemucs() {
-    if (!audio) return;
+  /** The AI split; resolves with the stems, or null when it failed, was paused or another song was loaded. */
+  async function splitAi(): Promise<StemSet | null> {
+    if (!audio) return null;
+    const my = loadSeq.current;
+    const trimmed = !!trimRef.current;
+    const current = () => my === loadSeq.current;
     setError(null);
     setBusy({ label: "Loading the separation model…" });
     try {
       // Without a song key (should not happen once loaded) blocks are simply not reused.
-      const pkey = partialKey(key ?? `unsaved-${Date.now()}`, audio.left.length);
+      const pkey = partialKey(workKey() ?? `unsaved-${Date.now()}`, audio.left.length);
       const { promise, cancel } = separateResumable(
         pkey,
         audio.left,
         audio.right,
         { done: doneBlocks, get: getBlock, put: putBlock, clear: clearBlocks },
         (p) => {
+          if (!current()) return;
           if (p.phase === "download") setBusy({ label: `Downloading model (one time, ~180 MB) ${p.message ?? ""}`, value: p.value });
           else if (p.phase === "prepare") setBusy({ label: "Preparing the model — this takes a moment…" });
           else if (p.phase === "separate") setBusy({ label: `Separating stems ${p.message ?? ""}`, value: p.value });
@@ -631,22 +987,72 @@ export default function Studio() {
       );
       cancelSplitRef.current = cancel;
       const result = await promise;
-      setStems(result);
-      setStemMode("ai");
-      setSource("other");
-      setLog("Four stems ready. Mute what you don't want to hear.");
-      // Minutes of work — never make anyone wait for it twice.
-      if (key && file) {
+      // Minutes of work — never make anyone wait for it twice. Whole songs only, as above.
+      if (key && file && !trimmed) {
         void requestPersistence();
         void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "ai");
       }
+      if (!current()) return null;
+      setStems(result);
+      setStemMode("ai");
+      setSource(melodic(settings.instrument) ? "vocals" : "other");
+      setAiSplitCautionGb(null);
+      setLog("Four stems ready. Mute what you don't want to hear.");
+      return result;
     } catch (e) {
-      if (e instanceof Error && e.message === SPLIT_PAUSED) return;
-      setError(e instanceof Error ? e.message : "stem separation failed");
+      if (!current()) return null;
+      if (e instanceof Error && e.message === SPLIT_PAUSED) return null;
+      const detail = e instanceof Error && e.message ? e.message : "stem separation failed";
+      const native = await isNativePlatform();
+      setError(
+        native
+          ? `This phone could not finish the AI stem split. The desktop site is the reliable place for it. Instant vocal removal still works on this phone. (${detail})`
+          : humanError(e, "split"),
+      );
+      return null;
     } finally {
-      cancelSplitRef.current = null;
-      setBusy(null);
+      if (current()) {
+        cancelSplitRef.current = null;
+        setBusy(null);
+      }
     }
+  }
+
+  /**
+   * AI split only. Instant vocal removal is never gated.
+   * A phone that reports 4 GB or less gets a warning and can still continue.
+   */
+  async function startAiSplit(): Promise<void> {
+    const choice = await askAiSplit();
+    if (choice === "cancel") return;
+    if (choice === "trim") {
+      if (trimToLoop()) afterTrim.current = { kind: "split" };
+      return;
+    }
+    await aiSplitChecked();
+  }
+
+  /**
+   * Before the first AI split of the session on a song with no AI stems: what it downloads
+   * and how long it takes, with trimming to the loop as the quicker way. Resolves at once
+   * when already agreed.
+   */
+  function askAiSplit(): Promise<AiSplitChoice> {
+    if (aiSplitAgreed() || stemMode === "ai") return Promise.resolve("split");
+    return new Promise((resolve) => {
+      aiConfirmAnswer.current = resolve;
+      setAiConfirmOpen(true);
+    });
+  }
+
+  /** `startAiSplit`, resolving with the stems (null when the phone warning stopped it, or it failed). */
+  async function aiSplitChecked(): Promise<StemSet | null> {
+    const mem = await nativeDeviceMemoryGb();
+    if (mem != null && mem <= 4) {
+      setAiSplitCautionGb(mem);
+      return null;
+    }
+    return splitAi();
   }
 
   function cancelJob() {
@@ -656,12 +1062,17 @@ export default function Studio() {
     setLog("Separation paused. Finished parts are kept — press the AI split again to carry on from there.");
   }
 
-  /** Cut the song down to the looped section — separation is slow, so this helps. */
-  function trimToLoop() {
-    if (!audio || !loop) return;
+  /** Cut the song down to the looped section — separation is slow, so this helps. Answers whether it did. */
+  function trimToLoop(): boolean {
+    if (!audio || !loop) return false;
     const a = Math.max(0, Math.floor(loop[0] * DEMUCS_SAMPLE_RATE));
     const b = Math.min(audio.left.length, Math.floor(loop[1] * DEMUCS_SAMPLE_RATE));
-    if (b - a < DEMUCS_SAMPLE_RATE) return;
+    if (b - a < DEMUCS_SAMPLE_RATE) {
+      setLog("That loop is under a second: set a longer one to trim to.");
+      return false;
+    }
+    const base = trimRef.current?.[0] ?? 0;
+    trimRef.current = [base + a, base + b];
     const left = audio.left.slice(a, b);
     const right = audio.right.slice(a, b);
     setAudio({ left, right });
@@ -670,28 +1081,32 @@ export default function Studio() {
     setStemMode("none");
     partsFor.current = null; // parts of a trimmed clip no longer line up with the song
     setParts([]);
+    resetEdits();
     setOverdub(null);
     setSource("mix");
     setLoop(null);
     setSettings((s) => ({ ...s, offsetSeconds: 0 }));
     setLog(`Trimmed to ${Math.round((b - a) / DEMUCS_SAMPLE_RATE)}s. Separation and transcription will be much quicker.`);
+    return true;
   }
 
   /* ------------------------------------------------------------ transcribe */
 
-  const sourceChannels = useCallback((): { left: Float32Array; right: Float32Array } | null => {
+  const sourceChannels = useCallback((s: Source = source): { left: Float32Array; right: Float32Array } | null => {
     if (!audio) return null;
-    if (source === "mix" || !stems) return audio;
-    return stems[source];
+    if (s === "mix" || !stems) return audio;
+    return stems[s];
   }, [audio, stems, source]);
 
   /** Throw away what we remembered, for when a split went badly. */
   async function forgetSong() {
     if (!key) return;
-    await forget(key);
+    // The notes written from those stems go too, or the next pass would reuse them.
+    await forgetSplit(key);
     setStems(null);
     setStemMode("none");
     setSource("mix");
+    setSoloed(null);
     setRestored(null);
     setLog("Forgotten. The next split will run from scratch.");
   }
@@ -704,34 +1119,60 @@ export default function Studio() {
    * be compared with the chart directly. We transcribe it with the same model
    * that produced the chart, which means both sides carry the same biases and
    * a disagreement is more likely to be the player than the machine.
+   *
+   * Only the stretch that was recorded is listened to and marked. The take sits
+   * in a full-song buffer padded with silence; marking it against the whole
+   * chart called every bar the player never reached "missed".
+   *
+   * Returns a sentence instead of a report when there is nothing to mark.
    */
-  async function checkTake(): Promise<TakeReport | null> {
+  async function checkTake(): Promise<TakeReport | string | null> {
     const part = parts.find((x) => x.id === checkPart) ?? parts[0];
     if (!overdub || !part) return null;
     const inst = INSTRUMENTS[part.instrument];
+    const span = takeSpan(overdub.left, overdub.right, DEMUCS_SAMPLE_RATE);
+    const chart = span ? chartInWindow(part.notes, span[0], span[1]) : [];
+    if (!span || !chart.length) {
+      const why = !span
+        ? "That take is silent — record it again."
+        : "Nothing is written in the bars you played — record over a stretch the part plays in.";
+      setReport(null);
+      setLog(why);
+      return why;
+    }
     setError(null);
     setBusy({ label: "Listening to your take…", value: 0 });
     try {
-      const buffer = channelsToAudioBuffer([overdub.left, overdub.right], DEMUCS_SAMPLE_RATE);
+      const pad = 0.5;
+      const a = Math.max(0, Math.floor((span[0] - pad) * DEMUCS_SAMPLE_RATE));
+      const b = Math.min(overdub.left.length, Math.ceil((span[1] + pad) * DEMUCS_SAMPLE_RATE));
+      const buffer = channelsToAudioBuffer([overdub.left.slice(a, b), overdub.right.slice(a, b)], DEMUCS_SAMPLE_RATE);
       const mono22 = await toModelInput(buffer);
-      const played = await transcribeAudio(mono22, {
+      // The player reads the written part, so a transposed part is played (and
+      // must be listened for) that far from the chart's sounding pitch.
+      const shift = settings.transposeSemitones;
+      const midi = (m: number) => Math.max(0, Math.min(127, m + shift));
+      const heard = await transcribeAudio(mono22, {
         onsetThreshold: settings.onsetThreshold,
         frameThreshold: settings.frameThreshold,
         minNoteLength: settings.minNoteLength,
-        minMidi: inst.range[0],
-        maxMidi: inst.range[1],
+        minMidi: midi(inst.range[0]),
+        maxMidi: midi(inst.range[1]),
         onProgress: (p) => setBusy({ label: "Listening to your take…", value: p }),
       });
-      const r = markTake(part.notes, played, {
+      const line = playsSingleLine(inst) ? consolidateMonophonic(extractMelody(heard)) : heard;
+      const played = line.map((n) => ({ ...n, startTimeSeconds: n.startTimeSeconds + a / DEMUCS_SAMPLE_RATE }));
+      const r = markTake(chart, played, {
         bpm: settings.bpm,
         beatsPerBar: settings.timeSignature[0],
-        offsetSeconds: settings.offsetSeconds,
+        offsetSeconds: barLineSeconds,
+        transposeSemitones: shift,
       });
       setReport(r);
       setLog(summarise(r));
       return r;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not mark that take");
+      setError(humanError(e, "transcribe"));
       return null;
     } finally {
       setBusy(null);
@@ -743,73 +1184,271 @@ export default function Studio() {
     const range = barsToRange(report.worstBars, {
       bpm: settings.bpm,
       beatsPerBar: settings.timeSignature[0],
-      offsetSeconds: settings.offsetSeconds,
+      offsetSeconds: barLineSeconds,
     });
     if (!range) return;
     setLoop(range);
     void engineRef.current?.seek(range[0]);
-    setLog(`Looping the bars that need it: ${report.worstBars.map((b) => b.bar).join(", ")}.`);
+    setLog(`Looping the bars that need it: ${barsLabel(barsToLoop(report.worstBars))}.`);
   }
 
-  async function runTranscribe() {
-    const src = sourceChannels();
-    if (!src) return;
-    const inst = INSTRUMENTS[settings.instrument];
+  /** `from` is for callers that have just changed the source: state would still hold the old one. */
+  async function runTranscribe(from?: Source): Promise<boolean> {
+    const which = from ?? source;
+    const src = sourceChannels(which);
+    if (!src) return false;
+    return !!(await transcribeFrom(src, which, settings.instrument));
+  }
+
+  /**
+   * Write a part for `instrumentId` from one recording (a stem or the mix) and add it.
+   *
+   * New parts are one note at a time when the "single melody line" box is ticked (or `monophonic`
+   * says so). Picking an instrument that holds its notes ticks it (instrumentPatch), and it can
+   * still be unticked for double stops or chords.
+   * A single line is cleaned up (cleanMonoLine), the singer's pitch curve is tracked through it
+   * when there are model peaks, its loudness is read from the audio, and the whole line is moved
+   * by octaves onto the instrument (placeInRegister). Resolves with the new part, or null.
+   */
+  async function transcribeFrom(
+    channels: Channels,
+    sourceName: Source,
+    instrumentId: InstrumentId,
+    opts: { monophonic?: boolean; stem?: StemMode } = {}
+  ): Promise<Part | null> {
+    const inst = INSTRUMENTS[instrumentId];
+    const my = loadSeq.current;
+    const current = () => my === loadSeq.current;
+    const mono = opts.monophonic ?? settings.monophonic;
+    const voice = sourceName === "vocals";
     setError(null);
     setBusy({ label: "Listening for notes…", value: 0 });
     const startedAt = performance.now();
-    const variant = `${source}:${settings.instrument}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}`;
-    try {
-      let found = key ? await getScore<NoteEvent[]>(key, variant) : null;
-      const fromCache = !!found;
-      if (!found) {
-        const buffer = channelsToAudioBuffer([src.left, src.right], DEMUCS_SAMPLE_RATE);
-        const mono22 = await toModelInput(buffer);
-        found = await transcribeAudio(mono22, {
+    // Which split made the stem is part of the key: a Clean (AI) split's vocals must not get
+    // the notes an instant split's centre channel produced. `stem` is for callers that have just
+    // split, while the stemMode state is still the old one.
+    const split = sourceName === "mix" ? "mix" : (opts.stem ?? stemMode);
+    const variant =
+      `${split}:${sourceName}:${instrumentId}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}` +
+      `:v2:${voice ? "voice" : "inst"}`;
+    const detect: TranscribeFullOptions = voice
+      ? {
+          // a voice is detected over its own range, keeping short notes and weak ones
+          onsetThreshold: settings.onsetThreshold,
+          frameThreshold: settings.frameThreshold,
+          minNoteLength: Math.min(settings.minNoteLength, 7),
+          minMidi: 36,
+          maxMidi: 96,
+          melodiaTrick: false,
+          wantPeaks: true,
+        }
+      : {
           onsetThreshold: settings.onsetThreshold,
           frameThreshold: settings.frameThreshold,
           minNoteLength: settings.minNoteLength,
           minMidi: inst.range[0],
           maxMidi: inst.range[1],
-          onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
+          wantPeaks: mono,
+        };
+    try {
+      const store = workKey();
+      let found = store ? await getScore<NoteEvent[]>(store, variant) : null;
+      let peaks = store && detect.wantPeaks ? await getScore<ContourPeaks>(store, `${variant}:peaks`) : null;
+      const fromCache = !!found && (!detect.wantPeaks || !!peaks);
+      if (!fromCache) {
+        const buffer = channelsToAudioBuffer([channels.left, channels.right], DEMUCS_SAMPLE_RATE);
+        const mono22 = await toModelInput(buffer);
+        const result = await transcribeAudioFull(mono22, {
+          ...detect,
+          onProgress: (p) => { if (current()) setBusy({ label: "Listening for notes…", value: p }); },
         });
-        if (key) void putScore(key, variant, found);
+        found = result.notes;
+        peaks = result.peaks;
+        if (store) {
+          void putScore(store, variant, found);
+          if (peaks) void putScore(store, `${variant}:peaks`, peaks);
+        }
       }
-      const k = estimateKey(chromaFromNotes(found));
-      addPart({
-        source,
-        instrument: settings.instrument,
-        notes: found,
+      if (!current() || !found) return null;
+
+      let notes: NoteEvent[] = found;
+      let contour: PitchContour | null = null;
+      let octaves: number | undefined;
+      let targetRms: number | null = null;
+      if (mono) {
+        // One note at a time, held notes held, each note's pitch read from its own bends.
+        // That beats re-reading it from the tracked curve on real singing (docs/eval-cello.md).
+        // A voice (or an instrument that holds its notes) keeps the stronger note; a plucked or
+        // struck part made single-line keeps its top note, the melody over the chord.
+        notes = cleanMonoLine(found, voice || melodic(instrumentId) ? {} : { strategy: "highest" });
+        const duration = channels.left.length / DEMUCS_SAMPLE_RATE;
+        contour = peaks && notes.length ? trackContour(peaks, notes, duration) : null;
+        if (contour) {
+          const down = toMono(channels.left, channels.right);
+          const level = loudnessCurve(down, DEMUCS_SAMPLE_RATE, contour.fps);
+          contour.level = level.slice(0, contour.midi.length);
+          targetRms = voicedRms(down, contour, DEMUCS_SAMPLE_RATE);
+        }
+        const placed = placeInRegister(notes, contour, instrumentId);
+        notes = placed.notes;
+        contour = placed.contour;
+        octaves = placed.octaves;
+      }
+      const k = estimateKey(chromaFromNotes(notes));
+      const part = addPart({
+        source: sourceName,
+        instrument: instrumentId,
+        notes,
         tonicPc: k.tonic,
         fifths: k.fifths,
         keyName: k.name,
         keyMode: k.mode,
+        ...(mono ? { monophonic: true, octaves } : {}),
+        ...(contour ? { contour } : {}),
       });
+      if (targetRms && targetRms > 0) targetRmsRef.current.set(part.id, targetRms);
       const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
       const how = fromCache
         ? "reused an earlier pass"
         : `took ${elapsed}s${lastTranscriptionRanIn() === "worker" ? "" : " (on the page — this browser would not run it in the background)"}`;
-      setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • ${how}`);
+      const moved = octaves ? ` • moved ${Math.abs(octaves)} ${Math.abs(octaves) === 1 ? "octave" : "octaves"} ${octaves > 0 ? "up" : "down"}` : "";
+      setLog(`${notes.length} notes • ${k.name} • ${settings.bpm} BPM${moved} • ${how}`);
+      return part;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "transcription failed");
+      if (current()) setError(humanError(e, "transcribe"));
+      return null;
     } finally {
-      setBusy(null);
+      if (current()) setBusy(null);
     }
   }
 
-  function addPart(p: Omit<Part, "id">) {
-    setParts((list) => [
-      ...list,
-      { ...p, id: `${p.instrument}-${p.source}-${list.length}-${partSeq.current++}` },
-    ]);
+  function addPart(p: Omit<Part, "id">): Part {
+    resetEdits();
+    const part: Part = { ...p, id: `${p.instrument}-${p.source}-${parts.length}-${partSeq.current++}` };
+    setParts((list) => [...list, part]);
+    return part;
   }
 
   function removePart(id: string) {
+    resetEdits();
+    if (soloed === `guide:${id}`) setSoloed(null);
     setParts((list) => list.filter((p) => p.id !== id));
   }
 
+  /**
+   * Re-targeting a part also moves it by octaves onto the new instrument, if it needs it. A
+   * single line moves as a whole into the instrument's singing register, its curve with it.
+   */
   function setPartInstrument(id: string, instrument: InstrumentId) {
-    setParts((list) => list.map((p) => (p.id === id ? { ...p, instrument } : p)));
+    setParts((list) =>
+      list.map((p) => {
+        if (p.id !== id) return p;
+        if (!p.monophonic) return { ...p, instrument, notes: fitToRange(p.notes, INSTRUMENTS[instrument].range) };
+        const placed = placeInRegister(p.notes, p.contour ?? null, instrument);
+        const { contour: _old, ...rest } = p;
+        return {
+          ...rest,
+          instrument,
+          notes: placed.notes,
+          ...(placed.contour ? { contour: placed.contour } : {}),
+          octaves: (p.octaves ?? 0) + placed.octaves,
+        };
+      })
+    );
+  }
+
+  /** One note at a time for a part written with chords in it; undoable. */
+  function makeSingleLine(id: string) {
+    const part = parts.find((p) => p.id === id);
+    if (!part || part.monophonic) return;
+    rememberForUndo();
+    const notes = cleanMonoLine(
+      part.notes,
+      part.source === "vocals" || melodic(part.instrument) ? {} : { strategy: "highest" },
+    );
+    setParts((list) => list.map((p) => (p.id === id ? { ...p, notes, monophonic: true } : p)));
+    setLog(`${INSTRUMENTS[part.instrument].label} now plays one note at a time (${notes.length} notes). Undo puts the chords back.`);
+  }
+
+  /**
+   * "Replace the voice": split the song (or use the split there is), write the vocal line for
+   * `instrumentId`, mute the singer and play the instrument in their place.
+   */
+  async function replaceVoice(instrumentId: InstrumentId, quality: "quick" | "clean") {
+    if (!audio || busy) return;
+    const wanted: StemMode = quality === "quick" ? "instant" : "ai";
+    let set: StemSet | null = stems && (stemMode === wanted || stemMode === "ai") ? stems : null;
+    // Which split `set` came from: stemMode state is still the old one right after a split.
+    let usedMode: StemMode = stemMode;
+    // The instant split cannot separate a mono recording: the AI split can.
+    const mono = !set && quality === "quick" && isEffectivelyMono(audio.left, audio.right);
+    if (mono) setLog("Mono recording: using the AI split.");
+    if (!set && quality === "quick" && !mono) {
+      set = await splitInstant();
+      usedMode = "instant";
+    } else if (!set) {
+      const choice = await askAiSplit();
+      if (choice === "cancel") return;
+      if (choice === "trim") {
+        if (trimToLoop()) afterTrim.current = { kind: "replace", instrument: instrumentId };
+        return;
+      }
+      set = await aiSplitChecked();
+      usedMode = "ai";
+    }
+    if (!set) return;
+    const part = await transcribeFrom(set.vocals, "vocals", instrumentId, { monophonic: true, stem: usedMode });
+    if (!part) return;
+    const guide = `guide:${part.id}`;
+    setMix((m) => ({
+      ...m,
+      vocals: { gain: m.vocals?.gain ?? 1, muted: true },
+      [guide]: { gain: 0.85, muted: false },
+    }));
+    if (soloed) setSoloed(null);
+    setSource("vocals");
+    const label = INSTRUMENTS[instrumentId].label;
+    setLog(`${label} now plays the vocal line. Use "Hear the singer" to compare.`);
+  }
+
+  /** The first answer wins: closing the dialog reports "cancel" again after a button press. */
+  const answerAiSplit = useCallback((c: AiSplitChoice) => {
+    const resolve = aiConfirmAnswer.current;
+    aiConfirmAnswer.current = null;
+    setAiConfirmOpen(false);
+    if (!resolve) return;
+    if (c !== "cancel") agreeToAiSplit();
+    resolve(c);
+  }, []);
+
+  // "Trim to loop first": once the trimmed clip is in place, carry on with what was asked.
+  useEffect(() => {
+    const next = afterTrim.current;
+    if (!next || !audio) return;
+    afterTrim.current = null;
+    if (next.kind === "split") void aiSplitChecked();
+    else void replaceVoice(next.instrument, "clean");
+    // Runs once per new recording; the functions are this render's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audio]);
+
+  /** The newest part written from the vocal as a single line: the one "Hear the singer" swaps with. */
+  const voicePart = useMemo(
+    () => [...parts].reverse().find((p) => p.source === "vocals" && p.monophonic) ?? null,
+    [parts]
+  );
+  const singerAudible = !(mix.vocals?.muted ?? false);
+
+  /** Swap between hearing the singer and hearing the instrument that replaced them. */
+  function toggleSinger() {
+    if (!voicePart) return;
+    const guide = `guide:${voicePart.id}`;
+    const singer = !singerAudible;
+    setMix((m) => ({
+      ...m,
+      vocals: { gain: m.vocals?.gain ?? 1, muted: !singer },
+      [guide]: { gain: m[guide]?.gain ?? 0.85, muted: singer },
+    }));
   }
 
   /**
@@ -846,6 +1485,7 @@ export default function Studio() {
       setError("There was nothing to split into voices.");
       return;
     }
+    resetEdits();
     setParts((list) => [...list.filter((p) => p.id !== id), ...made]);
     setLog(`Arranged into ${made.length} parts: ${made.map((m) => INSTRUMENTS[m.instrument].label).join(", ")}.`);
   }
@@ -854,6 +1494,12 @@ export default function Studio() {
   const partSheets = useMemo(() => engraveParts(parts, settings), [parts, settings]);
 
   const sheet: Sheet | null = partSheets[0]?.sheet ?? null;
+
+  /**
+   * Where bar 1 of the score starts. Earlier than the offset setting when the
+   * music has a pickup, so take marks and loops count bars the way the score does.
+   */
+  const barLineSeconds = sheet?.offsetSeconds ?? settings.offsetSeconds;
 
   // when each written beat sounds, so the play-along highlight can follow the
   // top staff — the one a player is most likely reading
@@ -910,40 +1556,53 @@ export default function Studio() {
     return parts[0].notes.filter((n) => n.startTimeSeconds >= start - 1e-3 && n.startTimeSeconds < end - 1e-3);
   }, [pickedBeat, timeline, parts]);
 
+  /** A way to choose a beat without the mouse: the score itself only answers clicks. */
+  function stepBeat(dir: 1 | -1) {
+    if (!timeline.length) return;
+    setPickedBeat((b) => (b == null ? (dir > 0 ? 0 : timeline.length - 1) : Math.max(0, Math.min(timeline.length - 1, b + dir))));
+  }
+
   function rememberForUndo() {
     setUndoStack((s) => [...s.slice(-19), parts.map((p) => ({ ...p, notes: [...p.notes] }))]);
   }
 
   function undoEdit() {
-    setUndoStack((s) => {
-      if (!s.length) return s;
-      setParts(s[s.length - 1]);
-      return s.slice(0, -1);
-    });
+    const last = undoStack[undoStack.length - 1];
+    if (!last) return;
+    setParts(last);
+    setUndoStack(undoStack.slice(0, -1));
     setLog("Put that back.");
   }
 
-  /** Move the selected notes by semitones, keeping them inside the instrument. */
+  /**
+   * Move the selected notes by semitones. A note the move would take outside
+   * the instrument stays where it is: landing it on the range edge instead
+   * turned "octave up" into some other interval, or even a move down.
+   */
   function nudgePicked(semitones: number) {
     if (!pickedNotes.length || !parts[0]) return;
-    const range = INSTRUMENTS[parts[0].instrument].range;
-    const picked = new Set(pickedNotes);
+    const inst = INSTRUMENTS[parts[0].instrument];
+    const fits = (n: NoteEvent) => n.pitchMidi + semitones >= inst.range[0] && n.pitchMidi + semitones <= inst.range[1];
+    const moving = new Set(pickedNotes.filter(fits));
+    const stayed = pickedNotes.length - moving.size;
+    if (!moving.size) {
+      setLog(`That would take ${pickedNotes.length === 1 ? "it" : "them"} ${semitones > 0 ? "above" : "below"} the ${inst.label}'s range.`);
+      return;
+    }
     rememberForUndo();
     setParts((list) =>
       list.map((p, i) =>
         i !== 0
           ? p
-          : {
-              ...p,
-              notes: p.notes.map((n) =>
-                picked.has(n)
-                  ? { ...n, pitchMidi: Math.max(range[0], Math.min(range[1], n.pitchMidi + semitones)) }
-                  : n
-              ),
-            }
+          : { ...p, notes: p.notes.map((n) => (moving.has(n) ? { ...n, pitchMidi: n.pitchMidi + semitones } : n)) }
       )
     );
-    setLog(`Moved ${pickedNotes.length === 1 ? "that note" : `those ${pickedNotes.length} notes`} ${semitones > 0 ? "up" : "down"}.`);
+    const dir = semitones > 0 ? "up" : "down";
+    setLog(
+      stayed
+        ? `Moved ${moving.size} ${moving.size === 1 ? "note" : "notes"} ${dir}; ${stayed} stayed because ${stayed === 1 ? "it" : "they"} would leave the range.`
+        : `Moved ${moving.size === 1 ? "that note" : `those ${moving.size} notes`} ${dir}.`
+    );
   }
 
   function deletePicked() {
@@ -957,22 +1616,51 @@ export default function Studio() {
 
   /* ----------------------------------------------------------------- record */
 
-  async function armMic() {
-    try {
-      await recorderRef.current!.arm();
-      setRecArmed(true);
-      setError(null);
-    } catch {
-      setError("Microphone permission denied — allow it in the browser to record.");
-    }
-  }
-
+  /**
+   * The microphone is open only while a take is being recorded: it is opened here, on the press,
+   * and closed again in stopRecording, so the browser's recording light is not left on.
+   */
   async function startRecording() {
     const engine = engineRef.current;
     if (!engine || !recorderRef.current) return;
-    await engine.play();
-    recorderRef.current.start();
+    if (countRef.current) return; // a count-in is already running
+    // Start the audio context inside the press: after the permission prompt and a count-in the
+    // gesture has expired and iOS Safari would leave it suspended.
+    engine.warm();
+    try {
+      await recorderRef.current.arm();
+    } catch {
+      setError("Microphone permission denied — allow it in the browser to record.");
+      return;
+    }
+    setError(null);
+    // The same count-in as playback, so the take can come in on the beat.
+    if (countInBars > 0) {
+      const token = {};
+      countToken.current = token;
+      setCounting(true);
+      const c = countIn(settings.bpm, transport.rate, settings.timeSignature[0], countInBars);
+      countRef.current = c;
+      await c.done;
+      if (countToken.current !== token) {
+        // cancelled while counting: no take, and the microphone closes again
+        recorderRef.current.release();
+        return;
+      }
+      countToken.current = null;
+      countRef.current = null;
+      setCounting(false);
+    }
+    try {
+      await engine.play();
+      recorderRef.current.start();
+    } catch (e) {
+      recorderRef.current.release();
+      setError(humanError(e, "record"));
+      return;
+    }
     recStartRef.current = engine.state().time;
+    recLoopRef.current = engine.state().loop;
     setRecording(true);
   }
 
@@ -980,7 +1668,15 @@ export default function Studio() {
     const engine = engineRef.current;
     if (!engine || !recorderRef.current) return;
     setRecording(false);
-    const blob = await recorderRef.current.stop();
+    let blob: Blob;
+    try {
+      blob = await recorderRef.current.stop();
+    } catch (e) {
+      setError(humanError(e, "record"));
+      return;
+    } finally {
+      recorderRef.current.release();
+    }
     await engine.pause();
     setBusy({ label: "Lining your take up with the song…" });
     try {
@@ -992,12 +1688,20 @@ export default function Studio() {
       const latency = estimateLatency(engine.ctx) * rate;
       const start = Math.max(0, recStartRef.current - latency + nudgeMs / 1000);
       const total = audio ? audio.left.length : l.length;
-      const [pl, pr] = placeTake({ left: l, right: r, startSeconds: start, sampleRate: DEMUCS_SAMPLE_RATE }, total);
+      const take = { left: l, right: r, startSeconds: start, sampleRate: DEMUCS_SAMPLE_RATE };
+      // Recorded over a repeating loop: keep one pass, on the loop, not every pass in a row.
+      const loopAt = recLoopRef.current;
+      const placed = loopAt ? foldLoopTake(take, loopAt) : take;
+      const [pl, pr] = placeTake(placed, total);
       setOverdub({ left: pl, right: pr });
       setReport(null);
-      setLog(`Take captured at ${Math.round(rate * 100)}% speed and mapped back to full tempo.`);
+      setLog(
+        placed !== take
+          ? `Take captured at ${Math.round(rate * 100)}% speed. You played the loop more than once, so your last full pass was kept.`
+          : `Take captured at ${Math.round(rate * 100)}% speed and mapped back to full tempo.`
+      );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not process the recording");
+      setError(humanError(e, "record"));
     } finally {
       setBusy(null);
     }
@@ -1008,111 +1712,120 @@ export default function Studio() {
   const baseName = (file?.name.replace(/\.[^.]+$/, "") || "riffscribe").slice(0, 60);
 
   function exportMidi() {
-    if (!parts.length) return;
-    const bytes = partsToMidi(
-      parts.map((p) => ({
-        notes: p.notes,
-        name: INSTRUMENTS[p.instrument].label,
-        program: INSTRUMENTS[p.instrument].gm,
-      })),
-      { bpm: settings.bpm, name: baseName }
-    );
-    downloadBlob(new Blob([bytes as unknown as BlobPart], { type: "audio/midi" }), `${baseName}.mid`);
+    exp.exportMidi(parts, settings.bpm, baseName);
   }
 
   function exportMusicXml() {
-    if (!partSheets.length) return;
-    const xml = sheetsToMusicXml(
-      partSheets.map(({ sheet: sh, instrument, fifths }) => ({
-        sheet: sh,
-        options: {
-          instrument,
-          fifths,
-          capo: settings.capo,
-          partName: instrument.label,
-        },
-      })),
-      { title: baseName }
-    );
-    downloadBlob(new Blob([xml], { type: "application/vnd.recordare.musicxml+xml" }), `${baseName}.musicxml`);
+    exp.exportMusicXml(partSheets, settings.capo, baseName);
   }
 
   function exportTex() {
-    if (!tex) return;
-    downloadBlob(new Blob([tex], { type: "text/plain" }), `${baseName}.alphatex`);
+    exp.exportTex(tex, baseName);
   }
 
-  /** Every track that currently exists, keyed the same way as the mixer. */
-  function allParts(): Record<string, { left: Float32Array; right: Float32Array }> {
-    const mixParts: Record<string, { left: Float32Array; right: Float32Array }> = stems
-      ? { ...stems }
-      : audio
-        ? { original: audio }
-        : {};
-    if (overdub) mixParts.overdub = overdub;
-    for (const g of guideTracks) mixParts[g.id] = { left: g.left, right: g.right };
-    if (clickTrack) mixParts.click = clickTrack;
-    return mixParts;
-  }
+  /** What the audio exports read, as it stands in this render. */
+  const audioExport = (): exp.AudioExport => ({
+    audio, stems, stemMode, overdub, guideTracks, clickTrack, trackList, mix, activeSolo,
+    loop, loopOnlyExport, transport, exportFormat, baseName, setBusy, setError,
+  });
 
-  /** Whole song, or just the looped section when the user asked for that. */
-  function exportWindow() {
-    const total = audio ? audio.left.length : 0;
-    if (!loopOnlyExport || !loop) return { from: 0, to: total, suffix: "" };
-    const from = Math.max(0, Math.floor(loop[0] * DEMUCS_SAMPLE_RATE));
-    const to = Math.min(total, Math.floor(loop[1] * DEMUCS_SAMPLE_RATE));
-    return { from, to, suffix: `-${Math.round(loop[0])}s-${Math.round(loop[1])}s` };
-  }
-
-  function writeWav(
-    channels: { left: Float32Array; right: Float32Array },
-    name: string
-  ) {
-    const { from, to, suffix } = exportWindow();
-    const left = from || to < channels.left.length ? channels.left.slice(from, to) : channels.left;
-    const right = from || to < channels.right.length ? channels.right.slice(from, to) : channels.right;
-    downloadBlob(encodeWav([left, right], DEMUCS_SAMPLE_RATE), `${baseName}-${name}${suffix}.wav`);
-  }
-
-  function exportAudio(kind: "backing" | "mix") {
-    if (!audio) return;
-    const length = audio.left.length;
-
-    if (kind === "backing" && stems) {
-      // everything except the vocals, at full level, whatever the faders say
-      const keys = stemMode === "instant" ? ["other"] : ["drums", "bass", "other"];
-      setError(null);
-      writeWav(mixStems(stems, keys, { length }), "backing");
-      return;
-    }
-
-    const parts = allParts();
-    const gains: Record<string, number> = {};
-    const audible = trackList
-      .map((t) => t.id)
-      .filter((id) => {
-        if (!parts[id]) return false;
-        const m = mix[id] ?? { gain: 1, muted: false };
-        if (m.muted || (soloed !== null && soloed !== id)) return false;
-        gains[id] = m.gain;
-        return true;
-      });
-
-    if (!audible.length) {
-      setError("Everything is muted or soloed out — nothing to export.");
-      return;
-    }
-    setError(null);
-    writeWav(mixStems(parts, audible, { length, gains }), "mix");
+  /**
+   * `format` is for callers that have just picked one: the state still holds the old one.
+   * Nothing exports while a job runs: the export's busy banner would replace the job's.
+   */
+  function exportAudio(kind: "backing" | "mix", format?: ExportFormat) {
+    if (busyRef.current) return Promise.resolve();
+    return exp.exportAudio({ ...audioExport(), exportFormat: format ?? exportFormat }, kind);
   }
 
   /** One track on its own — the stem, your part, your take, the click. */
-  function exportTrack(id: string) {
-    const part = allParts()[id];
-    if (!part) return;
-    setError(null);
-    writeWav(part, id);
+  function exportTrack(id: string, format?: ExportFormat) {
+    if (busyRef.current) return Promise.resolve();
+    return exp.exportTrack({ ...audioExport(), exportFormat: format ?? exportFormat }, id);
   }
+
+  /** The one export menu, shown in the stems panel and the notes panel alike. */
+  const exportMenu: ExportMenuProps = {
+    busy, hasParts: parts.length > 0, hasSheet: !!sheet, tex, exportMidi, exportMusicXml, exportTex,
+    hasStems: !!stems, exportAudio, exportFormat, setExportFormat, loop, loopOnlyExport, setLoopOnlyExport,
+  };
+
+  /* -------------------------------------------------------------- shortcuts */
+
+  /** Back to the start of the loop, or of the song. */
+  function toLoopStart() {
+    if (!audio) return false;
+    void engineRef.current?.seek(loop ? loop[0] : 0);
+  }
+
+  function seekBy(seconds: number) {
+    if (!audio) return false;
+    void engineRef.current?.seek(Math.max(0, Math.min(transport.duration, transport.time + seconds)));
+  }
+
+  function setLoopAt(which: "start" | "end") {
+    const next = (which === "start" ? loopFromStart : loopToEnd)(transport.time, transport.duration, loop);
+    if (!audio || !next) return false;
+    setLoop(next);
+  }
+
+  function nudgeRate(dir: 1 | -1) {
+    if (!audio) return false;
+    const r = stepRate(transport.rate, dir);
+    if (r === transport.rate) return;
+    void engineRef.current?.setRate(r);
+    setLog(`Speed ${Math.round(r * 100)}%.`);
+  }
+
+  /** Mute every part's guide, or bring them all back when every one is muted. */
+  function toggleGuides() {
+    const ids = trackList.filter((t) => t.id.startsWith("guide:")).map((t) => t.id);
+    if (!ids.length) return false;
+    const mute = ids.some((id) => !(mix[id]?.muted ?? false));
+    setMix((m) => {
+      const next = { ...m };
+      for (const id of ids) next[id] = { gain: m[id]?.gain ?? 0.85, muted: mute };
+      return next;
+    });
+    setLog(mute ? "Your parts are muted." : "Your parts are back on.");
+  }
+
+  function toggleVocals() {
+    if (!trackList.some((t) => t.id === "vocals")) return false;
+    const mute = !(mix.vocals?.muted ?? false);
+    setMix((m) => ({ ...m, vocals: { gain: m.vocals?.gain ?? 1, muted: mute } }));
+    setLog(mute ? "Vocals muted." : "Vocals back on.");
+  }
+
+  // Off while a dialog is up: its keys are its own.
+  useShortcuts({
+    playPause: () => { if (!audio) return false; void startPlaying(); },
+    home: toLoopStart,
+    restartLoop: toLoopStart,
+    back: () => seekBy(-5),
+    forward: () => seekBy(5),
+    loopStart: () => setLoopAt("start"),
+    loopEnd: () => setLoopAt("end"),
+    clearLoop: () => { if (!loop) return false; setLoop(null); },
+    slower: () => nudgeRate(-1),
+    faster: () => nudgeRate(1),
+    section: ({ n }) => {
+      const s = n ? sections[n - 1] : undefined;
+      if (!audio || !s) return false;
+      setLoop([s.from, s.to]);
+      void engineRef.current?.seek(s.from);
+      setLog(`Looping ${s.name}.`);
+    },
+    follow: () => {
+      const next = !playAlong;
+      setPlayAlong(next);
+      setLog(next ? "The score follows the music." : "The score stays where you put it.");
+    },
+    muteGuides: toggleGuides,
+    muteVocals: toggleVocals,
+    undo: () => { if (!undoStack.length) return false; undoEdit(); },
+    help: () => setHelpOpen(true),
+  }, !helpOpen && !toolsOpen && !aiConfirmOpen);
 
   /* -------------------------------------------------------------------- UI */
 
@@ -1128,168 +1841,14 @@ export default function Studio() {
 
   /* --------------------------------------------------- the page assistant */
 
-  const fmtTime = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
-
   // Rebuilt every render so the capabilities always act on current state; the
   // assistant component keeps a ref to the latest copy.
-  const assistantActions: AssistantActions = {
-    describe: () => {
-      if (!audio) {
-        return "No song is loaded yet — drop a file into step 1 first." +
-          (signedIn ? " Or open one of [your saved songs](/songs)." : "");
-      }
-      const lines: string[] = [
-        `${file?.name ?? "A song"}, ${fmtTime(transport.duration)} long, at ${settings.bpm} BPM.`,
-        stems
-          ? stemMode === "ai"
-            ? "It has been split into four stems."
-            : "The centre channel has been pulled out."
-          : "It has not been split into stems.",
-        parts.length
-          ? `${parts.length} part${parts.length > 1 ? "s are" : " is"} written out: ${parts
-              .map((p) => `${INSTRUMENTS[p.instrument].label} (${p.notes.length} notes, ${p.keyName})`)
-              .join(", ")}.`
-          : "Nothing has been transcribed yet.",
-        `Playing at ${Math.round(transport.rate * 100)}%${transport.semitones ? `, transposed ${transport.semitones > 0 ? "+" : ""}${transport.semitones}` : ""}.`,
-        loop ? `Looping ${fmtTime(loop[0])} to ${fmtTime(loop[1])}.` : "No loop is set.",
-      ];
-      return lines.join(" ");
-    },
-
-    setInstrument: (id) => {
-      if (!(id in INSTRUMENTS)) return `I do not know an instrument called "${id}".`;
-      patch({ instrument: id as InstrumentId });
-      return `The part is now written for ${INSTRUMENTS[id as InstrumentId].label}.`;
-    },
-
-    splitStems: async (mode) => {
-      if (!audio) return "Load a song first.";
-      if (busy) return "Something else is already running.";
-      if (mode === "instant") { await runInstant(); return "Instant split done — vocal and backing are separate rows in the mixer."; }
-      await runDemucs();
-      return "The AI split finished — vocals, drums, bass and everything else are separate rows now.";
-    },
-
-    transcribe: async (src) => {
-      if (!audio) return "Load a song first.";
-      if (busy) return "Something else is already running.";
-      if (src) setSource(src as Source);
-      await runTranscribe();
-      return `Written out for ${INSTRUMENTS[settings.instrument].label}.`;
-    },
-
-    setTempo: (bpm) => { patch({ bpm: Math.max(30, Math.min(300, bpm)) }); return `Tempo set to ${Math.round(bpm)} BPM.`; },
-    setGrid: (d) => { patch({ quantizeDivision: d as 4 | 8 | 16 | 32 }); return `Notes now snap to a 1/${d} grid.`; },
-    setCapo: (fret) => { patch({ capo: Math.max(0, Math.min(9, Math.round(fret))) }); return `Capo at fret ${Math.round(fret)}.`; },
-    setWrittenTranspose: (st) => { patch({ transposeSemitones: Math.max(-12, Math.min(12, Math.round(st))) }); return `Written part transposed by ${Math.round(st)} semitones.`; },
-
-    play: async () => { await engineRef.current?.play(); return "Playing."; },
-    pause: async () => { await engineRef.current?.pause(); return "Paused."; },
-    seek: async (sec) => { await engineRef.current?.seek(sec); return `Jumped to ${fmtTime(sec)}.`; },
-
-    setSpeed: async (percent) => {
-      const rate = Math.max(0.25, Math.min(1.5, percent / 100));
-      await engineRef.current?.setRate(rate);
-      return `Speed set to ${Math.round(rate * 100)}% — the key is unchanged.`;
-    },
-    setKeyShift: async (st) => {
-      await engineRef.current?.setSemitones(st);
-      return `Everything shifted by ${Math.round(st)} semitones — the tempo is unchanged.`;
-    },
-
-    setLoop: async (from, to) => {
-      const a = Math.max(0, Math.min(from, to));
-      const b = Math.min(transport.duration, Math.max(from, to));
-      setLoop([a, b]);
-      return `Looping ${fmtTime(a)} to ${fmtTime(b)}.`;
-    },
-    clearLoop: async () => { setLoop(null); return "Loop cleared."; },
-
-    setTrack: (track, change) => {
-      const id = trackList.find((t) => t.id === track || t.label.toLowerCase().includes(track.toLowerCase()))?.id;
-      if (!id) return `There is no track called "${track}". The mixer has: ${trackList.map((t) => t.id).join(", ")}.`;
-      const done: string[] = [];
-      if (change.solo != null) { setSoloed(change.solo ? id : null); done.push(change.solo ? "soloed" : "un-soloed"); }
-      if (change.muted != null || change.level != null) {
-        setMix((m) => ({
-          ...m,
-          [id]: {
-            gain: change.level != null ? Math.max(0, Math.min(1.5, change.level / 100)) : (m[id]?.gain ?? 1),
-            muted: change.muted != null ? change.muted : (m[id]?.muted ?? false),
-          },
-        }));
-        if (change.muted != null) done.push(change.muted ? "muted" : "un-muted");
-        if (change.level != null) done.push(`set to ${Math.round(change.level)}`);
-      }
-      return `${trackList.find((t) => t.id === id)!.label} ${done.join(" and ") || "unchanged"}.`;
-    },
-
-    exportFile: (what) => {
-      const w = what.toLowerCase();
-      if (w.includes("midi")) { exportMidi(); return "MIDI downloaded."; }
-      if (w.includes("xml")) { exportMusicXml(); return "MusicXML downloaded."; }
-      if (w.includes("tex")) { exportTex(); return "alphaTex downloaded."; }
-      if (w.includes("pdf") || w.includes("print")) { window.print(); return "Opened the print dialog."; }
-      if (w.includes("backing")) { exportAudio("backing"); return "Backing track downloaded."; }
-      if (w.includes("mix")) { exportAudio("mix"); return "The current mix was downloaded."; }
-      const track = trackList.find((t) => w.includes(t.id) || w.includes(t.label.toLowerCase()));
-      if (track) { exportTrack(track.id); return `${track.label} downloaded on its own.`; }
-      return `I can export midi, musicxml, alphatex, pdf, the backing track, the current mix, or one of: ${trackList.map((t) => t.id).join(", ")}.`;
-    },
-
-    checkTake: async () => {
-      if (!overdub) return "There is no take to mark yet — record one first.";
-      if (!parts.length) return "Nothing to mark it against — transcribe the part first.";
-      const r = await checkTake();
-      if (!r) return "That take could not be marked.";
-      return summarise(r) + (r.worstBars.length ? ` Weakest: ${r.worstBars.map((b) => `bar ${b.bar}`).join(", ")}.` : "");
-    },
-    loopWeakest: () => {
-      if (!report) return "Mark a take first and I will know which bars need the work.";
-      if (!report.worstBars.length) return "No bar stands out as weak — take the speed up instead.";
-      loopWorstBars();
-      return `Looping bars ${report.worstBars.map((b) => b.bar).join(", ")}.`;
-    },
-    arrange: (size) => {
-      const target = parts.find((p) => p.source === "other") ?? parts[parts.length - 1];
-      if (!target) return "Transcribe a part first — there is nothing to split.";
-      setEnsembleSize(size);
-      arrangeForEnsemble(target.id, size);
-      return `Splitting ${INSTRUMENTS[target.instrument].label} into ${size} voices.`;
-    },
-
-    setPlayAlong: (on) => { setPlayAlong(on); return on ? "The score will follow the music." : "The score will stay put."; },
-
-    pageState: () => ({
-      songLoaded: !!audio,
-      fileName: file?.name ?? null,
-      durationSeconds: Math.round(transport.duration),
-      stems: stems ? (stemMode === "ai" ? ["vocals", "drums", "bass", "other"] : ["vocals", "other"]) : [],
-      transcribed: parts.length > 0,
-      parts: parts.map((p) => ({
-        id: p.id,
-        instrument: p.instrument,
-        source: p.source,
-        noteCount: p.notes.length,
-        key: p.keyName,
-      })),
-      nextInstrument: settings.instrument,
-      bpm: settings.bpm,
-      playing: transport.playing,
-      positionSeconds: Math.round(transport.time),
-      speedPercent: Math.round(transport.rate * 100),
-      transposeSemitones: transport.semitones,
-      loop: loop ? { from: Math.round(loop[0]), to: Math.round(loop[1]) } : null,
-      mixerTracks: trackList.map((t) => ({
-        id: t.id,
-        label: t.label,
-        level: Math.round((mix[t.id]?.gain ?? 1) * 100),
-        muted: mix[t.id]?.muted ?? false,
-        soloed: soloed === t.id,
-      })),
-      busy: busy?.label ?? null,
-    }),
-  };
+  const assistantActions: AssistantActions = buildAssistantActions({
+    audio, file, signedIn, transport, settings, stems, stemMode, parts, loop, busy, trackList, mix, activeSolo,
+    overdub, report, engineRef, patch, runInstant, runDemucs, runTranscribe, checkTake, loopWorstBars,
+    arrangeForEnsemble, setAiSplitCautionGb, setSource, setLoop, setSoloed, setMix, setExportFormat,
+    setEnsembleSize, setPlayAlong, exportMidi, exportMusicXml, exportTex, exportAudio, exportTrack,
+  });
 
   // The assistant is mounted above the pages; it borrows these while the studio is open.
   const actionsRef = useRef(assistantActions);
@@ -1298,6 +1857,12 @@ export default function Studio() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+      <a
+        href={audio ? "#studio-score" : "#studio-main"}
+        className="no-print sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-[var(--color-accent)] focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--color-on-accent)]"
+      >
+        {audio ? "Skip to the score" : "Skip to the studio"}
+      </a>
       <header className="no-print mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
@@ -1308,737 +1873,108 @@ export default function Studio() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <button type="button" className="btn" onClick={() => setToolsOpen(true)} aria-haspopup="dialog">
+            <Wrench size={15} aria-hidden /> Tools
+          </button>
+          {/* Help replaces the About button; About is a new-tab link inside it. */}
+          <button
+            type="button"
+            className="btn px-2.5"
+            onClick={() => setHelpOpen(true)}
+            aria-haspopup="dialog"
+            aria-label="Help and keyboard shortcuts"
+            title="Help and keyboard shortcuts (?)"
+          >
+            <CircleHelp size={16} aria-hidden />
+          </button>
           {/* New tabs: leaving this page would drop the loaded song and any split in progress. */}
-          <a className="btn" href="/" target="_blank" rel="noopener">About</a>
           <AccountMenu newTab />
         </div>
       </header>
 
-      {error && (
-        <p className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-red-500/40 bg-red-950/90 px-4 py-3 text-sm text-red-200 backdrop-blur">
-          {error}
-        </p>
-      )}
-      {busy && (
-        <div className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[#1a1608]/95 px-4 py-3 text-sm shadow-lg backdrop-blur">
-          <p className="flex items-center gap-2 text-[var(--color-accent)]">
-            <Loader2 className="animate-spin" size={16} /> {busy.label}
-            {cancelSplitRef.current && (
-              <button className="btn ml-auto py-1 text-xs" onClick={cancelJob}>
-                Cancel
-              </button>
-            )}
-          </p>
-          {busy.value != null && (
-            <div className="mt-2 h-1.5 w-full overflow-hidden rounded bg-white/10">
-              <div className="h-full bg-[var(--color-accent)] transition-[width]" style={{ width: `${Math.round(busy.value * 100)}%` }} />
-            </div>
-          )}
-        </div>
-      )}
+      <main id="studio-main" tabIndex={-1}>
+        <StatusBanners {...{ error, setError, busy, cancelSplitRef, cancelJob }} />
 
-      {/* 1 — load */}
-      <section className="panel no-print mb-5 p-5">
-        <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-          <span className="step-badge">1</span> Load a song
-        </h2>
-        <label
-          className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-line)] px-4 py-8 text-center hover:border-white/30"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            const f = e.dataTransfer.files?.[0];
-            if (f) void loadFile(f);
-          }}
-        >
-          <Upload size={20} className="text-white/50" />
-          <span className="text-sm">
-            {file ? <b>{file.name}</b> : "Drop an mp3, wav, m4a, flac or ogg here — or click to pick one"}
-          </span>
-          <span className="text-xs text-white/40">Nothing is uploaded. The file never leaves your browser.</span>
-          <input
-            type="file" accept="audio/*" className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadFile(f); }}
+        {/* 1 — load */}
+        <LoadPanel {...{ busy, loadFile, file, wantedSong, audio, helperUp, linkUrl, setLinkUrl, loadFromLink, loadDemo, log }} />
+
+        {audio && (
+          <Recipes
+            busy={busy}
+            instrument={recipeInstrument}
+            setInstrument={setRecipeInstrument}
+            replaceVoice={replaceVoice}
+            replacedBy={voicePart ? INSTRUMENTS[voicePart.instrument].label : null}
+            singerAudible={singerAudible}
+            toggleSinger={toggleSinger}
           />
-        </label>
-        {wantedSong && !audio && (
-          <p className="mt-4 rounded-lg border border-[var(--color-accent)]/40 bg-[#1a1608] px-4 py-3 text-sm">
-            Your notes are open. Drop <b>{wantedSong}</b> above to hear it with its stems — the recording
-            isn&rsquo;t on this device, and it never leaves the one it was made on.
-          </p>
         )}
-        {helperUp && (
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              className="min-w-0 flex-1"
-              placeholder="…or paste a link (YouTube, SoundCloud, a direct mp3)"
-              value={linkUrl}
-              onChange={(e) => setLinkUrl(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && linkUrl.trim()) void loadFromLink(linkUrl.trim()); }}
-            />
-            <button
-              className="btn"
-              disabled={!linkUrl.trim() || !!busy}
-              onClick={() => void loadFromLink(linkUrl.trim())}
-            >
-              <LinkIcon size={15} /> Fetch
-            </button>
-          </div>
+
+        {/*
+          With a song loaded, saving sits under the notes it saves (after step 4).
+          Without one — a chart opened on a device that lacks the recording — it
+          stays up here so the work is still reachable.
+        */}
+        {!audio && (
+          <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />
         )}
-        {log && <p className="mt-3 text-xs text-white/45">{log}</p>}
-      </section>
 
-      {/*
-        With a song loaded, saving sits under the notes it saves (after step 4).
-        Without one — a chart opened on a device that lacks the recording — it
-        stays up here so the work is still reachable.
-      */}
-      {!audio && (
-        <SaveBar buildChart={buildChart} chartId={chartId} onChartId={setChartId} />
-      )}
+        {audio && (
+          <>
+            {/* 2 — stems */}
+            <SplitPanel {...{
+              busy, runInstant, startAiSplit, aiSplitCautionGb, setAiSplitCautionGb, runDemucs, restored, forgetSong,
+              mixTracks, activeSolo, setSoloed, exportTrack, setMix, exportMenu,
+            }} />
 
-      {/* Tuning up comes before everything, so this does not wait for a song. */}
-      <Tuner suggestedTonic={droneTonic} />
+            {/* 3 — practise */}
+            <PracticePanel {...{
+              wavePeaks, transport, loop, engineRef, setLoop, trimToLoop, busy, nameLoop, sections, editingSection,
+              setSections, setEditingSection, countInBars, setCountInBars, trainer, setTrainer, setPasses, passes,
+            }} />
 
-      {audio && (
-        <>
-          {/* 2 — stems */}
-          <section className="panel no-print mb-5 p-5">
-            <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-              <span className="step-badge">2</span> Split it up / remove the vocals
-            </h2>
-            <div className="mb-4 flex flex-wrap gap-2">
-              <button className="btn" onClick={runInstant} disabled={!!busy}>
-                {busy?.label.startsWith("Pulling") ? <Loader2 className="animate-spin" size={15} /> : <Scissors size={15} />}
-                Instant vocal removal
-              </button>
-              <button className="btn btn-primary" onClick={runDemucs} disabled={!!busy}>
-                {busy && /model|Separating/i.test(busy.label) ? <Loader2 className="animate-spin" size={15} /> : <Wand2 size={15} />}
-                {busy && /model|Separating/i.test(busy.label) ? "Separating…" : "AI split into 4 stems"}
-              </button>
-            </div>
-            {restored && (
-              <p className="mb-4 flex items-center gap-2 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/10 px-3 py-2 text-xs text-white/70">
-                <Check size={14} className="shrink-0 text-[var(--color-accent)]" />
-                {restored}
-                <button
-                  className="ml-auto shrink-0 underline decoration-white/30 underline-offset-2 hover:text-white"
-                  onClick={forgetSong}
-                >
-                  Split it again
-                </button>
-              </p>
-            )}
-            <p className="mb-4 text-xs text-white/45">
-              Instant is phase-based: no download, about a second, decent on most pop mixes.
-              The AI split runs Demucs on your machine — first run pulls a ~180 MB model, then it is cached.
-              Stems are kept on this device afterwards, so a song is only ever separated once.
-            </p>
-            <Mixer
-              tracks={mixTracks}
-              soloed={soloed}
-              onSolo={setSoloed}
-              onDownload={exportTrack}
-              onChange={(id, p) => setMix((m) => ({ ...m, [id]: { ...(m[id] ?? { gain: 1, muted: false }), ...p } }))}
-            />
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button className="btn" onClick={() => exportAudio("backing")} disabled={!stems}>
-                <Download size={15} /> Backing track .wav
-              </button>
-              <button className="btn" onClick={() => exportAudio("mix")}>
-                <Download size={15} /> Current mix .wav
-              </button>
-              <label className={`flex items-center gap-2 text-xs ${loop ? "text-white/60" : "text-white/25"}`}>
-                <input
-                  type="checkbox" checked={loopOnlyExport} disabled={!loop}
-                  onChange={(e) => setLoopOnlyExport(e.target.checked)}
-                />
-                Only the looped section
-              </label>
-            </div>
-            <p className="mt-2 text-xs text-white/35">
-              The arrow on each row downloads that track on its own — the isolated vocal, the drums,
-              your part, your take.
-            </p>
-          </section>
+            {/* 4 — transcribe */}
+            <PartsPanel {...{
+              source, setSource, stems, stemMode, settings, patch, zoom, setZoom, writtenTonic, parts, soundingTonic,
+              runTranscribe, busy, tex, exportMenu, playAlong, setPlayAlong,
+              setPartInstrument, arrangeForEnsemble, ensembleSize, removePart, setEnsembleSize, transport, timeline,
+              setPickedBeat, pickedBeat, pickedNotes, nudgePicked, deletePicked, stepBeat, undoStack, undoEdit,
+              makeSingleLine,
+            }} />
 
-          {/* 3 — practise */}
-          <section className="panel no-print mb-5 p-5">
-            <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-              <span className="step-badge">3</span> Slow it down
-            </h2>
-            <Waveform
-              peaks={wavePeaks}
-              duration={transport.duration}
-              time={transport.time}
-              loop={loop}
-              onSeek={(t) => void engineRef.current?.seek(t)}
-              onLoop={setLoop}
-            />
-            <div className="mb-4 mt-2 flex flex-wrap items-center gap-3">
-              <p className="text-xs text-white/40">Drag across the waveform to loop a section.</p>
-              <button className="btn text-xs" onClick={trimToLoop} disabled={!loop}>
-                Trim song to loop
-              </button>
-              <button className="btn text-xs" onClick={nameLoop} disabled={!loop}>
-                <Bookmark size={13} /> Name this section
-              </button>
-            </div>
+            <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />
 
-            {sections.length > 0 && (
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <span className="text-xs text-white/40">Sections:</span>
-                {sections.map((s, i) => (
-                  <span key={`${s.from}-${s.to}-${i}`} className="flex items-center overflow-hidden rounded bg-white/5">
-                    {editingSection === i ? (
-                      <input
-                        autoFocus
-                        className="w-28 bg-transparent px-2 py-1 text-xs text-white outline-none"
-                        defaultValue={s.name}
-                        onBlur={(e) => {
-                          const name = e.target.value.trim() || s.name;
-                          setSections((l) => l.map((x, j) => (j === i ? { ...x, name } : x)));
-                          setEditingSection(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") e.currentTarget.blur();
-                          if (e.key === "Escape") setEditingSection(null);
-                        }}
-                      />
-                    ) : (
-                      <button
-                        className="px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white"
-                        onClick={() => { setLoop([s.from, s.to]); void engineRef.current?.seek(s.from); }}
-                        onDoubleClick={() => setEditingSection(i)}
-                        title={`${fmtTime(s.from)}–${fmtTime(s.to)} — double-click to rename`}
-                      >
-                        {s.name}
-                      </button>
-                    )}
-                    <button
-                      className="px-1.5 py-1 text-xs text-white/25 hover:text-white/70"
-                      onClick={() => setSections((l) => l.filter((_, j) => j !== i))}
-                      aria-label={`Remove ${s.name}`}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
+            {/* 5 — record */}
+            <RecordPanel {...{
+              recording, stopRecording, startRecording, busy, overdub, setOverdub, nudgeMs, setNudgeMs, parts,
+              checkTake, checkPart, setCheckPart, report, loopWorstBars,
+            }} />
+          </>
+        )}
 
-            <div className="mb-4 flex flex-wrap items-center gap-4 rounded-md border border-white/10 bg-white/[0.02] px-3 py-2">
-              <label className="flex items-center gap-2 text-xs text-white/60">
-                Count-in
-                <select
-                  className="bg-transparent text-xs"
-                  value={countInBars}
-                  onChange={(e) => setCountInBars(Number(e.target.value))}
-                >
-                  <option value={0}>off</option>
-                  <option value={1}>1 bar</option>
-                  <option value={2}>2 bars</option>
-                </select>
-              </label>
+        {/*
+          The transport, always within reach. A player holding an instrument
+          cannot go hunting up the page for the play button, and the score is
+          long — so it follows you down the page instead.
+        */}
+        {audio && (
+          <PlayerBar
+            {...{ startPlaying, counting, transport, engineRef, loop, setLoop, trainer }}
+            onRate={(r) => void engineRef.current?.setRate(r)}
+            onSemitones={(s) => void engineRef.current?.setSemitones(s)}
+          />
+        )}
+        {audio && <div className="no-print h-20" style={{ paddingBottom: "env(safe-area-inset-bottom)" }} aria-hidden />}
+      </main>
 
-              <label className="flex items-center gap-2 text-xs text-white/60">
-                <input
-                  type="checkbox"
-                  checked={!!trainer}
-                  disabled={!loop}
-                  onChange={(e) => { setTrainer(e.target.checked ? { step: 0.05, target: 1 } : null); setPasses(0); }}
-                />
-                Speed trainer
-                {trainer && (
-                  <>
-                    <span className="text-white/35">+5% a pass, up to</span>
-                    <select
-                      className="bg-transparent text-xs"
-                      value={trainer.target}
-                      onChange={(e) => setTrainer({ ...trainer, target: Number(e.target.value) })}
-                    >
-                      <option value={0.75}>75%</option>
-                      <option value={0.9}>90%</option>
-                      <option value={1}>100%</option>
-                      <option value={1.1}>110%</option>
-                    </select>
-                  </>
-                )}
-              </label>
-
-              {loop && <span className="text-xs text-white/35">{passes} {passes === 1 ? "pass" : "passes"}</span>}
-              {!loop && <span className="text-xs text-white/25">The trainer needs a loop.</span>}
-            </div>
-            <Transport
-              playing={transport.playing}
-              time={transport.time}
-              duration={transport.duration}
-              rate={transport.rate}
-              semitones={transport.semitones}
-              rendering={transport.rendering}
-              loop={loop}
-              onToggle={() => void startPlaying()}
-              onSeek={(t) => void engineRef.current?.seek(t)}
-              onRate={(r) => void engineRef.current?.setRate(r)}
-              onSemitones={(s) => void engineRef.current?.setSemitones(s)}
-              onClearLoop={() => setLoop(null)}
-            />
-          </section>
-
-          {/* 4 — transcribe */}
-          <section className="panel mb-5 p-5">
-            <h2 className="no-print mb-3 flex items-center gap-2 text-lg font-medium">
-              <span className="step-badge">4</span> Notes &amp; tab
-            </h2>
-
-            <div className="no-print mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <label className="text-sm">
-                <span className="mb-1 block text-white/60">Transcribe which part</span>
-                <select className="w-full" value={source} onChange={(e) => setSource(e.target.value as Source)}>
-                  <option value="mix">Full mix</option>
-                  {stems && stemMode === "ai" && STEM_NAMES.map((n) => (
-                    <option key={n} value={n}>{STEM_LABEL[n].label}</option>
-                  ))}
-                  {stems && stemMode === "instant" && (
-                    <>
-                      <option value="vocals">Centre / vocal</option>
-                      <option value="other">Backing track</option>
-                    </>
-                  )}
-                </select>
-              </label>
-              <label className="text-sm">
-                <span className="mb-1 block text-white/60">Write the next part for</span>
-                <select
-                  className="w-full" value={settings.instrument}
-                  onChange={(e) => patch({ instrument: e.target.value as InstrumentId })}
-                >
-                  {Object.values(INSTRUMENTS).map((i) => (
-                    <option key={i.id} value={i.id}>{i.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-sm">
-                <span className="mb-1 block text-white/60">Tempo (BPM)</span>
-                <input
-                  type="number" min={30} max={300} step={0.1} className="w-full" value={settings.bpm}
-                  onChange={(e) => patch({ bpm: Number(e.target.value) || 120 })}
-                />
-              </label>
-              <label className="text-sm">
-                <span className="mb-1 block text-white/60">Snap notes to</span>
-                <select
-                  className="w-full" value={settings.quantizeDivision}
-                  onChange={(e) => patch({ quantizeDivision: Number(e.target.value) as 4 | 8 | 16 | 32 })}
-                >
-                  <option value={4}>Quarter notes</option>
-                  <option value={8}>Eighths</option>
-                  <option value={16}>Sixteenths</option>
-                  <option value={32}>Thirty-seconds</option>
-                </select>
-              </label>
-            </div>
-
-            <details className="no-print mb-4 text-sm">
-              <summary className="cursor-pointer text-white/60">Fine tuning</summary>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <label>
-                  <span className="mb-1 block text-white/60">Note sensitivity {settings.onsetThreshold.toFixed(2)}</span>
-                  <input type="range" min={0.1} max={0.9} step={0.05} value={settings.onsetThreshold}
-                    onChange={(e) => patch({ onsetThreshold: Number(e.target.value) })} className="w-full" />
-                  <span className="text-xs text-white/35">Lower finds more notes (and more mistakes).</span>
-                </label>
-                <label>
-                  <span className="mb-1 block text-white/60">Sustain {settings.frameThreshold.toFixed(2)}</span>
-                  <input type="range" min={0.1} max={0.9} step={0.05} value={settings.frameThreshold}
-                    onChange={(e) => patch({ frameThreshold: Number(e.target.value) })} className="w-full" />
-                </label>
-                <label>
-                  <span className="mb-1 block text-white/60">Capo {settings.capo}</span>
-                  <input type="range" min={0} max={9} step={1} value={settings.capo}
-                    onChange={(e) => patch({ capo: Number(e.target.value) })} className="w-full" />
-                </label>
-                {/*
-                  Pick a key, not a number of semitones. A player asks for "put
-                  it in G", not "move it up seven" — and the key signature moves
-                  with the notes, which it did not used to.
-                */}
-                <label>
-                  <span className="mb-1 block text-white/60">
-                    Write it in
-                    {settings.transposeSemitones !== 0 && (
-                      <span className="ml-1 text-white/35">
-                        ({settings.transposeSemitones > 0 ? "+" : ""}{settings.transposeSemitones} st)
-                      </span>
-                    )}
-                  </span>
-                  <select
-                    className="w-full"
-                    value={writtenTonic ?? ""}
-                    disabled={!parts.length}
-                    onChange={(e) => {
-                      const to = Number(e.target.value);
-                      patch({ transposeSemitones: shortestShift(soundingTonic, to) });
-                    }}
-                  >
-                    {!parts.length && <option value="">transcribe a part first</option>}
-                    {parts.length > 0 &&
-                      keyChoices(parts[0].keyMode).map((k) => (
-                        <option key={k.tonicPc} value={k.tonicPc}>
-                          {k.label}
-                          {k.tonicPc === soundingTonic ? " — as played" : ""}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={settings.monophonic}
-                    onChange={(e) => patch({ monophonic: e.target.checked })} />
-                  <span className="text-white/70">Single melody line only</span>
-                </label>
-                <label>
-                  <span className="mb-1 block text-white/60">Bar start offset {settings.offsetSeconds.toFixed(2)}s</span>
-                  <input type="range" min={0} max={4} step={0.01} value={settings.offsetSeconds}
-                    onChange={(e) => patch({ offsetSeconds: Number(e.target.value) })} className="w-full" />
-                </label>
-                <label>
-                  <span className="mb-1 block text-white/60">Score zoom {Math.round(zoom * 100)}%</span>
-                  <input type="range" min={0.6} max={1.8} step={0.05} value={zoom}
-                    onChange={(e) => setZoom(Number(e.target.value))} className="w-full" />
-                </label>
-              </div>
-            </details>
-
-            <div className="no-print mb-4 flex flex-wrap gap-2">
-              <button className="btn btn-primary" onClick={runTranscribe} disabled={!!busy}>
-                {busy?.label.startsWith("Listening") ? <Loader2 className="animate-spin" size={15} /> : <FileMusic size={15} />}
-                {busy?.label.startsWith("Listening")
-                  ? `Transcribing… ${Math.round((busy.value ?? 0) * 100)}%`
-                  : "Transcribe"}
-              </button>
-              <button className="btn" onClick={exportMidi} disabled={!parts.length}>
-                <Download size={15} /> MIDI
-              </button>
-              <button className="btn" onClick={exportMusicXml} disabled={!sheet}>
-                <Download size={15} /> MusicXML
-              </button>
-              <button className="btn" onClick={exportTex} disabled={!tex}>
-                <Download size={15} /> alphaTex
-              </button>
-              <button className="btn" onClick={() => window.print()} disabled={!tex}>
-                <Printer size={15} /> Print / PDF
-              </button>
-              <label className="flex items-center gap-2 text-xs text-white/60">
-                <input type="checkbox" checked={playAlong} onChange={(e) => setPlayAlong(e.target.checked)} />
-                Follow the music
-              </label>
-            </div>
-            {tex && playAlong && (
-              <p className="no-print mb-3 text-xs text-white/40">
-                The score scrolls itself and highlights the beat being played, so you can leave your
-                hands on the instrument. Set a loop on the waveform above to drill one phrase.
-              </p>
-            )}
-
-            {parts.length > 0 && (
-              <div className="no-print mb-4 grid gap-2">
-                {parts.map((part) => (
-                  <div
-                    key={part.id}
-                    className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-line)] px-3 py-2"
-                  >
-                    <select
-                      className="text-sm"
-                      value={part.instrument}
-                      onChange={(e) => setPartInstrument(part.id, e.target.value as InstrumentId)}
-                    >
-                      {Object.values(INSTRUMENTS).map((i) => (
-                        <option key={i.id} value={i.id}>{i.label}</option>
-                      ))}
-                    </select>
-                    <span className="text-xs text-white/45">
-                      {part.notes.length} notes · {part.keyName} · from{" "}
-                      {part.source === "mix" ? "the full mix" : part.source}
-                    </span>
-                    <span className="ml-auto flex items-center gap-2">
-                      <button
-                        className="btn py-1 text-xs"
-                        onClick={() => arrangeForEnsemble(part.id, ensembleSize)}
-                        title="Split this line into separate voices, one per instrument"
-                      >
-                        <Users size={14} /> Split into {ensembleSize} voices
-                      </button>
-                      <button className="btn py-1 text-xs" onClick={() => removePart(part.id)}>
-                        Remove
-                      </button>
-                    </span>
-                  </div>
-                ))}
-                <label className="flex items-center gap-2 text-xs text-white/45">
-                  Ensemble size
-                  <select
-                    className="text-xs"
-                    value={ensembleSize}
-                    onChange={(e) => setEnsembleSize(Number(e.target.value))}
-                  >
-                    <option value={2}>Duo — violin, cello</option>
-                    <option value={3}>Trio — violin, viola, cello</option>
-                    <option value={4}>Quartet — 2 violins, viola, cello</option>
-                    <option value={5}>Quintet — + double bass</option>
-                  </select>
-                  <span>
-                    Splitting arranges one line across instruments; it does not recover the original
-                    players from the recording.
-                  </span>
-                </label>
-              </div>
-            )}
-
-            {tex ? (
-              <>
-                <ScoreView
-                  tex={tex}
-                  zoom={zoom}
-                  playAlong={playAlong}
-                  timeSeconds={transport.time}
-                  timeline={timeline}
-                  onPickBeat={setPickedBeat}
-                  selectedBeat={pickedBeat}
-                />
-                <div className="no-print mt-3 flex flex-wrap items-center gap-2 text-sm">
-                  {pickedNotes.length > 0 ? (
-                    <>
-                      <span className="text-white/60">
-                        {/* Tenths matter here: two notes a beat apart both read
-                            as the same mm:ss, which is confusing when you are
-                            picking one of them to correct. */}
-                        {pickedNotes.length === 1
-                          ? `${noteName(pickedNotes[0].pitchMidi)} at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`
-                          : `${pickedNotes.length} notes at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`}
-                      </span>
-                      <button className="btn text-xs" onClick={() => nudgePicked(1)} title="Up a semitone">
-                        <ChevronUp size={14} /> semitone
-                      </button>
-                      <button className="btn text-xs" onClick={() => nudgePicked(-1)} title="Down a semitone">
-                        <ChevronDown size={14} /> semitone
-                      </button>
-                      <button className="btn text-xs" onClick={() => nudgePicked(12)}>+ octave</button>
-                      <button className="btn text-xs" onClick={() => nudgePicked(-12)}>− octave</button>
-                      <button className="btn text-xs text-red-200" onClick={deletePicked}>
-                        <Trash2 size={13} /> Remove
-                      </button>
-                    </>
-                  ) : (
-                    <span className="text-white/35">
-                      Click a note on the top staff to correct it — the model is a good first draft, not a transcriber.
-                    </span>
-                  )}
-                  {undoStack.length > 0 && (
-                    <button className="btn ml-auto text-xs" onClick={undoEdit}>
-                      <Undo2 size={13} /> Undo
-                    </button>
-                  )}
-                </div>
-              </>
-            ) : (
-              <p className="text-sm text-white/40">
-                Run the transcriber to see notation and tablature here. Transcribe as many parts as you
-                like — pick a stem, choose an instrument, and each one is added as another staff on the
-                same score. One instrument at a time is where this model is strongest, so split the stems
-                first rather than transcribing the full mix.
-              </p>
-            )}
-          </section>
-
-          <SaveBar buildChart={buildChart} chartId={chartId} onChartId={setChartId} />
-
-          {/* 5 — record */}
-          <section className="panel no-print mb-5 p-5">
-            <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-              <span className="step-badge">5</span> Play or sing over it
-            </h2>
-            <div className="flex flex-wrap items-center gap-2">
-              {!recArmed ? (
-                <button className="btn" onClick={armMic}><Mic size={15} /> Enable microphone</button>
-              ) : recording ? (
-                <button className="btn bg-red-500/20 text-red-200" onClick={stopRecording}>
-                  <Square size={15} /> Stop
-                </button>
-              ) : (
-                <button className="btn btn-primary" onClick={startRecording} disabled={!!busy}>
-                  <Mic size={15} /> Record from here
-                </button>
-              )}
-              {overdub && (
-                <button className="btn" onClick={() => setOverdub(null)}>Delete take</button>
-              )}
-              <label className="ml-2 text-xs text-white/55">
-                Nudge take {nudgeMs > 0 ? `+${nudgeMs}` : nudgeMs} ms
-                <input type="range" min={-300} max={300} step={5} value={nudgeMs}
-                  onChange={(e) => setNudgeMs(Number(e.target.value))} className="ml-2 align-middle" />
-              </label>
-            </div>
-            {overdub && parts.length > 0 && (
-              <div className="mt-4 rounded-md border border-white/10 bg-white/[0.02] p-4">
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <button className="btn btn-primary" onClick={checkTake} disabled={!!busy}>
-                    {busy?.label.startsWith("Listening to your take") ? <Loader2 className="animate-spin" size={15} /> : <Target size={15} />}
-                    How did I do?
-                  </button>
-                  {parts.length > 1 && (
-                    <select
-                      className="text-xs"
-                      value={checkPart ?? parts[0].id}
-                      onChange={(e) => setCheckPart(e.target.value)}
-                    >
-                      {parts.map((x) => (
-                        <option key={x.id} value={x.id}>
-                          against {INSTRUMENTS[x.instrument].label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {report && (
-                    <span className="text-sm">
-                      <b className={report.accuracy >= 0.9 ? "text-emerald-300" : report.accuracy >= 0.7 ? "text-[var(--color-accent)]" : "text-red-300"}>
-                        {Math.round(report.accuracy * 100)}%
-                      </b>
-                      <span className="text-white/45"> clean</span>
-                    </span>
-                  )}
-                </div>
-
-                {report && (
-                  <>
-                    <div className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-white/55">
-                      <span>{report.clean} right</span>
-                      {report.missed > 0 && <span>{report.missed} missed</span>}
-                      {report.outOfTune > 0 && <span>{report.outOfTune} out of tune</span>}
-                      {report.outOfTime > 0 && <span>{report.outOfTime} out of time</span>}
-                      {report.extra > 0 && <span>{report.extra} not in the part</span>}
-                      {Math.abs(report.meanMsOff) >= 25 && (
-                        <span className="text-[var(--color-accent)]">
-                          {report.meanMsOff > 0 ? "dragging" : "rushing"} ~{Math.abs(report.meanMsOff)} ms
-                        </span>
-                      )}
-                    </div>
-
-                    {/* A bar per column, so the shape of the problem is visible at a glance. */}
-                    <div className="mb-3 flex items-end gap-[3px]" style={{ height: 44 }}>
-                      {report.bars.map((b) => (
-                        <div
-                          key={b.bar}
-                          title={`Bar ${b.bar}: ${b.clean} of ${b.notes} clean`}
-                          className={`w-3 shrink-0 rounded-sm ${
-                            b.accuracy >= 0.9 ? "bg-emerald-400/70" : b.accuracy >= 0.6 ? "bg-[var(--color-accent)]/70" : "bg-red-400/70"
-                          }`}
-                          style={{ height: `${Math.max(8, b.accuracy * 44)}px` }}
-                        />
-                      ))}
-                    </div>
-
-                    {report.worstBars.length > 0 ? (
-                      <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <span className="text-white/55">
-                          Weakest {report.worstBars.length === 1 ? "bar" : "bars"}:{" "}
-                          {report.worstBars.map((b) => b.bar).join(", ")}
-                        </span>
-                        <button className="btn text-xs" onClick={loopWorstBars}>
-                          <Repeat size={13} /> Loop those and go again
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-emerald-300/80">Nothing stands out as weak. Take the speed up.</p>
-                    )}
-
-                    <p className="mt-3 text-xs text-white/35">
-                      Marked by transcribing your take and lining it up with the written part, so it
-                      inherits the same blind spots as the transcription — treat a surprising result as
-                      a question rather than a verdict.
-                    </p>
-                  </>
-                )}
-              </div>
-            )}
-
-            <p className="mt-3 text-xs text-white/45">
-              Record at any speed — a take played at 60% is stretched back to full tempo without going
-              chipmunk. Use headphones so the backing track does not bleed into the mic.
-              {parts.length > 0 && " Mute your own part in the mixer first, so you are playing the line rather than doubling it."}
-            </p>
-          </section>
-        </>
-      )}
-
-      {/*
-        The transport, always within reach. A player holding an instrument
-        cannot go hunting up the page for the play button, and the score is
-        long — so it follows you down the page instead.
-      */}
-      {audio && (
-        <div className="no-print fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0c0f14]/95 backdrop-blur">
-          <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-3 px-4 py-2.5">
-            <button
-              className="btn btn-primary"
-              onClick={() => void startPlaying()}
-              aria-label={transport.playing ? "Pause" : "Play"}
-            >
-              {counting ? <Loader2 className="animate-spin" size={16} /> : transport.playing ? <Pause size={16} /> : <Play size={16} />}
-              {counting ? "Counting in…" : transport.playing ? "Pause" : "Play"}
-            </button>
-            <button
-              className="btn"
-              onClick={() => void engineRef.current?.seek(loop ? loop[0] : 0)}
-              title="Back to the start of the loop"
-            >
-              <RotateCcw size={15} />
-            </button>
-            <span className="font-mono text-sm tabular-nums text-white/70">
-              {fmtTime(transport.time)}
-              <span className="text-white/30"> / {fmtTime(transport.duration)}</span>
-            </span>
-
-            <span className="flex items-center gap-1">
-              {[0.5, 0.75, 1].map((s) => (
-                <button
-                  key={s}
-                  onClick={() => void engineRef.current?.setRate(s)}
-                  className={`rounded px-1.5 py-0.5 text-xs ${
-                    Math.abs(transport.rate - s) < 0.005
-                      ? "bg-[var(--color-accent)] text-black"
-                      : "bg-white/5 text-white/60 hover:bg-white/10"
-                  }`}
-                >
-                  {Math.round(s * 100)}%
-                </button>
-              ))}
-              {![0.5, 0.75, 1].some((s) => Math.abs(transport.rate - s) < 0.005) && (
-                <span className="rounded bg-[var(--color-accent)] px-1.5 py-0.5 text-xs text-black">
-                  {Math.round(transport.rate * 100)}%
-                </span>
-              )}
-            </span>
-
-            {loop && (
-              <button className="btn text-xs text-emerald-300" onClick={() => setLoop(null)} title="Clear the loop">
-                <Repeat size={14} /> {fmtTime(loop[0])}–{fmtTime(loop[1])} ✕
-              </button>
-            )}
-            {trainer && <span className="text-xs text-[var(--color-accent)]">trainer → {Math.round(trainer.target * 100)}%</span>}
-            {transport.rendering !== null && (
-              <span className="flex items-center gap-1.5 text-xs text-[var(--color-accent)]">
-                <Loader2 className="animate-spin" size={12} /> {Math.round(transport.rendering * 100)}%
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-      {audio && <div className="no-print h-16" aria-hidden />}
-
-      <footer className="no-print pb-10 pt-4 text-center text-xs text-white/30">
-        Basic Pitch (Spotify, Apache-2.0) · Demucs (Meta, MIT) · alphaTab (MPL-2.0) · Signalsmith Stretch (MIT)
-      </footer>
+      <ToolsSheet open={toolsOpen} onClose={() => setToolsOpen(false)} suggestedTonic={droneTonic} />
+      <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <AiSplitConfirm
+        open={aiConfirmOpen}
+        durationSeconds={audio ? audio.left.length / DEMUCS_SAMPLE_RATE : 0}
+        hasLoop={!!loop && loop[1] - loop[0] >= 1}
+        onChoice={answerAiSplit}
+      />
     </div>
   );
 }

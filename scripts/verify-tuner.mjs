@@ -7,7 +7,7 @@
 const src = await import("../src/lib/audio/tuner.ts").catch(() => null);
 if (!src) {
   console.log("run with: node --experimental-strip-types scripts/verify-tuner.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { detectPitch, midiToHz } = src;
 

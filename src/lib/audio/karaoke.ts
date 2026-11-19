@@ -10,7 +10,7 @@
  *
  * Quality still loses to Demucs, so this is offered as the zero-wait option.
  */
-import { istft, stft, type Stft } from "./fft";
+import { fft, hann } from "./fft";
 
 export interface CenterSplit {
   /** Everything that is NOT centre — the backing track / instrumental. */
@@ -29,41 +29,92 @@ export interface CenterOptions {
   highKeepHz?: number;
 }
 
-function cloneStft(s: Stft): Stft {
-  return {
-    ...s,
-    re: s.re.map((f) => Float32Array.from(f)),
-    im: s.im.map((f) => Float32Array.from(f)),
-  };
+/** Side energy at least ~30 dB under the mid: a mono file, or a "stereo" copy of one. */
+export function isEffectivelyMono(left: Float32Array, right: Float32Array): boolean {
+  let side = 0;
+  let total = 0;
+  const n = Math.min(left.length, right.length);
+  for (let i = 0; i < n; i++) {
+    const d = left[i] - right[i];
+    side += d * d;
+    total += left[i] * left[i] + right[i] * right[i];
+  }
+  return total > 0 && side / total < 1e-3;
 }
 
+export const MONO_SPLIT_ERROR = "This recording is mono, so the instant split cannot separate it. Use the AI split.";
+
+/**
+ * Streams frame by frame (analyse, mask, resynthesise, overlap-add), so memory is a few
+ * song-length arrays rather than six whole-song spectrograms.
+ */
 export function splitCenter(
   left: Float32Array,
   right: Float32Array,
   sampleRate: number,
   opts: CenterOptions = {}
 ): CenterSplit {
+  // With L == R every bin looks centred, and the "backing track" would be nearly silent.
+  if (isEffectivelyMono(left, right)) throw new Error(MONO_SPLIT_ERROR);
+
   const fftSize = opts.fftSize ?? 4096;
   const strength = opts.strength ?? 2;
   const lowKeepHz = opts.lowKeepHz ?? 120;
   const highKeepHz = opts.highKeepHz ?? 14000;
   const hop = fftSize / 4;
 
-  const L = stft(left, fftSize, hop);
-  const R = stft(right, fftSize, hop);
-  const cL = cloneStft(L);
-  const cR = cloneStft(R);
-  const iL = cloneStft(L);
-  const iR = cloneStft(R);
-
   const binHz = sampleRate / fftSize;
   const loBin = Math.floor(lowKeepHz / binHz);
   const hiBin = Math.ceil(highKeepHz / binHz);
 
-  for (let f = 0; f < L.frames; f++) {
-    for (let b = 0; b < L.bins; b++) {
-      const lr = L.re[f][b], li = L.im[f][b];
-      const rr = R.re[f][b], ri = R.im[f][b];
+  const n = left.length;
+  // centred frames, zero padded at both ends
+  const frames = Math.max(1, Math.ceil((n + fftSize) / hop));
+  const bins = fftSize / 2 + 1;
+  const w = hann(fftSize);
+
+  const outL = new Float32Array(n);
+  const outR = new Float32Array(n);
+  const outC = new Float32Array(n);
+  const norm = new Float32Array(n);
+
+  const lRe = new Float32Array(fftSize), lIm = new Float32Array(fftSize);
+  const rRe = new Float32Array(fftSize), rIm = new Float32Array(fftSize);
+  const cRe = new Float32Array(fftSize), cIm = new Float32Array(fftSize);
+  const iLRe = new Float32Array(fftSize), iLIm = new Float32Array(fftSize);
+  const iRRe = new Float32Array(fftSize), iRIm = new Float32Array(fftSize);
+
+  /** Rebuild the conjugate-symmetric upper half, invert, and overlap-add into `out`. */
+  const resynth = (re: Float32Array, im: Float32Array, out: Float32Array, start: number) => {
+    for (let b = bins; b < fftSize; b++) { re[b] = 0; im[b] = 0; }
+    for (let b = 1; b < bins - 1; b++) {
+      re[fftSize - b] = re[b];
+      im[fftSize - b] = -im[b];
+    }
+    fft(re, im, true);
+    for (let i = 0; i < fftSize; i++) {
+      const t = start + i;
+      if (t < 0 || t >= n) continue;
+      out[t] += re[i] * w[i];
+    }
+  };
+
+  for (let f = 0; f < frames; f++) {
+    const start = f * hop - fftSize / 2;
+    for (let i = 0; i < fftSize; i++) {
+      const s = start + i;
+      const inside = s >= 0 && s < n;
+      lRe[i] = inside ? left[s] * w[i] : 0;
+      rRe[i] = inside ? right[s] * w[i] : 0;
+      lIm[i] = 0;
+      rIm[i] = 0;
+    }
+    fft(lRe, lIm);
+    fft(rRe, rIm);
+
+    for (let b = 0; b < bins; b++) {
+      const lr = lRe[b], li = lIm[b];
+      const rr = rRe[b], ri = rIm[b];
 
       let g = 0;
       if (b >= loBin && b <= hiBin) {
@@ -78,16 +129,31 @@ export function splitCenter(
       const mr = ((lr + rr) / 2) * g;
       const mi = ((li + ri) / 2) * g;
 
-      cL.re[f][b] = mr; cL.im[f][b] = mi;
-      cR.re[f][b] = mr; cR.im[f][b] = mi;
-      iL.re[f][b] = lr - mr; iL.im[f][b] = li - mi;
-      iR.re[f][b] = rr - mr; iR.im[f][b] = ri - mi;
+      cRe[b] = mr; cIm[b] = mi;
+      iLRe[b] = lr - mr; iLIm[b] = li - mi;
+      iRRe[b] = rr - mr; iRIm[b] = ri - mi;
+    }
+
+    resynth(iLRe, iLIm, outL, start);
+    resynth(iRRe, iRIm, outR, start);
+    resynth(cRe, cIm, outC, start);
+    for (let i = 0; i < fftSize; i++) {
+      const t = start + i;
+      if (t >= 0 && t < n) norm[t] += w[i] * w[i];
     }
   }
 
-  const n = left.length;
+  for (let i = 0; i < n; i++) {
+    if (norm[i] > 1e-8) {
+      outL[i] /= norm[i];
+      outR[i] /= norm[i];
+      outC[i] /= norm[i];
+    }
+  }
+
+  // The centre is the same on both sides; two arrays so each can be handed over on its own.
   return {
-    instrumental: [istft(iL, n), istft(iR, n)],
-    center: [istft(cL, n), istft(cR, n)],
+    instrumental: [outL, outR],
+    center: [outC, Float32Array.from(outC)],
   };
 }

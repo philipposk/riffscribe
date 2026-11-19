@@ -27,15 +27,20 @@ export default function SignIn({ stacked = false }: { stacked?: boolean }) {
   return (
     <div>
       <div className={stacked ? "flex flex-col gap-2" : "flex flex-wrap items-center gap-2"}>
-        <GoogleIdentityButton getSupabase={db} onSignedIn={() => window.location.assign("/studio")} onError={setError}>
+        {/* Stay on this page: useAccount follows the new session in place, and a
+            reload would drop unsaved studio work (sections, loop, note edits). */}
+        <GoogleIdentityButton getSupabase={db} onSignedIn={() => {}} onError={setError}>
           <button className="btn justify-center" disabled={!!busy} onClick={() => void run("google", signInWithGoogle)}>
             {busy === "google" ? <Loader2 className="animate-spin" size={15} /> : <User size={15} />}
             Continue with Google
           </button>
         </GoogleIdentityButton>
-        <span className="text-center text-xs text-white/30">or</span>
+        <span className="text-center text-xs text-faint">or</span>
+        <label htmlFor="signin-email" className="sr-only">Email address</label>
         <input
+          id="signin-email"
           type="email"
+          autoComplete="email"
           className="min-w-0 flex-1 text-sm"
           placeholder="you@example.com"
           value={email}

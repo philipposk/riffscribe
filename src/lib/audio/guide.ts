@@ -9,26 +9,15 @@
  * It is built from the raw detected notes, not the quantised score, so it lines
  * up with the recording exactly. Think "the part, cleaned up", not "the sheet
  * music played by a robot".
+ *
+ * Plucked and struck parts are rendered note by note here. Parts that hold their
+ * notes (bowed, winds, brass, voice) are played as one continuous, slurred line
+ * by guideLine.ts, following the singer's pitch and loudness when a contour is
+ * given. Every render is deterministic for a given seed.
  */
-import type { NoteEvent, Timbre } from "../types";
-
-interface Voice {
-  /** Relative amplitude of harmonic 1, 2, 3 … */
-  harmonics: number[];
-  attack: number;
-  decay: number;
-  /** 0 = dies away (plucked), 1 = holds while the note lasts (bowed). */
-  sustain: number;
-  release: number;
-  /** Exponential fade over the note, per second. 0 for sustained voices. */
-  damping: number;
-  vibratoHz: number;
-  vibratoDepth: number;
-  vibratoOnset: number;
-  /** Breath/bow noise blended in. */
-  noise: number;
-  gain: number;
-}
+import type { NoteEvent, PitchContour, Timbre } from "../types";
+import { renderLine, type Voice } from "./guideLine";
+import { mulberry32 } from "./prng";
 
 const VOICES: Record<Timbre, Voice> = {
   bowed: {
@@ -72,6 +61,9 @@ const VOICES: Record<Timbre, Voice> = {
 
 const midiToHz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 
+/** Timbres that hold their notes: played as one continuous line (guideLine.ts). */
+const SUSTAINED = new Set<Timbre>(["bowed", "breath", "reed", "brass", "voice"]);
+
 export interface GuideOptions {
   timbre: Timbre;
   sampleRate: number;
@@ -80,14 +72,27 @@ export interface GuideOptions {
   transposeSemitones?: number;
   /** Shortest note to bother rendering, in seconds. */
   minDuration?: number;
+  /** The singer's pitch and loudness when the part was written from a vocal (sustained timbres). */
+  contour?: PitchContour | null;
+  /** RMS of the sounding part (sustained timbres). Default 0.12. */
+  targetRms?: number;
+  /** Put the line in a small room (sustained timbres). Default true. */
+  room?: boolean;
+  /** Seed for the noise, so a render is the same every time. Default 1. */
+  seed?: number;
+  /** Body size relative to a cello (bowed timbre; see BODY_SCALE in body.ts). Default 1. */
+  bodyScale?: number;
 }
 
 export function synthesizeGuide(notes: NoteEvent[], o: GuideOptions): [Float32Array, Float32Array] {
   const v = VOICES[o.timbre] ?? VOICES.plucked;
+  if (SUSTAINED.has(o.timbre)) return renderLine(notes, v, { ...o, bowed: o.timbre === "bowed" });
+
   const sr = o.sampleRate;
   const out = new Float32Array(o.lengthSamples);
   const minDur = o.minDuration ?? 0.04;
   const shift = o.transposeSemitones ?? 0;
+  const rand = mulberry32(o.seed ?? 1);
 
   for (const note of notes) {
     const dur = Math.max(minDur, note.durationSeconds);
@@ -104,9 +109,21 @@ export function synthesizeGuide(notes: NoteEvent[], o: GuideOptions): [Float32Ar
 
     const total = Math.min(Math.floor((dur + v.release) * sr), out.length - start);
     const twoPiOverSr = (2 * Math.PI) / sr;
+    // Accumulated, not f·t: with vibrato f changes per sample, and sin(2π·f(t)·t)
+    // would swing further off pitch the longer the note is held.
+    let phase = 0;
 
     for (let i = 0; i < total; i++) {
       const t = i / sr;
+
+      // vibrato only after the note has settled — a stab should not wobble
+      let f = freq;
+      if (v.vibratoHz && t > v.vibratoOnset) {
+        const ramp = Math.min(1, (t - v.vibratoOnset) / 0.25);
+        f = freq * (1 + v.vibratoDepth * ramp * Math.sin(2 * Math.PI * v.vibratoHz * t));
+      }
+      const p = phase;
+      phase += twoPiOverSr * f;
 
       // ADSR, with an exponential fade for instruments that die away
       let env: number;
@@ -117,17 +134,9 @@ export function synthesizeGuide(notes: NoteEvent[], o: GuideOptions): [Float32Ar
       if (v.damping) env *= Math.exp(-v.damping * t);
       if (env <= 1e-4) continue;
 
-      // vibrato only after the note has settled — a stab should not wobble
-      let f = freq;
-      if (v.vibratoHz && t > v.vibratoOnset) {
-        const ramp = Math.min(1, (t - v.vibratoOnset) / 0.25);
-        f = freq * (1 + v.vibratoDepth * ramp * Math.sin(2 * Math.PI * v.vibratoHz * t));
-      }
-
       let s = 0;
-      const phase = twoPiOverSr * f * i;
-      for (let h = 0; h < partials.length; h++) s += partials[h] * Math.sin(phase * (h + 1));
-      if (v.noise) s += v.noise * (Math.random() * 2 - 1);
+      for (let h = 0; h < partials.length; h++) s += partials[h] * Math.sin(p * (h + 1));
+      if (v.noise) s += v.noise * (rand() * 2 - 1);
 
       out[start + i] += s * env * amp;
     }
@@ -141,5 +150,6 @@ export function synthesizeGuide(notes: NoteEvent[], o: GuideOptions): [Float32Ar
     for (let i = 0; i < out.length; i++) out[i] *= g;
   }
 
-  return [out, Float32Array.from(out)];
+  // mono: both channels share one array (nothing writes to them afterwards)
+  return [out, out];
 }

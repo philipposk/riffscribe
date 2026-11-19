@@ -1,0 +1,55 @@
+# Every six hours: is the live site up? If not, open (or update) one issue labelled ops-alert.
+# The issue closes itself on the next healthy run.
+name: Health check
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SITE: https://riffscribe.6x7.gr
+    steps:
+      - name: Check the site
+        id: check
+        run: |
+          failed=""
+          for path in / /studio /api/health; do
+            if ! curl -fsS --max-time 30 --retry 2 --retry-delay 5 -o /dev/null "$SITE$path"; then
+              failed="$failed $path"
+            fi
+          done
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          if [ -n "$failed" ]; then echo "Failing:$failed"; exit 1; fi
+          echo "All three pages answered."
+      - name: Open or update the alert issue
+        if: ${{ failure() && steps.check.outputs.failed != '' }}
+        env:
+          FAILED: ${{ steps.check.outputs.failed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create ops-alert --color B60205 --description "The live site failed a health check" 2>/dev/null || true
+          body="The health check could not load:$FAILED on $SITE. Run: $RUN_URL"
+          existing=$(gh issue list --label ops-alert --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            # Refresh the body instead of commenting: a comment every six hours is a notification every six hours.
+            gh issue edit "$existing" --body "$body"
+          else
+            gh issue create --label ops-alert --title "Riffscribe is not answering" --body "$body"
+          fi
+      - name: Close the alert issue once the site is back
+        if: ${{ success() }}
+        run: |
+          for n in $(gh issue list --label ops-alert --state open --json number --jq '.[].number'); do
+            gh issue close "$n" --comment "The site answered on the latest check."
+          done

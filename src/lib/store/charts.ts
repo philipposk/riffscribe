@@ -15,8 +15,11 @@
  * the other three players and each of them opens the same parts, tempo and
  * markings against their own copy of the song.
  */
+import { authRedirectTo, isNativePlatform, NATIVE_AUTH_REDIRECT } from "../native";
 import { supabase } from "../supabase/client";
 import type { Part, TranscriptionSettings } from "../types";
+import { deleteOwnChart, listOwnCharts, readChart, setChartShared } from "./chartAccess";
+import { writeChart } from "./chartSave";
 
 export const CHART_VERSION = 1;
 
@@ -58,11 +61,17 @@ export function db() {
 
 /* ------------------------------------------------------------------- auth */
 
+/**
+ * Who is signed in, from the session this browser holds — no network round
+ * trip, so flaky Wi-Fi does not read as signed out. The server checks the
+ * token itself on every call that matters (row-level security, api routes).
+ */
 export async function currentUser(): Promise<{ id: string; email?: string } | null> {
   const s = supabase();
   if (!s) return null;
-  const { data } = await s.auth.getUser();
-  return data.user ? { id: data.user.id, email: data.user.email ?? undefined } : null;
+  const { data } = await s.auth.getSession();
+  const user = data.session?.user;
+  return user ? { id: user.id, email: user.email ?? undefined } : null;
 }
 
 export function onAuthChange(fn: (user: { id: string; email?: string } | null) => void): () => void {
@@ -75,35 +84,56 @@ export function onAuthChange(fn: (user: { id: string; email?: string } | null) =
 }
 
 export async function signInWithGoogle(): Promise<void> {
-  const { error } = await db().auth.signInWithOAuth({
+  // Website, and any build where Capacitor is absent: redirect this tab.
+  // The email link below also comes back on the custom scheme in the shell.
+  if (!(await isNativePlatform())) {
+    const { error } = await db().auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: `${location.origin}/studio` },
+    });
+    if (error) throw error;
+    return;
+  }
+
+  // Phone shell: keep the PKCE verifier in the WebView, finish Google in the
+  // system browser, and come back on the custom scheme. NativeShell then
+  // opens /studio with the code so this WebView can exchange it.
+  const { data, error } = await db().auth.signInWithOAuth({
     provider: "google",
-    options: { redirectTo: `${location.origin}/studio` },
+    options: { redirectTo: NATIVE_AUTH_REDIRECT, skipBrowserRedirect: true },
   });
   if (error) throw error;
+  const url = data?.url;
+  if (!url) throw new Error("Google sign-in did not return a URL.");
+  try {
+    const { Browser } = await import("@capacitor/browser");
+    await Browser.open({ url });
+  } catch {
+    window.open(url, "_system");
+  }
 }
 
-/** The address-only route, for anyone who would rather not use a Google account. */
+/**
+ * The address-only route, for anyone who would rather not use a Google account.
+ * In the shell the link returns on the custom scheme (see authRedirectTo), so
+ * it must be opened on the same phone.
+ */
 export async function signInWithEmail(email: string): Promise<void> {
-  const { error } = await db().auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: `${location.origin}/studio` },
-  });
+  const emailRedirectTo = authRedirectTo(await isNativePlatform(), location.origin);
+  const { error } = await db().auth.signInWithOtp({ email, options: { emailRedirectTo } });
   if (error) throw error;
 }
 
 export async function signOut(): Promise<void> {
-  await db().auth.signOut();
+  await db().auth.signOut({ scope: "local" });
 }
 
 /* ----------------------------------------------------------------- charts */
 
+/** Your own charts. Shared charts are readable by id, never listed. */
 export async function listCharts(): Promise<ChartRow[]> {
-  const { data, error } = await db()
-    .from("riffscribe_charts")
-    .select("id, title, shared, updated_at")
-    .order("updated_at", { ascending: false });
-  if (error) throw error;
-  return (data ?? []) as ChartRow[];
+  const s = db();
+  return listOwnCharts(s, (await currentUser())?.id ?? null);
 }
 
 export async function saveChart(chart: Chart, id?: string): Promise<string> {
@@ -112,46 +142,32 @@ export async function saveChart(chart: Chart, id?: string): Promise<string> {
   const owner = userData.user?.id;
   if (!owner) throw new Error("Sign in first.");
 
-  if (id) {
-    const { error } = await s
-      .from("riffscribe_charts")
-      .update({ title: chart.title, data: chart, updated_at: new Date().toISOString() })
-      .eq("id", id);
-    if (error) throw error;
-    return id;
+  // The table caps a title at 300 characters and a chart at 5 MB (migrations/0003).
+  try {
+    return await writeChart(s, owner, { ...chart, title: chart.title?.slice(0, 300) }, id);
+  } catch (e) {
+    if (/riffscribe_charts_data_size/.test((e as Error)?.message ?? "")) {
+      throw new Error("This chart is too large to save.");
+    }
+    throw e;
   }
-  const { data, error } = await s
-    .from("riffscribe_charts")
-    .insert({ owner, title: chart.title, data: chart })
-    .select("id")
-    .single();
-  if (error?.message?.includes("riffscribe_song_limit")) {
-    throw new Error("Your plan's song limit is reached — delete an old song or upgrade to Pro.");
-  }
-  if (error) throw error;
-  return (data as { id: string }).id;
 }
 
 /**
- * Read one chart. This works for a signed-out visitor too when the owner has
- * shared it — the row-level policy allows that and nothing else.
+ * Read one chart: your own, or — for anyone, signed out too — one its owner
+ * has shared (see chartAccess.ts).
  */
 export async function loadChart(id: string): Promise<Chart | null> {
-  const { data, error } = await db().from("riffscribe_charts").select("data").eq("id", id).maybeSingle();
-  if (error) throw error;
-  const row = data as { data: Chart } | null;
-  return row?.data ?? null;
+  return readChart(db(), id);
 }
 
 export async function deleteChart(id: string): Promise<void> {
-  const { error } = await db().from("riffscribe_charts").delete().eq("id", id);
-  if (error) throw error;
+  await deleteOwnChart(db(), id);
 }
 
 /** Turn the link on or off. Off means nobody but the owner can open it again. */
 export async function setShared(id: string, shared: boolean): Promise<void> {
-  const { error } = await db().from("riffscribe_charts").update({ shared }).eq("id", id);
-  if (error) throw error;
+  await setChartShared(db(), id, shared);
 }
 
 export function shareLink(id: string): string {

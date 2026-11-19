@@ -10,16 +10,13 @@
 import * as ort from "onnxruntime-web";
 import { DemucsProcessor } from "demucs-web";
 
-type In =
-  | { type: "separate"; left: Float32Array; right: Float32Array; modelUrl: string }
-  | { type: "warm"; modelUrl: string };
+type In = { type: "separate"; left: Float32Array; right: Float32Array; modelUrl: string };
 
 type Out =
   | { type: "download"; loaded: number; total: number }
   | { type: "progress"; progress: number; segment: number; segments: number }
   | { type: "log"; phase: string; message: string }
   | { type: "preparing" }
-  | { type: "ready" }
   | { type: "error"; message: string }
   | {
       type: "done";
@@ -98,11 +95,6 @@ async function getProcessor(modelUrl: string) {
 
 self.onmessage = async (e: MessageEvent<In>) => {
   try {
-    if (e.data.type === "warm") {
-      await getProcessor(e.data.modelUrl);
-      post({ type: "ready" });
-      return;
-    }
     const { left, right, modelUrl } = e.data;
     const p = await getProcessor(modelUrl);
     const result = await p.separate(left, right);
