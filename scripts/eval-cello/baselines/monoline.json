@@ -1,0 +1,30 @@
+{
+  "stage": "monoline",
+  "metrics": {
+    "fragmentation_vib1": 1,
+    "f1_vib1": 0.75,
+    "offPitch_vib1": 0,
+    "fragmentation_vib1_highest": 1,
+    "f1_vib1_highest": 0.75,
+    "offPitch_vib1_highest": 0,
+    "fragmentation_vib40": 1,
+    "f1_vib40": 0.75,
+    "offPitch_vib40": 0,
+    "fragmentation_vib40_highest": 1,
+    "f1_vib40_highest": 0.75,
+    "offPitch_vib40_highest": 0,
+    "fragmentation_vib80": 2.13,
+    "f1_vib80": 0.32,
+    "offPitch_vib80": 9,
+    "fragmentation_vib80_highest": 2.13,
+    "f1_vib80_highest": 0.32,
+    "offPitch_vib80_highest": 9,
+    "vocadito_excerpts": 40,
+    "vocadito_f1_raw": 0.502,
+    "vocadito_fragmentation_raw": 1.31,
+    "vocadito_f1_clean": 0.498,
+    "vocadito_fragmentation_clean": 0.95,
+    "vocadito_f1_clean_highest": 0.478,
+    "vocadito_fragmentation_clean_highest": 0.96
+  }
+}

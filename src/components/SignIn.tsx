@@ -36,8 +36,11 @@ export default function SignIn({ stacked = false }: { stacked?: boolean }) {
           </button>
         </GoogleIdentityButton>
         <span className="text-center text-xs text-white/30">or</span>
+        <label htmlFor="signin-email" className="sr-only">Email address</label>
         <input
+          id="signin-email"
           type="email"
+          autoComplete="email"
           className="min-w-0 flex-1 text-sm"
           placeholder="you@example.com"
           value={email}

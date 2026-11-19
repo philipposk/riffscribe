@@ -19,7 +19,8 @@
  * "Unknown dtype undefined".
  */
 import type { BasicPitch as BasicPitchModel } from "@spotify/basic-pitch";
-import type { NoteEvent } from "../types";
+import type { ContourPeaks, NoteEvent } from "../types";
+import { pickPeaks } from "./contour";
 
 export const BASIC_PITCH_SAMPLE_RATE = 22050;
 export const MODEL_PATH = "/models/basic-pitch/model.json";
@@ -32,6 +33,16 @@ export interface RunOptions {
   minNoteLength: number;
   minMidi?: number;
   maxMidi?: number;
+  /** Basic Pitch's "melodia trick" (drop weak notes that only echo stronger ones). Default true. */
+  melodiaTrick?: boolean;
+  /** Also keep the top pitch-salience peaks per frame, for a continuous pitch curve. */
+  wantPeaks?: boolean;
+}
+
+export interface TranscriptionResult {
+  notes: NoteEvent[];
+  /** Only when `wantPeaks` was asked for; null otherwise. */
+  peaks: ContourPeaks | null;
 }
 
 const midiToHz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
@@ -67,12 +78,22 @@ const breathe = (): Promise<void> =>
     ch.port2.postMessage(null);
   });
 
+/** The notes alone; see `runTranscriptionFull` for the pitch-salience peaks as well. */
 export async function runTranscription(
   mono22k: Float32Array,
   opts: RunOptions,
   onProgress?: (pct: number) => void,
   modelUrl: string = MODEL_PATH
 ): Promise<NoteEvent[]> {
+  return (await runTranscriptionFull(mono22k, opts, onProgress, modelUrl)).notes;
+}
+
+export async function runTranscriptionFull(
+  mono22k: Float32Array,
+  opts: RunOptions,
+  onProgress?: (pct: number) => void,
+  modelUrl: string = MODEL_PATH
+): Promise<TranscriptionResult> {
   const {
     BasicPitch,
     noteFramesToTime,
@@ -160,12 +181,15 @@ export async function runTranscription(
         true,
         limits.maxHz,
         limits.minHz,
-        true
+        opts.melodiaTrick ?? true
       )
     )
   );
 
-  return notes
+  // addPitchBendsToNoteEvents only reads the contour rows, so they are intact here.
+  const peaks = opts.wantPeaks ? pickPeaks(contours) : null;
+
+  const out = notes
     .map((n) => ({
       startTimeSeconds: n.startTimeSeconds,
       durationSeconds: n.durationSeconds,
@@ -174,4 +198,5 @@ export async function runTranscription(
       pitchBends: n.pitchBends,
     }))
     .sort((a, b) => a.startTimeSeconds - b.startTimeSeconds || a.pitchMidi - b.pitchMidi);
+  return { notes: out, peaks };
 }

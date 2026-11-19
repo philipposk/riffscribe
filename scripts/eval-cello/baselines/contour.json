@@ -1,0 +1,28 @@
+{
+  "stage": "contour",
+  "metrics": {
+    "within50_vib1": 0.98,
+    "rmsCents_vib1": 17.5,
+    "medianCents_vib1": 0,
+    "absMedianCents_vib1": 0,
+    "voicedFrames_vib1": 750,
+    "within50_vib40": 0.98,
+    "rmsCents_vib40": 18.7,
+    "medianCents_vib40": 1,
+    "absMedianCents_vib40": 1,
+    "voicedFrames_vib40": 750,
+    "vibDepthCents_vib40": 36.6,
+    "vibRateHz_vib40": 5.46,
+    "vibDepthErrPct_vib40": 13.1,
+    "vibRateErrHz_vib40": 0.03,
+    "within50_vib80": 0.969,
+    "rmsCents_vib80": 23.5,
+    "medianCents_vib80": 1,
+    "absMedianCents_vib80": 1,
+    "voicedFrames_vib80": 750,
+    "vibDepthCents_vib80": 75.9,
+    "vibRateHz_vib80": 5.47,
+    "vibDepthErrPct_vib80": 9.9,
+    "vibRateErrHz_vib80": 0.02
+  }
+}

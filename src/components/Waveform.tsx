@@ -76,14 +76,26 @@ export default function Waveform({ peaks, duration, time, loop, onSeek, onLoop }
 
   const fmt = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
+  // Keyboard and one-tap ways to set a loop: dragging a thin canvas is hard on touch and impossible by keyboard.
+  const setLoopStart = () => {
+    if (duration <= 0) return;
+    onLoop([time, loop && loop[1] > time ? loop[1] : Math.min(duration, time + 4)]);
+  };
+  const setLoopEnd = () => {
+    if (duration <= 0) return;
+    onLoop([loop && loop[0] < time ? loop[0] : Math.max(0, time - 4), time]);
+  };
+
   return (
+    <div>
     <canvas
       ref={canvas}
       // touch-none: without it a finger drag scrolls the page (or is cancelled) instead of drawing a loop.
       className="h-24 w-full cursor-crosshair touch-none rounded-lg border border-[var(--color-line)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+      style={{ touchAction: "none" }}
       role="slider"
       tabIndex={0}
-      aria-label="Position in the song. Arrow keys move 5 seconds, shift moves 1."
+      aria-label="Song position"
       aria-valuemin={0}
       aria-valuemax={Math.round(duration)}
       aria-valuenow={Math.round(time)}
@@ -123,5 +135,14 @@ export default function Waveform({ peaks, duration, time, loop, onSeek, onLoop }
       onPointerCancel={() => setDrag(null)}
       onLostPointerCapture={() => setDrag(null)}
     />
+    <div className="mt-2 flex flex-wrap gap-2">
+      <button type="button" className="btn text-xs" onClick={setLoopStart} disabled={duration <= 0}>
+        Set loop start
+      </button>
+      <button type="button" className="btn text-xs" onClick={setLoopEnd} disabled={duration <= 0}>
+        Set loop end
+      </button>
+    </div>
+    </div>
   );
 }

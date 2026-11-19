@@ -1,12 +1,11 @@
 import { Bookmark } from "lucide-react";
 
-import Transport from "../Transport";
 import Waveform from "../Waveform";
 import {
   fmtTime, type Busy, type EngineRef, type Loop, type Section, type Setter, type Trainer, type TransportState,
 } from "./constants";
 
-/** Step 3: waveform, loop, sections, count-in, speed trainer and the transport. */
+/** Step 3: waveform, loop, sections, count-in and speed trainer (the transport is the player bar). */
 export interface PracticePanelProps {
   wavePeaks: Float32Array | null;
   transport: TransportState;
@@ -26,14 +25,11 @@ export interface PracticePanelProps {
   setTrainer: Setter<Trainer | null>;
   setPasses: Setter<number>;
   passes: number;
-  counting: boolean;
-  startPlaying: () => Promise<void>;
 }
 
 export default function PracticePanel({
   wavePeaks, transport, loop, engineRef, setLoop, trimToLoop, busy, nameLoop, sections, editingSection,
   setSections, setEditingSection, countInBars, setCountInBars, trainer, setTrainer, setPasses, passes,
-  counting, startPlaying,
 }: PracticePanelProps) {
   return (
     <section className="panel no-print mb-5 p-5">
@@ -142,21 +138,6 @@ export default function PracticePanel({
         {loop && <span className="text-xs text-white/35">{passes} {passes === 1 ? "pass" : "passes"}</span>}
         {!loop && <span className="text-xs text-white/25">The trainer needs a loop.</span>}
       </div>
-      <Transport
-        playing={transport.playing}
-        time={transport.time}
-        duration={transport.duration}
-        rate={transport.rate}
-        semitones={transport.semitones}
-        rendering={transport.rendering}
-        loop={loop}
-        counting={counting}
-        onToggle={() => void startPlaying()}
-        onSeek={(t) => void engineRef.current?.seek(t)}
-        onRate={(r) => void engineRef.current?.setRate(r)}
-        onSemitones={(s) => void engineRef.current?.setSemitones(s)}
-        onClearLoop={() => setLoop(null)}
-      />
     </section>
   );
 }

@@ -1,28 +1,34 @@
 /**
  * The one server route the assistant needs: a single tool-calling round.
  *
- * The API key stays here. The grounding loop itself runs in the browser, so the
+ * The API keys stay here. The grounding loop itself runs in the browser, so the
  * assistant's capabilities execute against the real studio and their results are
  * never round-tripped through the model.
  *
- * The caller must be signed in, and each round spends one request from their
- * plan's monthly allowance (riffscribe_use_assistant, enforced in the
- * database) — only once the request is valid, and handed back when the model
- * gives no answer. The spend guards stay too: a small model, a hard token
- * ceiling, a cap on everything a caller can push (lib/assistantRequest.ts), and
- * a per-IP request budget.
+ * Which model answers is decided on the server (lib/llm: the admin's choice
+ * from an allowlist, Claude first, OpenRouter as the fallback); nothing in
+ * the request can pick one.
+ *
+ * Where accounts exist the caller must be signed in, and each round spends one
+ * request from their plan's monthly allowance (riffscribe_use_assistant,
+ * enforced in the database) — only once the request is valid, and handed back
+ * when the model gives no answer. The spend guards stay too: a hard token
+ * ceiling, a cap on everything a caller can push (lib/assistantRequest.ts),
+ * and a per-IP request budget.
  */
 import { NextResponse } from "next/server";
 
 import { LIMITS, QUOTA_USED_UP_TEXT, buildCompletion, usagePeriod } from "@/lib/assistantRequest";
+import { complete, llmConfigured } from "@/lib/llm/complete";
+import { getLlmSettings } from "@/lib/llm/settings";
+import type { ChatRequest } from "@/lib/llm/models";
 import { caller, serviceClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
-// Small, cheap and reliable at tool calling — checked against this key.
-const DEFAULT_MODEL = process.env.ASSISTANT_MODEL || "openai/gpt-oss-20b";
+/** Bytes. Checked on the raw text before it is parsed. */
+const MAX_BODY_BYTES = 200_000;
 
 const WINDOW_MS = 60 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 60;
@@ -58,8 +64,7 @@ async function refund(userId: string | null, period: string) {
 }
 
 export async function POST(req: Request) {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) {
+  if (!llmConfigured()) {
     return NextResponse.json({ error: "assistant is not configured on this deployment" }, { status: 503 });
   }
 
@@ -81,10 +86,19 @@ export async function POST(req: Request) {
   }
 
   // Size and shape first, so a request that cannot be sent costs nothing.
-  if (Number(req.headers.get("content-length") ?? 0) > LIMITS.maxBodyChars * 4) {
+  if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
     return NextResponse.json({ error: "request too large" }, { status: 413 });
   }
-  const built = buildCompletion(await req.text().catch(() => ""), DEFAULT_MODEL);
+  const raw = await req.text().catch(() => "");
+  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES || raw.length > LIMITS.maxBodyChars) {
+    return NextResponse.json({ error: "request too large" }, { status: 413 });
+  }
+  const settings = await getLlmSettings();
+  if (!settings.assistant.enabled) {
+    return NextResponse.json({ error: "the assistant is switched off for now" }, { status: 503 });
+  }
+  // The model field in the built payload is ignored; lib/llm sets the real one.
+  const built = buildCompletion(raw, settings.assistant.model);
   if (!built.ok) return NextResponse.json({ error: built.error }, { status: built.status });
 
   const period = usagePeriod();
@@ -94,60 +108,26 @@ export async function POST(req: Request) {
     if (!allowed) {
       // An answer, not an error: the widget shows any rate-limit status as "busy, try again",
       // which can never succeed this month and hides the way to more requests.
-      return NextResponse.json({ toolCalls: [], text: QUOTA_USED_UP_TEXT, provider: DEFAULT_MODEL });
+      return NextResponse.json({ toolCalls: [], text: QUOTA_USED_UP_TEXT, provider: "riffscribe" });
     }
   }
   const userId = who?.user.id ?? null;
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${key}`,
-        "content-type": "application/json",
-        "http-referer": "https://riffscribe.6x7.gr",
-        "x-title": "Riffscribe",
-      },
-      body: JSON.stringify(built.payload),
-      signal: AbortSignal.timeout(30000),
-    });
-  } catch {
+  const out = await complete("assistant", built.payload as unknown as ChatRequest);
+  if (!out.ok) {
     await refund(userId, period);
-    return NextResponse.json({ error: "assistant backend unreachable" }, { status: 502 });
+    return NextResponse.json({ error: out.error }, { status: out.status });
   }
-
-  if (!upstream.ok) {
-    const detail = await upstream.text().catch(() => "");
-    await refund(userId, period);
-    return NextResponse.json(
-      { error: `assistant backend ${upstream.status}`, detail: detail.slice(0, 400) },
-      { status: upstream.status === 429 ? 429 : 502 }
-    );
-  }
-
-  const json = await upstream.json().catch(() => null);
-  if (!json) await refund(userId, period);
-  const choice = json?.choices?.[0]?.message;
-  const toolCalls = (choice?.tool_calls ?? []).map(
-    (c: { id?: string; function?: { name?: string; arguments?: string } }) => {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(c.function?.arguments || "{}");
-      } catch {
-        /* the model produced malformed JSON — grounding will ask it again */
-      }
-      return { id: c.id, name: c.function?.name ?? "", args };
-    }
-  );
+  // An empty answer is no answer: give the request back.
+  if (!out.text && !out.toolCalls.length) await refund(userId, period);
 
   return NextResponse.json({
-    toolCalls,
-    text: typeof choice?.content === "string" ? choice.content : "",
+    toolCalls: out.toolCalls,
+    text: out.text,
     usage: {
-      promptTokens: json?.usage?.prompt_tokens,
-      completionTokens: json?.usage?.completion_tokens,
+      promptTokens: out.usage.input + out.usage.cached,
+      completionTokens: out.usage.output,
     },
-    provider: DEFAULT_MODEL,
+    provider: out.provider,
   });
 }

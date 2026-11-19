@@ -91,6 +91,7 @@ export function engraveParts(parts: Part[], settings: TranscriptionSettings): Pa
       offsetSeconds,
       instrument: part.instrument,
       transposeSemitones: shift,
+      monophonic: part.monophonic ?? settings.monophonic,
     });
     if (instrument.tuning) {
       assignFrets(sheet, { tuning: instrument.tuning, maxFret: instrument.frets ?? 22, capo: settings.capo });

@@ -1,0 +1,13 @@
+{
+  "stage": "roundtrip-score",
+  "metrics": {
+    "f1_greensleeves": 0.5,
+    "fragmentation_greensleeves": 1.07,
+    "octaveErrors_greensleeves": 0,
+    "lateMs_greensleeves": 35.6,
+    "f1_parting-glass": 0.25,
+    "fragmentation_parting-glass": 1.77,
+    "octaveErrors_parting-glass": 0,
+    "lateMs_parting-glass": 35.4
+  }
+}

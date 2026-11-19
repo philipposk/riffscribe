@@ -2,7 +2,7 @@
 const SITE_URL = "https://riffscribe.6x7.gr";
 /** Must stay identical to the meta/OG description in app/layout.tsx. */
 export const SITE_DESCRIPTION =
-  "Drop in any song and get sheet music, guitar tab and MIDI. Mute the vocals, slow it down without changing the pitch, and record yourself over the top. All of it runs in your browser — nothing is uploaded.";
+  "Take the singer out of any song, let your cello, guitar or sax play the line while you learn it, and slow it down without changing the pitch, all in your browser.";
 
 const jsonLd = {
   "@context": "https://schema.org",

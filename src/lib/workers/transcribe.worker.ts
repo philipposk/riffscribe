@@ -24,7 +24,7 @@
 const g = globalThis as unknown as { window?: unknown; document?: unknown };
 if (typeof g.window === "undefined") g.window = globalThis;
 
-import { runTranscription, type RunOptions } from "../transcribe/runner";
+import { runTranscriptionFull, type RunOptions } from "../transcribe/runner";
 
 interface Request {
   audio: Float32Array;
@@ -35,10 +35,12 @@ interface Request {
 self.onmessage = async (e: MessageEvent<Request>) => {
   const { audio, options, modelUrl } = e.data;
   try {
-    const notes = await runTranscription(audio, options, (p) => {
+    const { notes, peaks } = await runTranscriptionFull(audio, options, (p) => {
       self.postMessage({ type: "progress", value: p });
     }, modelUrl);
-    self.postMessage({ type: "done", notes });
+    // The peaks can run to a few hundred kB on a long song: hand the buffers over, do not copy them.
+    const transfer: Transferable[] = peaks ? [peaks.midi.buffer, peaks.strength.buffer] : [];
+    self.postMessage({ type: "done", notes, peaks }, { transfer });
   } catch (err) {
     self.postMessage({
       type: "error",

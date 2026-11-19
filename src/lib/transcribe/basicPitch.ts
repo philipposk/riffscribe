@@ -5,9 +5,9 @@
  * The model wants mono 22.05 kHz, so we resample with an OfflineAudioContext
  * (the browser's own high-quality resampler) before handing it over.
  */
-import type { NoteEvent } from "../types";
+import type { ContourPeaks, NoteEvent } from "../types";
 
-import { MODEL_PATH, runTranscription, BASIC_PITCH_SAMPLE_RATE as SR } from "./runner";
+import { MODEL_PATH, runTranscriptionFull, BASIC_PITCH_SAMPLE_RATE as SR, type RunOptions } from "./runner";
 
 export const BASIC_PITCH_SAMPLE_RATE = SR;
 
@@ -61,6 +61,30 @@ export interface TranscribeOptions {
   onProgress?: (pct: number) => void;
 }
 
+export interface TranscribeFullOptions extends TranscribeOptions {
+  /** Basic Pitch's "melodia trick" (drop weak notes that only echo stronger ones). Default true. */
+  melodiaTrick?: boolean;
+  /** Also return the top pitch-salience peaks per frame, for `trackContour`. */
+  wantPeaks?: boolean;
+}
+
+export interface TranscribeFullResult {
+  notes: NoteEvent[];
+  /** Null unless `wantPeaks` was set. */
+  peaks: ContourPeaks | null;
+}
+
+/** The options the runner takes, without the callback (which cannot cross into a worker). */
+const runOptions = (opts: TranscribeFullOptions): RunOptions => ({
+  onsetThreshold: opts.onsetThreshold,
+  frameThreshold: opts.frameThreshold,
+  minNoteLength: opts.minNoteLength,
+  minMidi: opts.minMidi,
+  maxMidi: opts.maxMidi,
+  melodiaTrick: opts.melodiaTrick,
+  wantPeaks: opts.wantPeaks,
+});
+
 /** Where the work happened, so the UI can say something honest about it. */
 export type TranscribeWhere = "worker" | "page";
 let lastWhere: TranscribeWhere = "page";
@@ -73,8 +97,8 @@ let workerBroken = false;
 
 function inWorker(
   mono22k: Float32Array,
-  opts: TranscribeOptions
-): Promise<NoteEvent[]> {
+  opts: TranscribeFullOptions
+): Promise<TranscribeFullResult> {
   return new Promise((resolve, reject) => {
     let worker: Worker;
     try {
@@ -107,7 +131,10 @@ function inWorker(
         opts.onProgress?.(m.value);
       } else if (m.type === "done") {
         worker.terminate();
-        resolve(m.notes as NoteEvent[]);
+        resolve({
+          notes: m.notes as NoteEvent[],
+          peaks: (m.peaks as ContourPeaks | null | undefined) ?? null,
+        });
       } else if (m.type === "error") {
         worker.terminate();
         reject(new Error(m.message));
@@ -118,13 +145,7 @@ function inWorker(
     worker.postMessage(
       {
         audio: copy,
-        options: {
-          onsetThreshold: opts.onsetThreshold,
-          frameThreshold: opts.frameThreshold,
-          minNoteLength: opts.minNoteLength,
-          minMidi: opts.minMidi,
-          maxMidi: opts.maxMidi,
-        },
+        options: runOptions(opts),
         modelUrl: new URL(MODEL_PATH, location.origin).href,
       },
       [copy.buffer]
@@ -144,11 +165,22 @@ export async function transcribeAudio(
   mono22k: Float32Array,
   opts: TranscribeOptions
 ): Promise<NoteEvent[]> {
+  return (await transcribeAudioFull(mono22k, opts)).notes;
+}
+
+/**
+ * `transcribeAudio`, plus the choice of melodia trick and, with `wantPeaks`,
+ * the pitch-salience peaks a continuous pitch curve is tracked from.
+ */
+export async function transcribeAudioFull(
+  mono22k: Float32Array,
+  opts: TranscribeFullOptions
+): Promise<TranscribeFullResult> {
   if (!workerBroken && typeof Worker !== "undefined") {
     try {
-      const notes = await inWorker(mono22k, opts);
+      const result = await inWorker(mono22k, opts);
       lastWhere = "worker";
-      return notes;
+      return result;
     } catch (e) {
       workerBroken = true;
       console.info(
@@ -158,15 +190,5 @@ export async function transcribeAudio(
     }
   }
   lastWhere = "page";
-  return runTranscription(
-    mono22k,
-    {
-      onsetThreshold: opts.onsetThreshold,
-      frameThreshold: opts.frameThreshold,
-      minNoteLength: opts.minNoteLength,
-      minMidi: opts.minMidi,
-      maxMidi: opts.maxMidi,
-    },
-    opts.onProgress
-  );
+  return runTranscriptionFull(mono22k, runOptions(opts), opts.onProgress);
 }

@@ -166,7 +166,8 @@ export default function ScoreView({
     if (vp) {
       const target = rect.y - vp.clientHeight * 0.35;
       if (Math.abs(vp.scrollTop - target) > vp.clientHeight * 0.2) {
-        vp.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+        const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        vp.scrollTo({ top: Math.max(0, target), behavior: reduce ? "auto" : "smooth" });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

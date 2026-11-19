@@ -64,7 +64,18 @@ export default function Songs() {
 
   const shown = rows ? matchSongs(rows, query) : [];
 
-  if (!ready) return null;
+  if (!ready) {
+    return (
+      <ul className="panel divide-y divide-white/5" aria-busy="true" aria-label="Loading your songs">
+        {[0, 1, 2].map((i) => (
+          <li key={i} className="flex items-center gap-3 px-4 py-3">
+            <span className="h-4 flex-1 animate-pulse rounded bg-white/10" />
+            <span className="h-3 w-16 animate-pulse rounded bg-white/5" />
+          </li>
+        ))}
+      </ul>
+    );
+  }
 
   if (!user) {
     return (
@@ -83,7 +94,8 @@ export default function Songs() {
         </div>
       )}
       {rows && rows.length > 0 && (
-        <label className="panel mb-3 flex max-w-md items-center gap-2 px-3 py-2 text-sm">
+        <label className="panel mb-3 flex max-w-md items-center gap-2 px-3 py-2 text-sm focus-within:outline focus-within:outline-2 focus-within:outline-[var(--color-accent)]">
+          <span className="sr-only">Search your songs</span>
           <Search className="shrink-0 text-white/35" size={14} />
           <input
             type="search"
@@ -91,13 +103,21 @@ export default function Songs() {
             onChange={(e) => search(e.target.value)}
             placeholder="Search your songs"
             aria-label="Search your songs"
-            className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-white/30"
+            className="min-w-0 flex-1 bg-transparent placeholder:text-white/30"
           />
           {query.trim() && <span className="shrink-0 text-xs text-white/30">{shown.length} of {rows.length}</span>}
         </label>
       )}
       {!rows ? (
-        <p className="flex items-center gap-2 text-sm text-white/45"><Loader2 className="animate-spin" size={14} /> Loading…</p>
+        <ul className="panel divide-y divide-white/5" aria-busy="true" aria-label="Loading your songs">
+          {[0, 1, 2].map((i) => (
+            <li key={i} className="flex items-center gap-3 px-4 py-3">
+              <span className="h-4 flex-1 animate-pulse rounded bg-white/10" />
+              <span className="h-3 w-16 animate-pulse rounded bg-white/5" />
+            </li>
+          ))}
+          <li className="sr-only">Loading…</li>
+        </ul>
       ) : rows.length === 0 ? (
         <p className="text-sm text-white/45">
           Nothing saved yet. Transcribe a part in the <a className="underline" href="/studio">studio</a> and press Save.

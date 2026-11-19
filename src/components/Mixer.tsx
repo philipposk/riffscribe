@@ -32,7 +32,7 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
             }`}
           >
             <button
-              className="text-white/60 hover:text-white"
+              className="grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center text-white/60 hover:text-white"
               onClick={() => onChange(t.id, { muted: !t.muted })}
               title={t.muted ? "Unmute" : "Mute"}
               aria-label={`Mute ${t.label}`}
@@ -40,22 +40,22 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
             >
               {t.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
             </button>
-            <div className="w-28 shrink-0">
-              <div className="text-sm font-medium">{t.label}</div>
-              {t.hint && <div className="text-[11px] text-white/40">{t.hint}</div>}
+            <div className="w-20 shrink-0 sm:w-28">
+              <div className="truncate text-sm font-medium" title={t.label}>{t.label}</div>
+              {t.hint && <div className="truncate text-[11px] text-white/40">{t.hint}</div>}
             </div>
             <input
               type="range" min={0} max={1.5} step={0.01} value={t.gain}
               onChange={(e) => onChange(t.id, { gain: Number(e.target.value) })}
-              className="flex-1"
+              className="min-w-0 flex-1"
               aria-label={`${t.label} level`}
               disabled={t.muted}
             />
-            <span className="w-10 text-right font-mono text-xs text-white/50">
+            <span className="w-8 shrink-0 text-right sm:w-10 font-mono text-xs text-white/50">
               {Math.round(t.gain * 100)}
             </span>
             <button
-              className={`rounded px-1.5 py-0.5 text-xs ${
+              className={`min-h-6 min-w-6 shrink-0 rounded px-1.5 py-0.5 text-xs ${
                 soloed === t.id ? "bg-emerald-400 text-black" : "bg-white/5 text-white/60 hover:bg-white/10"
               }`}
               onClick={() => onSolo(soloed === t.id ? null : t.id)}
@@ -65,10 +65,10 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
               solo
             </button>
             <button
-              className="text-white/45 hover:text-white"
+              className="grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center text-white/45 hover:text-white"
               onClick={() => onDownload(t.id)}
               title={`Download ${t.label} on its own`}
-              aria-label={`Download ${t.label} on its own`}
+              aria-label={`Download ${t.label}`}
             >
               <Download size={15} />
             </button>

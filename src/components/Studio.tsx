@@ -1384,7 +1384,6 @@ export default function Studio() {
           <PracticePanel {...{
             wavePeaks, transport, loop, engineRef, setLoop, trimToLoop, busy, nameLoop, sections, editingSection,
             setSections, setEditingSection, countInBars, setCountInBars, trainer, setTrainer, setPasses, passes,
-            counting, startPlaying,
           }} />
 
           {/* 4 — transcribe */}
@@ -1410,8 +1409,14 @@ export default function Studio() {
         cannot go hunting up the page for the play button, and the score is
         long — so it follows you down the page instead.
       */}
-      {audio && <PlayerBar {...{ startPlaying, counting, transport, engineRef, loop, setLoop, trainer }} />}
-      {audio && <div className="no-print h-16" aria-hidden />}
+      {audio && (
+        <PlayerBar
+          {...{ startPlaying, counting, transport, engineRef, loop, setLoop, trainer }}
+          onRate={(r) => void engineRef.current?.setRate(r)}
+          onSemitones={(s) => void engineRef.current?.setSemitones(s)}
+        />
+      )}
+      {audio && <div className="no-print h-20" style={{ paddingBottom: "env(safe-area-inset-bottom)" }} aria-hidden />}
 
       <footer className="no-print pb-10 pt-4 text-center text-xs text-white/30">
         Basic Pitch (Spotify, Apache-2.0) · Demucs (Meta, MIT) · alphaTab (MPL-2.0) · Signalsmith Stretch (MIT)
