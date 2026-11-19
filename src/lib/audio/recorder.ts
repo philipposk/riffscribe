@@ -60,7 +60,14 @@ export class MicRecorder {
     });
   }
 
+  /** Close the microphone. Also ends a take that is still running, so nothing keeps the stream alive. */
   release() {
+    const rec = this.recorder;
+    if (rec && rec.state !== "inactive") {
+      rec.onstop = null;
+      try { rec.stop(); } catch { /* already stopped */ }
+    }
+    this.recorder = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
   }
@@ -107,6 +114,39 @@ export function placeTake(take: Take, totalSamples: number): [Float32Array, Floa
     right[t] += take.right[i] ?? take.left[i];
   }
   return [left, right];
+}
+
+/**
+ * A take recorded while a loop repeated. Playback jumped back to the loop start on every
+ * pass but the recording ran straight on, so laid out as-is pass 2 would land on the bars
+ * after the loop. Keep one pass at the place in the song it was played against: the last
+ * complete one, or the longest if none completed. A take that never wrapped is unchanged.
+ */
+export function foldLoopTake(take: Take, loop: [number, number]): Take {
+  const sr = take.sampleRate;
+  const [a, b] = loop;
+  const span = Math.round((b - a) * sr);
+  const firstWrap = Math.round((b - take.startSeconds) * sr);
+  const n = take.left.length;
+  if (span <= 0 || firstWrap <= 0 || firstWrap >= n) return take;
+
+  // Pass 0 runs from where recording started to the loop end; it is complete only if it
+  // started at or before the loop start. Every later pass starts at the loop start.
+  const passes = [{ from: 0, to: firstWrap, at: take.startSeconds, full: take.startSeconds <= a + 0.05 }];
+  for (let from = firstWrap; from < n; from += span) {
+    const to = Math.min(n, from + span);
+    passes.push({ from, to, at: a, full: to - from >= span });
+  }
+  const full = passes.filter((p) => p.full);
+  const pick = full.length
+    ? full[full.length - 1]
+    : passes.reduce((best, p) => (p.to - p.from > best.to - best.from ? p : best));
+  return {
+    left: take.left.slice(pick.from, pick.to),
+    right: take.right.slice(pick.from, pick.to),
+    startSeconds: pick.at,
+    sampleRate: sr,
+  };
 }
 
 /** Best guess at speaker→mic round-trip delay, in seconds. */

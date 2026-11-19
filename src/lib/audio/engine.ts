@@ -43,15 +43,21 @@ interface Voice {
 
 const key = (rate: number, semitones: number) => `${rate.toFixed(3)}|${semitones}`;
 
+/**
+ * Speed/pitch settings kept rendered at once. Each is a full-song copy of every track
+ * (~140 MB per track for a 4-minute song at 60%), so only the current setting and one
+ * other — the one before, or the speed trainer's next step — are kept.
+ */
+const MAX_RENDERS = 2;
+
 export class PracticeEngine {
   ctx: AudioContext | null = null;
   private tracks: EngineTrack[] = [];
   private voices = new Map<string, Voice>();
   private gains: Record<string, number> = {};
-  /** rendered audio per (rate, semitones), one buffer per track id */
+  /** rendered audio per (rate, semitones), one buffer per track id; oldest first */
   private cache = new Map<string, Map<string, AudioBuffer>>();
-  private renderJob: Promise<Map<string, AudioBuffer>> | null = null;
-  private renderKey = "";
+  private renders = new Map<string, { progress: number; promise: Promise<Map<string, AudioBuffer>> }>();
   private sampleRate = 44100;
   private duration = 0;
   private rate = 1;
@@ -63,7 +69,10 @@ export class PracticeEngine {
   private anchorSong = 0;
   private anchorCtx = 0;
   private ticker: number | null = null;
+  /** bumped by every play/load: a play that finds it changed was superseded */
   private generation = 0;
+  /** bumped whenever the tracks change: a render started before then is stale */
+  private epoch = 0;
 
   onTime?: (t: number) => void;
   onStateChange?: (s: EngineState) => void;
@@ -93,8 +102,13 @@ export class PracticeEngine {
     return Math.max(0, Math.min(this.duration, t));
   }
 
+  /** A new song: drop everything, start from 0:00. The audio context is kept. */
   async load(tracks: EngineTrack[], sampleRate: number) {
-    await this.dispose();
+    this.reset();
+    if (this.ctx && sampleRate !== this.sampleRate) {
+      await this.ctx.close().catch(() => {});
+      this.ctx = null;
+    }
     this.tracks = tracks;
     this.sampleRate = sampleRate;
     this.duration = tracks.length
@@ -103,26 +117,77 @@ export class PracticeEngine {
     this.emit();
   }
 
+  /**
+   * The same song with some tracks added, removed or changed (a chart edit, a new BPM, a
+   * finished split). Only those tracks are rendered again; playback, position and every
+   * other track's rendered audio are kept. Tracks are matched by id and by array identity.
+   */
+  async updateTracks(tracks: EngineTrack[], sampleRate: number) {
+    if (!this.tracks.length || sampleRate !== this.sampleRate) return this.load(tracks, sampleRate);
+    const before = new Map(this.tracks.map((t) => [t.id, t]));
+    const ids = new Set(tracks.map((t) => t.id));
+    const stale: string[] = [];
+    for (const t of tracks) {
+      const old = before.get(t.id);
+      if (!old || old.left !== t.left || old.right !== t.right) stale.push(t.id);
+    }
+    for (const id of before.keys()) if (!ids.has(id)) stale.push(id);
+    this.tracks = tracks;
+    if (!stale.length) return;
+
+    this.epoch++;
+    this.renders.clear();
+    for (const map of this.cache.values()) for (const id of stale) map.delete(id);
+    for (const id of stale) {
+      if (ids.has(id)) continue;
+      const v = this.voices.get(id);
+      if (!v) continue;
+      this.stopVoice(v);
+      v.gain.disconnect();
+      this.voices.delete(id);
+    }
+    if (this.ctx) this.ensureVoices(this.ctx);
+    this.duration = tracks.length ? Math.max(...tracks.map((t) => t.left.length)) / sampleRate : 0;
+
+    // Carries on from wherever playback has got to once the changed tracks are ready.
+    if (this.playing) await this.play();
+    else {
+      this.anchorSong = Math.min(this.anchorSong, this.duration);
+      this.emit();
+    }
+  }
+
   private emit() {
     this.onStateChange?.(this.state());
   }
 
+  /**
+   * Create or wake the realtime context now. Browsers (iOS Safari above all) only let a
+   * context start inside a user gesture, so call this synchronously in the click before
+   * anything that waits, such as a count-in.
+   */
+  warm(): AudioContext {
+    if (!this.ctx) this.ctx = new AudioContext({ sampleRate: this.sampleRate });
+    if (this.ctx.state !== "running") void this.ctx.resume().catch(() => {});
+    return this.ctx;
+  }
+
   /** The realtime context is created on the first Play, inside the click. */
   private async context() {
-    if (this.ctx) {
-      if (this.ctx.state !== "running") await this.ctx.resume().catch(() => {});
-      return this.ctx;
-    }
-    const ctx = new AudioContext({ sampleRate: this.sampleRate });
+    const ctx = this.warm();
     if (ctx.state !== "running") await ctx.resume().catch(() => {});
-    this.ctx = ctx;
+    this.ensureVoices(ctx);
+    return ctx;
+  }
+
+  private ensureVoices(ctx: AudioContext) {
     for (const track of this.tracks) {
+      if (this.voices.has(track.id)) continue;
       const gain = ctx.createGain();
       gain.gain.value = this.gains[track.id] ?? 1;
       gain.connect(ctx.destination);
       this.voices.set(track.id, { id: track.id, gain, source: null });
     }
-    return ctx;
   }
 
   private toAudioBuffer(ctx: BaseAudioContext, left: Float32Array, right: Float32Array) {
@@ -132,97 +197,174 @@ export class PracticeEngine {
     return buf;
   }
 
-  /**
-   * Time-stretched audio for the current speed/pitch, rendering it if needed.
-   * `rate` follows the Signalsmith convention: output length = input / rate.
-   */
-  private async buffers(): Promise<Map<string, AudioBuffer>> {
-    const ctx = await this.context();
-    const k = key(this.rate, this.semitones);
-    const hit = this.cache.get(k);
-    if (hit) return hit;
+  /** Is every current track rendered at this setting? */
+  private complete(k: string) {
+    const map = this.cache.get(k);
+    return !!map && this.tracks.every((t) => map.has(t.id));
+  }
 
-    if (this.rate === 1 && this.semitones === 0) {
-      const plain = new Map<string, AudioBuffer>();
-      for (const t of this.tracks) plain.set(t.id, this.toAudioBuffer(ctx, t.left, t.right));
-      this.cache.set(k, plain);
-      return plain;
+  /** Cache a setting as the most recent, dropping the oldest beyond MAX_RENDERS — never the current one. */
+  private remember(k: string, map: Map<string, AudioBuffer>) {
+    this.cache.delete(k);
+    this.cache.set(k, map);
+    const current = key(this.rate, this.semitones);
+    for (const old of [...this.cache.keys()]) {
+      if (this.cache.size <= MAX_RENDERS) break;
+      if (old !== k && old !== current) this.cache.delete(old);
+    }
+  }
+
+  /**
+   * Time-stretched audio for the current speed/pitch, rendering it if needed, with the
+   * setting and track version it was made for — either may have moved on by the time
+   * it is ready. `rate` follows the Signalsmith convention: output length = input / rate.
+   */
+  private async buffers(): Promise<{ k: string; epoch: number; map: Map<string, AudioBuffer> }> {
+    const ctx = await this.context();
+    const rate = this.rate;
+    const semitones = this.semitones;
+    const k = key(rate, semitones);
+    const epoch = this.epoch;
+    const hit = this.cache.get(k);
+    if (hit && this.complete(k)) {
+      this.remember(k, hit);
+      return { k, epoch, map: hit };
     }
 
-    if (this.renderJob && this.renderKey === k) return this.renderJob;
+    if (rate === 1 && semitones === 0) {
+      const plain = new Map(hit ?? []);
+      for (const t of this.tracks) if (!plain.has(t.id)) plain.set(t.id, this.toAudioBuffer(ctx, t.left, t.right));
+      this.remember(k, plain);
+      return { k, epoch, map: plain };
+    }
 
-    this.renderKey = k;
-    const generation = this.generation;
-    this.renderJob = (async () => {
+    return { k, epoch, map: await this.render(rate, semitones) };
+  }
+
+  /**
+   * Render every track not yet rendered at one speed/pitch and cache it. One job per
+   * setting: a request for a setting already being rendered (say, by `prepareRate`) waits
+   * for that job instead of starting another. Progress is only shown while the setting
+   * being rendered is the one the player is waiting on.
+   */
+  private render(rate: number, semitones: number): Promise<Map<string, AudioBuffer>> {
+    const k = key(rate, semitones);
+    const running = this.renders.get(k);
+    if (running) {
+      if (k === key(this.rate, this.semitones)) {
+        this.rendering = running.progress;
+        this.emit();
+      }
+      return running.promise;
+    }
+
+    const epoch = this.epoch;
+    const have = this.cache.get(k);
+    const tracks = this.tracks.filter((t) => !have?.has(t.id));
+    const sampleRate = this.sampleRate;
+    const job = { progress: 0, promise: null as unknown as Promise<Map<string, AudioBuffer>> };
+    // a job made stale by a track change keeps running but no longer drives the display
+    const wanted = () => k === key(this.rate, this.semitones) && this.renders.get(k) === job;
+    job.promise = (async () => {
       const SignalsmithStretch = await loadStretch();
-      const out = new Map<string, AudioBuffer>();
-      const total = this.tracks.length;
+      const out = new Map(have ?? []);
       let done = 0;
-      this.rendering = 0;
-      this.emit();
+      if (wanted()) {
+        this.rendering = 0;
+        this.emit();
+      }
 
-      for (const track of this.tracks) {
+      for (const track of tracks) {
         const inLength = track.left.length;
-        const outLength = Math.ceil(inLength / this.rate) + Math.ceil(this.sampleRate * 0.25);
-        const off = new OfflineAudioContext(2, outLength, this.sampleRate);
+        const outLength = Math.ceil(inLength / rate) + Math.ceil(sampleRate * 0.25);
+        const off = new OfflineAudioContext(2, outLength, sampleRate);
         const node = await SignalsmithStretch(off, {
           numberOfInputs: 0,
           numberOfOutputs: 1,
           outputChannelCount: [2],
         });
-        await node.addBuffers([Float32Array.from(track.left), Float32Array.from(track.right)]);
+        // Posted to the worklet without a transfer list, so it is copied there and ours stay intact.
+        await node.addBuffers([track.left, track.right]);
         node.connect(off.destination);
         await node.schedule({
           output: 0,
           active: true,
           input: 0,
-          rate: this.rate,
-          semitones: this.semitones,
+          rate,
+          semitones,
         });
         out.set(track.id, await off.startRendering());
         done++;
-        this.rendering = done / total;
-        this.emit();
+        job.progress = done / tracks.length;
+        if (wanted()) {
+          this.rendering = job.progress;
+          this.emit();
+        }
       }
 
-      this.rendering = null;
-      if (generation === this.generation) this.cache.set(k, out);
-      this.emit();
+      if (epoch === this.epoch) this.remember(k, out);
+      // Clear the progress display unless the setting the player now wants is still rendering.
+      const current = this.renders.get(key(this.rate, this.semitones));
+      if (this.rendering !== null && (!current || current === job)) {
+        this.rendering = null;
+        this.emit();
+      }
       return out;
     })();
 
+    this.renders.set(k, job);
+    const clear = () => { if (this.renders.get(k) === job) this.renders.delete(k); };
+    job.promise.then(clear, clear);
+    return job.promise;
+  }
+
+  /**
+   * Render a speed ahead of the player asking for it — the speed trainer's next step —
+   * so the switch finds it ready. The cache keeps it alongside the current setting.
+   * Never throws: if this fails, the real request will render it again and report the error.
+   */
+  async prepareRate(rate: number) {
+    const next = Math.max(0.25, Math.min(1.5, rate));
+    if (!this.tracks.length || (next === 1 && this.semitones === 0)) return;
+    const k = key(next, this.semitones);
+    if (this.complete(k) || this.renders.has(k)) return;
     try {
-      return await this.renderJob;
-    } finally {
-      this.renderJob = null;
+      await this.render(next, this.semitones);
+    } catch {
+      /* the real request renders it again and reports the error */
     }
   }
 
-  private stopSources() {
-    for (const v of this.voices.values()) {
-      if (!v.source) continue;
-      try {
-        v.source.stop();
-      } catch {
-        /* already stopped */
-      }
-      v.source.disconnect();
-      v.source = null;
+  private stopVoice(v: Voice) {
+    if (!v.source) return;
+    try {
+      v.source.stop();
+    } catch {
+      /* already stopped */
     }
+    v.source.disconnect();
+    v.source = null;
+  }
+
+  private stopSources() {
+    for (const v of this.voices.values()) this.stopVoice(v);
     if (this.ticker !== null) {
       clearInterval(this.ticker);
       this.ticker = null;
     }
   }
 
-  async play(from?: number) {
+  /** Play from `from`; with no `from`, from where playback is now (or was paused). */
+  async play(from?: number): Promise<void> {
     if (!this.tracks.length) return;
     const generation = ++this.generation;
-    const startSong = Math.max(0, Math.min(this.duration, from ?? this.anchorSong));
     const ctx = await this.context();
-    const buffers = await this.buffers();
+    const { k, epoch, map: buffers } = await this.buffers();
     if (generation !== this.generation) return; // superseded while rendering
+    // Speed, pitch or tracks changed while rendering: ask again for what is wanted now.
+    if (k !== key(this.rate, this.semitones) || epoch !== this.epoch) return this.play(from);
 
+    const startSong = Math.max(0, Math.min(this.duration, from ?? this.position()));
     this.stopSources();
     const when = ctx.currentTime + 0.08;
     // rendered audio runs at 1/rate of song time
@@ -259,6 +401,7 @@ export class PracticeEngine {
 
   async pause(at?: number) {
     const t = at ?? this.position();
+    this.generation++; // a play still waiting on a render must not start after this
     this.stopSources();
     this.anchorSong = Math.max(0, Math.min(this.duration, t));
     this.playing = false;
@@ -323,20 +466,27 @@ export class PracticeEngine {
     return this.tracks.map((t) => t.id);
   }
 
-  async dispose() {
+  /** Stop and forget the tracks and everything rendered from them. The context stays open. */
+  private reset() {
     this.generation++;
+    this.epoch++;
     this.stopSources();
     for (const v of this.voices.values()) v.gain.disconnect();
     this.voices.clear();
     this.cache.clear();
-    this.renderJob = null;
+    this.renders.clear();
     this.tracks = [];
-    if (this.ctx) await this.ctx.close().catch(() => {});
-    this.ctx = null;
     this.playing = false;
     this.rendering = null;
     this.anchorSong = 0;
     this.duration = 0;
+  }
+
+  /** Leaving the studio: also close the audio context. */
+  async dispose() {
+    this.reset();
+    if (this.ctx) await this.ctx.close().catch(() => {});
+    this.ctx = null;
   }
 }
 
@@ -362,5 +512,6 @@ export function makeClickTrack(
       buf[start + i] += Math.sin((2 * Math.PI * freq * i) / sampleRate) * env * (accent ? 0.5 : 0.32);
     }
   }
-  return [buf, Float32Array.from(buf)];
+  // mono: both channels share one array (nothing writes to them afterwards)
+  return [buf, buf];
 }

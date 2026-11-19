@@ -11,10 +11,18 @@ export default function PricingActions({ plan }: { plan: "free" | "pro" }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (plan === "free") return <Link className="btn" href="/studio">Open the studio</Link>;
+  if (plan === "free") return <a className="btn" href="/studio">Open the studio</a>;
   if (account && account.plan !== "free") return <Link className="btn" href="/account">You're on Pro — manage</Link>;
   if (!BILLING_LIVE) return <button className="btn btn-primary" disabled aria-disabled="true">Coming soon</button>;
   if (!user) return <Link className="btn btn-primary" href="/account">Sign in to upgrade</Link>;
+  // Plan not loaded yet: offering Upgrade now could start a second subscription.
+  if (!account) {
+    return (
+      <button className="btn btn-primary" disabled aria-disabled="true">
+        <Loader2 className="animate-spin" size={15} /> Upgrade to Pro
+      </button>
+    );
+  }
 
   return (
     <div>

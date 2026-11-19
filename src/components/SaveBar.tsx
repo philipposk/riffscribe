@@ -91,14 +91,20 @@ export default function SaveBar({ buildChart, chartId, onChartId }: Props) {
               if (!chart) throw new Error("There is nothing to save yet — transcribe a part first.");
               const id = await saveChart(chart, chartId ?? undefined);
               onChartId(id);
-              setNote(chartId ? "Saved." : "Saved. It's in My songs.");
+              setNote(
+                !chartId
+                  ? "Saved. It's in My songs."
+                  : id !== chartId
+                    ? "The earlier copy is gone, so this was saved as a new song. It's in My songs."
+                    : "Saved."
+              );
               await refresh();
               accountChanged();
             })
           }
         >
           {busy === "save" ? <Loader2 className="animate-spin" size={15} /> : <Save size={15} />}
-          {chartId ? "Save changes" : "Save this chart"}
+          {chartId ? (saved?.title ? `Save changes to “${saved.title}”` : "Save changes") : "Save this chart"}
         </button>
 
         {chartId && (

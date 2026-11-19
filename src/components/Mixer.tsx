@@ -35,6 +35,8 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
               className="text-white/60 hover:text-white"
               onClick={() => onChange(t.id, { muted: !t.muted })}
               title={t.muted ? "Unmute" : "Mute"}
+              aria-label={`Mute ${t.label}`}
+              aria-pressed={t.muted}
             >
               {t.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
             </button>
@@ -46,6 +48,7 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
               type="range" min={0} max={1.5} step={0.01} value={t.gain}
               onChange={(e) => onChange(t.id, { gain: Number(e.target.value) })}
               className="flex-1"
+              aria-label={`${t.label} level`}
               disabled={t.muted}
             />
             <span className="w-10 text-right font-mono text-xs text-white/50">
@@ -56,6 +59,8 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
                 soloed === t.id ? "bg-emerald-400 text-black" : "bg-white/5 text-white/60 hover:bg-white/10"
               }`}
               onClick={() => onSolo(soloed === t.id ? null : t.id)}
+              aria-label={`Solo ${t.label}`}
+              aria-pressed={soloed === t.id}
             >
               solo
             </button>
@@ -63,6 +68,7 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
               className="text-white/45 hover:text-white"
               onClick={() => onDownload(t.id)}
               title={`Download ${t.label} on its own`}
+              aria-label={`Download ${t.label} on its own`}
             >
               <Download size={15} />
             </button>

@@ -2,6 +2,8 @@
  * Capability manifest for humans and agents. The assistant fetches this on first
  * open so it understands the product, not just the buttons it can press.
  */
+import { PLANS } from "@/lib/plans";
+
 export const dynamic = "force-static";
 
 const TEXT = `# Riffscribe
@@ -17,7 +19,7 @@ const TEXT = `# Riffscribe
 
 ## Key facts
 
-- Free, no account needed for the studio. Optional sign-in saves up to 10 songs; a Pro tier (€5/month) is listed but may not be purchasable yet.
+- Free, no account needed for the studio. Signing in is optional and adds saved songs and this assistant — see "Accounts and plans" below.
 - Instruments: guitar, bass, ukulele, mandolin, banjo, piano, voice, strings, woodwinds, brass.
 - Exports: MIDI, MusicXML (MuseScore, Guitar Pro, Dorico), PDF, WAV.
 - Full details: https://riffscribe.6x7.gr/llms-full.txt
@@ -47,6 +49,21 @@ file you chose.
 It can also list the songs you have saved, or search them by title. Each song in
 its answer is a link that opens it in the studio, and when there are more than
 it names, "…and N more" opens My songs searched for the same words.
+
+## Accounts and plans
+
+The studio works without an account. Signing in (Google, or a link by email;
+there are no passwords) lets you save songs, share a chart by link, and use this
+assistant — the assistant needs you to be signed in. Only the chart is saved
+(parts, notes, tempo, key, sections, loop), never the audio.
+
+- ${PLANS.free.label} (${PLANS.free.price}): ${PLANS.free.songs} saved songs, ${PLANS.free.assistant} assistant requests a month.
+- ${PLANS.pro.label} (${PLANS.pro.price}): ${PLANS.pro.songs} saved songs, ${PLANS.pro.assistant} assistant requests a month. It may not be purchasable yet.
+
+Transcribing and splitting stems run on your own device and are never limited.
+How to upgrade, and the current state of Pro, is on https://riffscribe.6x7.gr/pricing.
+Your account, and deleting your data, is at https://riffscribe.6x7.gr/account.
+Terms: https://riffscribe.6x7.gr/terms. Privacy: https://riffscribe.6x7.gr/privacy.
 
 ## Instruments
 

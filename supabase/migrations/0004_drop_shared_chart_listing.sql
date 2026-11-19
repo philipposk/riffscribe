@@ -1,0 +1,12 @@
+-- Riffscribe — stop shared charts being listable.
+--
+-- Run AFTER 0003_review_fixes.sql AND after the app version that reads shared
+-- charts through riffscribe_shared_chart is deployed. Before that, the live app
+-- still reads shared charts straight from the table and every shared link
+-- would stop opening.
+--
+-- With this policy gone, a signed-out visitor (or another user) can no longer
+-- select shared rows from riffscribe_charts at all — not one, not a list — and
+-- reads them only through riffscribe_shared_chart, by id. Owners still read
+-- their own rows through "riffscribe: read own charts".
+drop policy if exists "riffscribe: read shared charts" on public.riffscribe_charts;

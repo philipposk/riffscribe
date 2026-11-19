@@ -255,6 +255,10 @@ mislead.
   or `global`), song cap as an insert trigger, `riffscribe_account()` for the
   menu, `riffscribe_delete_my_data()`. Limits live in `riffscribe_limits` and
   are mirrored for display in `src/lib/plans.ts` — keep in step.
+- `supabase/migrations/0003_review_fixes.sql` (not yet applied): deletion keeps
+  this month's usage counter (else it resets the allowance), and
+  `riffscribe_refund_assistant` (service role only) hands back a request the
+  model never answered. The app works with or without it.
 - Free: 10 saved songs, 100 assistant requests/month. Pro €5/mo: 1000 / 2000.
   Transcription etc. is never metered (runs on the user's device).
 - UI: account menu (`AccountMenu.tsx`) in the studio header and `SiteHeader`;
@@ -263,6 +267,13 @@ mislead.
   `/api/portal`, `/api/stripe/webhook` (filters on `metadata.app=riffscribe`,
   dedupes via `riffscribe_webhook_events`). Env: `STRIPE_SECRET_KEY`,
   `STRIPE_PRICE_PRO`, `STRIPE_WEBHOOK_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`.
+- Going live: swap `STRIPE_SECRET_KEY`, `STRIPE_PRICE_PRO` and
+  `STRIPE_WEBHOOK_SECRET` together. Before setting
+  `NEXT_PUBLIC_BILLING_ENABLED`, end the test-mode rows once:
+  `update subscriptions set status = 'canceled', stripe_customer_id = null,
+  stripe_subscription_id = null where app = 'riffscribe';` — no live event will
+  ever update them, and their `cus_…` ids break the portal on a live key.
+  Test-mode `global` rows from other 6x7 apps need the same review.
 - Deleting data (`/api/account`) removes Riffscribe rows and cancels the
   Stripe sub; the shared 6x7 login is kept.
 - Analytics: PostHog (`Providers.tsx`), no recording/autocapture. Env

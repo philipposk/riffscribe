@@ -35,8 +35,10 @@ create policy "riffscribe: read own charts" on public.riffscribe_charts
   for select using (auth.uid() = owner);
 
 -- Anyone at all — signed in or not — may read a chart the owner has shared.
--- They need the id, which is a v4 uuid and is not listable: the policy grants
--- no way to enumerate rows, only to fetch one already known.
+-- Retired: row-level security filters rows, it does not limit the query, so
+-- this also let anyone list every shared chart. migrations/0003 adds
+-- riffscribe_shared_chart (one chart by id) and migrations/0004 drops this
+-- policy once the app reads shared charts through it.
 drop policy if exists "riffscribe: read shared charts" on public.riffscribe_charts;
 create policy "riffscribe: read shared charts" on public.riffscribe_charts
   for select using (shared = true);

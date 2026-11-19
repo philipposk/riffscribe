@@ -12,17 +12,36 @@ import { deleteAccount, openBillingPortal, startCheckout, useAccount } from "@/l
 import { PLANS, planLabel } from "@/lib/plans";
 
 export default function AccountPage() {
-  const { user, account, ready } = useAccount();
+  const { user, account, ready, refresh } = useAccount();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
+  // Just paid: the webhook may not have landed. Hide Upgrade and poll briefly.
+  const [pending, setPending] = useState(false);
 
   useEffect(() => {
     const sub = new URLSearchParams(location.search).get("sub");
-    if (sub === "success") setNote("Thanks — you're on Pro. It can take a few seconds to show here.");
+    if (sub === "success") {
+      setNote("Thanks — you're on Pro. It can take a few seconds to show here.");
+      setPending(true);
+    }
     if (sub === "canceled") setNote("Checkout cancelled. Nothing was charged.");
   }, []);
+
+  useEffect(() => {
+    if (!pending || !user) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+      void refresh();
+      if (++tries >= 10) { clearInterval(timer); setPending(false); }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [pending, user, refresh]);
+
+  useEffect(() => {
+    if (account && account.plan !== "free") setPending(false);
+  }, [account]);
 
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label);
@@ -41,6 +60,7 @@ export default function AccountPage() {
   }
 
   const free = !account || account.plan === "free";
+  const canUpgrade = !!account && account.plan === "free" && !pending;
 
   return (
     <div className="max-w-xl space-y-5">
@@ -57,7 +77,8 @@ export default function AccountPage() {
           <h2 className="text-base font-medium">{account ? planLabel(account.plan) : "…"} plan</h2>
           {account?.renews_at && !free && (
             <span className="text-xs text-white/40">
-              {account.status === "canceled" ? "ends" : "renews"} {new Date(account.renews_at).toLocaleDateString()}
+              {account.cancel_at_period_end || account.status === "canceled" ? "ends" : "renews"}{" "}
+              {new Date(account.renews_at).toLocaleDateString()}
             </span>
           )}
         </div>
@@ -71,7 +92,13 @@ export default function AccountPage() {
           Transcribing, splitting stems and slowing down run on your own device, so they are unlimited on every plan.
         </p>
         <div className="flex flex-wrap gap-2">
-          {free && BILLING_LIVE && (
+          {free && BILLING_LIVE && !canUpgrade && (
+            <button className="btn btn-primary" disabled aria-disabled="true">
+              <Loader2 className="animate-spin" size={15} />
+              {pending ? "Activating Pro…" : "Upgrade to Pro"}
+            </button>
+          )}
+          {canUpgrade && BILLING_LIVE && (
             <button className="btn btn-primary" disabled={!!busy} onClick={() => void run("up", startCheckout)}>
               {busy === "up" && <Loader2 className="animate-spin" size={15} />}
               Upgrade to Pro — {PLANS.pro.price}

@@ -12,7 +12,7 @@ export default function SiteHeader() {
       </Link>
       <nav className="ml-auto flex items-center gap-4 text-sm text-white/55">
         <Link className="hover:text-white" href="/pricing">Pricing</Link>
-        <Link className="hover:text-white" href="/studio">Studio</Link>
+        <a className="hover:text-white" href="/studio">Studio</a>
         <AccountMenu />
       </nav>
     </header>

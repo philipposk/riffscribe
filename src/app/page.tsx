@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import SiteHeader, { SiteFooter } from "@/components/SiteHeader";
 
@@ -91,7 +90,7 @@ export default function Home() {
       </p>
 
       <div className="mt-8 flex flex-wrap gap-3">
-        <Link className="btn btn-primary" href="/studio">Open the studio</Link>
+        <a className="btn btn-primary" href="/studio">Open the studio</a>
       </div>
 
       <div className="mt-14 grid gap-4 sm:grid-cols-2">

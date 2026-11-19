@@ -4,8 +4,6 @@
  * uses — so what a player reads here is what the sender was looking at.
  */
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { FileMusic, Loader2, Printer } from "lucide-react";
 
 import ScoreView from "./ScoreView";
@@ -20,7 +18,6 @@ export const HANDOFF_KEY = "riffscribe:chart";
 export const HANDOFF_ID_KEY = "riffscribe:chart-id";
 
 export default function SharedChart({ id }: { id: string }) {
-  const router = useRouter();
   const [chart, setChart] = useState<Chart | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,7 +57,7 @@ export default function SharedChart({ id }: { id: string }) {
       <main className="mx-auto max-w-5xl px-5 py-16">
         <h1 className="mb-3 text-2xl font-medium">Nothing here</h1>
         <p className="mb-6 text-white/55">{error}</p>
-        <Link className="btn" href="/studio">Open the studio</Link>
+        <a className="btn" href="/studio">Open the studio</a>
       </main>
     );
   }
@@ -91,7 +88,7 @@ export default function SharedChart({ id }: { id: string }) {
             } catch {
               /* private mode — the studio will simply open empty */
             }
-            router.push("/studio");
+            window.location.assign("/studio");
           }}
         >
           <FileMusic size={15} /> Open in the studio

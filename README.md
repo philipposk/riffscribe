@@ -7,8 +7,9 @@ over the top.
 
 Live at **https://riffscribe.6x7.gr**
 
-Everything runs inside the browser tab. No upload, no account, no server-side
-inference, no per-minute pricing — the audio never leaves the machine.
+Everything runs inside the browser tab. No upload, no server-side inference, no
+per-minute pricing — the audio never leaves the machine. An account is optional:
+the studio needs none, and signing in only adds saved songs and the assistant.
 
 ## What it does
 
@@ -127,9 +128,10 @@ from the model, and anything slow or irreversible asks first. Voice uses the
 browser's own speech APIs and costs nothing.
 
 It is optional: with no `OPENROUTER_API_KEY` set the widget simply does not
-appear and everything else works as before. The proxy route is unauthenticated,
-so it is deliberately spend-limited — a fixed small model, a hard token ceiling,
-capped context and a per-IP budget.
+appear and everything else works as before. The proxy route requires a signed-in
+caller and spends one request from the plan's monthly quota, and it is also
+spend-limited — a fixed small model, a hard token ceiling, capped context and a
+per-IP budget.
 
 ### Its chat history
 
@@ -150,6 +152,17 @@ Saved chats with no activity for 12 months are deleted automatically.
 # 12-month clean-up is scheduled by the same file.
 supabase db execute -f supabase/assistant_chats.sql   # or paste it into the SQL editor
 ```
+
+## Accounts, plans and billing
+
+Free allows 10 saved songs and 100 assistant requests a month; Pro (€5 / month)
+allows 1000 and 2000. Transcription and stem splitting run on your device and
+are never metered. `supabase/accounts.sql` holds the usage table, the limits and
+the functions behind the account menu (run it after `schema.sql` and
+`assistant_chats.sql`). Stripe checkout, the billing portal and the webhook are
+`/api/checkout`, `/api/portal` and `/api/stripe/webhook`; the pages are
+`/pricing`, `/songs` (saved songs) and `/account`. Environment variables are in
+`.env.example`. Details and the deploy notes are in `HANDOFF.md`.
 
 ## Loading from a link
 
@@ -219,8 +232,10 @@ messages after this web app is deployed. Until then it still shows the live site
   credentialless`, so the split runs single-threaded and is slow. Everything
   else (transcription, slow-down, recording) is full speed.
 
-The app sets `COOP: same-origin` and `COEP: credentialless` so
-`SharedArrayBuffer` is available for multi-threaded WASM.
+The studio (`/studio`) is served with `COOP: same-origin` and `COEP:
+credentialless` so `SharedArrayBuffer` is available for multi-threaded WASM.
+Every other page uses `COOP: same-origin-allow-popups`, which keeps the Google
+sign-in popup working; links into the studio are full page loads for that reason.
 
 ## Layout
 
@@ -233,10 +248,15 @@ src/lib/store/      the on-device cache, and saved charts
 src/lib/supabase/   the optional client
 src/lib/workers/    demucs stem-separation worker
 src/components/     studio UI (mixer, transport, waveform, score, save bar)
+src/app/            pages: /, /studio, /songs, /pricing, /account, /c/<id>,
+                    /terms, /privacy; api/checkout, api/portal, api/stripe/webhook,
+                    api/account, api/pa (the assistant proxy)
 supabase/schema.sql the charts table and its row-level security
 supabase/assistant_chats.sql  the assistant's saved chats, their RLS and retention
-scripts/verify-*    checks for the tex writer, voice splitter, take marking and
-                    the assistant's chat history wiring
+supabase/accounts.sql  usage, plans and limits, the account menu's functions
+scripts/verify-*    checks for the tex writer, voice splitter, take marking, the
+                    spelling and tuner, the assistant's chat history wiring and
+                    the site config (`npm test` runs them all)
 ```
 
 ## Honest limits

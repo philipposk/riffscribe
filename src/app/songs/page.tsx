@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import SiteHeader, { SiteFooter } from "@/components/SiteHeader";
 import Songs from "@/components/Songs";
 
-export const metadata = { title: "My songs — Riffscribe" };
+export const metadata = { title: "My songs — Riffscribe", robots: { index: false } };
 
 export default function SongsPage() {
   return (

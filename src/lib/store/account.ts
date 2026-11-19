@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase, savingConfigured } from "../supabase/client";
 import { currentUser, onAuthChange, signOut } from "./charts";
 import { trackAppAccessClient } from "../app-access-client";
+import { clearDeviceChats } from "../assistantHistory";
 
 export interface Account {
   plan: string;
@@ -18,6 +19,8 @@ export interface Account {
   has_billing: boolean;
   renews_at: string | null;
   status: string | null;
+  /** Cancelled in the portal, still Pro until renews_at. Absent before migrations/0003. */
+  cancel_at_period_end?: boolean | null;
 }
 
 export type User = { id: string; email?: string };
@@ -86,13 +89,19 @@ async function authed<T>(path: string, method: string): Promise<T> {
   const token = (await s?.auth.getSession())?.data.session?.access_token;
   const res = await fetch(path, { method, headers: token ? { authorization: `Bearer ${token}` } : {} });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || "that did not work");
+  if (!res.ok) throw Object.assign(new Error(body.error || "that did not work"), { status: res.status });
   return body as T;
 }
 
 export async function startCheckout(): Promise<void> {
-  const { url } = await authed<{ url: string }>("/api/checkout", "POST");
-  location.href = url;
+  try {
+    const { url } = await authed<{ url: string }>("/api/checkout", "POST");
+    location.href = url;
+  } catch (e) {
+    // 409: already on Pro (maybe not shown yet) — refresh so the page catches up.
+    if ((e as { status?: number }).status === 409) accountChanged();
+    throw e;
+  }
 }
 
 export async function openBillingPortal(): Promise<void> {
@@ -101,6 +110,9 @@ export async function openBillingPortal(): Promise<void> {
 }
 
 export async function deleteAccount(): Promise<void> {
+  const user = await currentUser();
   await authed("/api/account", "DELETE");
+  // Chats kept on "this device" live in this browser, not the account.
+  if (user) clearDeviceChats(user.id);
   await signOut();
 }

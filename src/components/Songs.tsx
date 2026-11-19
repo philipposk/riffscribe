@@ -5,7 +5,7 @@
  * assistant's "…and 12 more" — can open the list already searched.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Check, Link2, Loader2, Search, Share2, Trash2 } from "lucide-react";
 
 import SignIn from "./SignIn";
@@ -16,7 +16,6 @@ import { accountChanged, useAccount } from "@/lib/store/account";
 import { matchSongs, songsHref } from "@/lib/songSearch";
 
 export default function Songs() {
-  const router = useRouter();
   const { user, account, ready } = useAccount();
   const [rows, setRows] = useState<ChartRow[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -60,7 +59,7 @@ export default function Songs() {
       if (!chart) throw new Error("That song has gone.");
       sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(chart));
       sessionStorage.setItem(HANDOFF_ID_KEY, r.id);
-      router.push("/studio");
+      window.location.assign("/studio");
     });
 
   const shown = rows ? matchSongs(rows, query) : [];

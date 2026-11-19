@@ -26,6 +26,24 @@ export const ASSISTANT_CHATS_TABLE = "riffscribe_assistant_chats";
 export const ASSISTANT_CHATS_APP = "riffscribe";
 export const ASSISTANT_CHATS_RETENTION_MONTHS = 12;
 
+/**
+ * Where the widget keeps one person's "this device" chats: its default key
+ * (CHAT_HISTORY_STORAGE_KEY) plus their id, as `deviceStorageKey` builds it.
+ * Spelled out here because importing the widget would pull it into the page.
+ */
+export function deviceChatsKey(userId: string): string {
+  return `page_assistant_chat_history:user:${userId}`;
+}
+
+/** Forget this person's device-saved chats in this browser (delete my data). Never throws. */
+export function clearDeviceChats(userId: string): void {
+  try {
+    localStorage.removeItem(deviceChatsKey(userId));
+  } catch {
+    /* storage blocked: nothing was saved there either */
+  }
+}
+
 type AdapterFactory = (client: SupabaseClientLike, opts?: SupabaseChatHistoryOptions) => ChatHistoryAdapter;
 
 /** The account adapter, or undefined when saving is not configured on this deployment. */

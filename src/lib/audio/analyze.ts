@@ -6,7 +6,7 @@
  * strongly is the beat. Key comes from comparing the song's pitch histogram
  * against the classic Krumhansl–Schmuckler major/minor templates.
  */
-import { stft } from "./fft";
+import { fft, hann } from "./fft";
 
 export interface TempoResult {
   bpm: number;
@@ -17,22 +17,39 @@ export interface TempoResult {
 
 const FRAME_HOP = 512;
 
-/** Spectral-flux onset strength, one value per `FRAME_HOP` samples. */
+/**
+ * Spectral-flux onset strength, one value per `FRAME_HOP` samples. Streams frame by frame
+ * (only the previous frame's magnitudes are needed), so a long song does not hold a whole
+ * spectrogram on the main thread.
+ */
 export function onsetEnvelope(mono: Float32Array, sampleRate: number) {
-  const s = stft(mono, 2048, FRAME_HOP);
-  const env = new Float32Array(s.frames);
-  let prev = new Float32Array(s.bins);
-  for (let f = 0; f < s.frames; f++) {
+  const fftSize = 2048;
+  const bins = fftSize / 2 + 1;
+  // centred frames, zero padded at both ends
+  const frames = Math.max(1, Math.ceil((mono.length + fftSize) / FRAME_HOP));
+  const w = hann(fftSize);
+  const re = new Float32Array(fftSize);
+  const im = new Float32Array(fftSize);
+  const env = new Float32Array(frames);
+  let prev = new Float32Array(bins);
+  let mag = new Float32Array(bins);
+  for (let f = 0; f < frames; f++) {
+    const start = f * FRAME_HOP - fftSize / 2;
+    for (let i = 0; i < fftSize; i++) {
+      const s = start + i;
+      re[i] = s >= 0 && s < mono.length ? mono[s] * w[i] : 0;
+      im[i] = 0;
+    }
+    fft(re, im);
     let sum = 0;
-    const mag = new Float32Array(s.bins);
-    for (let b = 0; b < s.bins; b++) {
-      const m = Math.log1p(Math.hypot(s.re[f][b], s.im[f][b]) * 100);
+    for (let b = 0; b < bins; b++) {
+      const m = Math.log1p(Math.hypot(re[b], im[b]) * 100);
       mag[b] = m;
       const d = m - prev[b];
       if (d > 0) sum += d;
     }
     env[f] = sum;
-    prev = mag;
+    [prev, mag] = [mag, prev];
   }
   // normalise
   let max = 0;

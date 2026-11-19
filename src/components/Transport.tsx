@@ -24,6 +24,8 @@ interface Props {
   onClearLoop: () => void;
   /** 0..1 while the new speed/pitch is being rendered. */
   rendering: number | null;
+  /** The count-in is running; pressing the button again cancels it. */
+  counting?: boolean;
 }
 
 const SPEEDS = [0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1, 1.25, 1.5];
@@ -39,9 +41,13 @@ export default function Transport(p: Props) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-3">
-        <button className="btn btn-primary" onClick={p.onToggle} aria-label={p.playing ? "Pause" : "Play"}>
-          {p.playing ? <Pause size={16} /> : <Play size={16} />}
-          {p.playing ? "Pause" : "Play"}
+        <button
+          className="btn btn-primary"
+          onClick={p.onToggle}
+          aria-label={p.counting ? "Cancel the count-in" : p.playing ? "Pause" : "Play"}
+        >
+          {p.counting ? <Loader2 className="animate-spin" size={16} /> : p.playing ? <Pause size={16} /> : <Play size={16} />}
+          {p.counting ? "Counting in… (stop)" : p.playing ? "Pause" : "Play"}
         </button>
         <button className="btn" onClick={() => p.onSeek(p.loop ? p.loop[0] : 0)} title="Back to start">
           <RotateCcw size={15} />
@@ -72,6 +78,8 @@ export default function Transport(p: Props) {
             onChange={(e) => setRate(Number(e.target.value))}
             onPointerUp={() => p.onRate(rate)}
             onKeyUp={() => p.onRate(rate)}
+            aria-label="Speed"
+            aria-valuetext={`${Math.round(rate * 100)} percent`}
             className="w-full"
           />
           <span className="mt-1 flex flex-wrap gap-1">
@@ -99,6 +107,8 @@ export default function Transport(p: Props) {
             onChange={(e) => setSemitones(Number(e.target.value))}
             onPointerUp={() => p.onSemitones(semitones)}
             onKeyUp={() => p.onSemitones(semitones)}
+            aria-label="Transpose in semitones"
+            aria-valuetext={`${semitones > 0 ? "plus " : ""}${semitones} semitones`}
             className="w-full"
           />
           <span className="mt-1 block text-xs text-white/40">

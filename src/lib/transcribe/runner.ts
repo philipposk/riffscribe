@@ -18,6 +18,7 @@
  * Pitch carries its own copy and a second instance kills every run with
  * "Unknown dtype undefined".
  */
+import type { BasicPitch as BasicPitchModel } from "@spotify/basic-pitch";
 import type { NoteEvent } from "../types";
 
 export const BASIC_PITCH_SAMPLE_RATE = 22050;
@@ -32,6 +33,26 @@ export interface RunOptions {
   minMidi?: number;
   maxMidi?: number;
 }
+
+const midiToHz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
+
+/**
+ * The frequency limits to hand Basic Pitch for an inclusive MIDI range.
+ *
+ * It turns a limit back into a pitch-bin index and zeroes with Array.fill,
+ * which truncates the index: from the max index up, and below the min index.
+ * Passing the range's own top note zeroed that note, so the top of every
+ * instrument was never heard. Half a step inside each next bin keeps both
+ * ends and is safe from float round-off.
+ */
+export function detectionLimits(minMidi?: number, maxMidi?: number): { maxHz: number | null; minHz: number | null } {
+  return {
+    maxHz: maxMidi != null ? midiToHz(maxMidi + 1.5) : null,
+    minHz: minMidi != null ? midiToHz(minMidi + 0.5) : null,
+  };
+}
+
+const models = new Map<string, BasicPitchModel>();
 
 /** Hand control back to the browser properly, not just to the microtask queue. */
 const breathe = (): Promise<void> =>
@@ -59,7 +80,13 @@ export async function runTranscription(
     outputToNotesPoly,
   } = await import("@spotify/basic-pitch");
 
-  const model = new BasicPitch(modelUrl);
+  // One model per URL for the life of the page. A fresh one per run left a
+  // whole copy of the weights behind each time on the page fallback.
+  let model = models.get(modelUrl);
+  if (!model) {
+    model = new BasicPitch(modelUrl);
+    models.set(modelUrl, model);
+  }
   const frames: number[][] = [];
   const onsets: number[][] = [];
   const contours: number[][] = [];
@@ -77,30 +104,50 @@ export async function runTranscription(
   );
   let calculated = 0;
 
-  for (let i = 0; i < windows; i++) {
-    onProgress?.(i / windows);
-    const [f, o, c] = await model.evaluateSingleFrame(reshapedInput, i);
-    let uf = model.unwrapOutput(f);
-    let uo = model.unwrapOutput(o);
-    let uc = model.unwrapOutput(c);
-    const got = uf.shape[0];
-    if (calculated < nOutputFramesOriginal) {
-      if (got + calculated >= nOutputFramesOriginal) {
-        const keep = nOutputFramesOriginal - calculated;
-        uf = uf.slice([0, 0], [keep, -1]);
-        uo = uo.slice([0, 0], [keep, -1]);
-        uc = uc.slice([0, 0], [keep, -1]);
+  // Tensors are freed by hand: no tf.tidy without importing TensorFlow, and
+  // on the main-thread fallback nothing else ever frees them, so every run
+  // would leave its whole output behind in memory.
+  const free = (...ts: ({ dispose?: () => void } | null | undefined)[]) => {
+    for (const t of ts) t?.dispose?.();
+  };
+  try {
+    for (let i = 0; i < windows; i++) {
+      onProgress?.(i / windows);
+      const [f, o, c] = await model.evaluateSingleFrame(reshapedInput, i);
+      const uf = model.unwrapOutput(f);
+      const uo = model.unwrapOutput(o);
+      const uc = model.unwrapOutput(c);
+      const cut: { dispose?: () => void }[] = [];
+      try {
+        const got = uf.shape[0];
+        if (calculated < nOutputFramesOriginal) {
+          let [sf, so, sc] = [uf, uo, uc];
+          if (got + calculated >= nOutputFramesOriginal) {
+            const keep = nOutputFramesOriginal - calculated;
+            sf = uf.slice([0, 0], [keep, -1]);
+            so = uo.slice([0, 0], [keep, -1]);
+            sc = uc.slice([0, 0], [keep, -1]);
+            cut.push(sf, so, sc);
+          }
+          frames.push(...(await sf.array()));
+          onsets.push(...(await so.array()));
+          contours.push(...(await sc.array()));
+        }
+        calculated += got;
+      } finally {
+        free(f, o, c, uf, uo, uc, ...cut);
       }
-      frames.push(...(await uf.array()));
-      onsets.push(...(await uo.array()));
-      contours.push(...(await uc.array()));
+      await breathe();
     }
-    calculated += got;
-    await breathe();
+  } catch (e) {
+    models.delete(modelUrl); // a model that failed to load must not be kept for the next run
+    throw e;
+  } finally {
+    free(reshapedInput);
   }
   onProgress?.(1);
 
-  const midiToHz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
+  const limits = detectionLimits(opts.minMidi, opts.maxMidi);
   const notes = noteFramesToTime(
     addPitchBendsToNoteEvents(
       contours,
@@ -111,8 +158,8 @@ export async function runTranscription(
         opts.frameThreshold,
         opts.minNoteLength,
         true,
-        opts.maxMidi != null ? midiToHz(opts.maxMidi) : null,
-        opts.minMidi != null ? midiToHz(opts.minMidi) : null,
+        limits.maxHz,
+        limits.minHz,
         true
       )
     )

@@ -20,6 +20,11 @@ export async function POST(req: Request) {
   const customer = (data as { stripe_customer_id?: string } | null)?.stripe_customer_id;
   if (!customer) return NextResponse.json({ error: "There is no subscription to manage yet." }, { status: 400 });
 
-  const session = await stripe().billingPortal.sessions.create({ customer, return_url: `${origin(req)}/account` });
-  return NextResponse.json({ url: session.url });
+  try {
+    const session = await stripe().billingPortal.sessions.create({ customer, return_url: `${origin(req)}/account` });
+    return NextResponse.json({ url: session.url });
+  } catch (e) {
+    console.error(`portal: ${(e as Error).message}`);
+    return NextResponse.json({ error: "Billing could not be opened. Please contact support." }, { status: 502 });
+  }
 }

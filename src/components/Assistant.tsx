@@ -395,7 +395,13 @@ export default function Assistant() {
         knowledge:
           "Riffscribe turns a recording into something you can practise: notation and tablature for your instrument, the song with your part removed, a pitch-preserving slow-down, and overdub recording. Everything runs in the browser; audio is never uploaded. You cannot load a song yourself — the player has to pick the file. You can list the songs they have saved; each one is a link that opens it in the studio. The studio's controls only exist while the studio page is open — on My songs, only the song list is on offer.",
         knowledgeUrl: "/llm.txt",
-        voice: true,
+        // Browser speech only. Riffscribe has no speech-to-text route, so with
+        // the default the widget would record and post the audio to one where the
+        // browser has no recogniser (Firefox) or its recogniser fails (an
+        // installed iOS app), then report "couldn't access the microphone".
+        // Without a server it says voice input isn't available, and never asks
+        // for the microphone first.
+        voice: { serverUrl: undefined },
         capabilities: caps,
         getPageState: () => {
           const s = studioActions();

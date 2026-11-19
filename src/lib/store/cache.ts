@@ -425,8 +425,3 @@ async function evict(): Promise<void> {
     total -= songs[i].bytes;
   }
 }
-
-export async function cacheSize(): Promise<{ songs: number; bytes: number }> {
-  const songs = await listSongs();
-  return { songs: songs.length, bytes: songs.reduce((s, x) => s + x.bytes, 0) };
-}

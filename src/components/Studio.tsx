@@ -34,7 +34,7 @@ import {
 } from "@/lib/audio/analyze";
 import { PracticeEngine, makeClickTrack, type EngineTrack } from "@/lib/audio/engine";
 import { countIn, countInSeconds } from "@/lib/audio/countin";
-import { MicRecorder, estimateLatency, placeTake, stretchOffline } from "@/lib/audio/recorder";
+import { MicRecorder, estimateLatency, foldLoopTake, placeTake, stretchOffline } from "@/lib/audio/recorder";
 import {
   DEMUCS_SAMPLE_RATE, SPLIT_PAUSED, mixStems, partialKey, separateInstantAsync, separateResumable, type StemSet,
 } from "@/lib/audio/stems";
@@ -52,12 +52,16 @@ import {
 import { partsToMidi } from "@/lib/transcribe/midi";
 import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
 import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
-import { barsToRange, markTake, summarise, type TakeReport } from "@/lib/transcribe/compare";
+import { barsToLoop, barsToRange, chartInWindow, markTake, summarise, takeSpan, type TakeReport } from "@/lib/transcribe/compare";
+import { consolidateMonophonic } from "@/lib/transcribe/cleanup";
 import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
 import { keyChoices, keyName, shortestShift } from "@/lib/transcribe/spelling";
 import { isNativePlatform, nativeDeviceMemoryGb } from "@/lib/native";
+import {
+  keepChartLink, liveSolo, readSavedSettings, settingsOnLoad, trainerStep,
+} from "@/lib/studioState";
 import { CHART_VERSION, loadChart, type Chart } from "@/lib/store/charts";
-import { fitToRange, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
+import { extractMelody, fitToRange, playsSingleLine, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
   DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part,
   type TranscriptionSettings,
@@ -86,6 +90,16 @@ const ENSEMBLES: Record<number, InstrumentId[]> = {
   5: ["violin", "violin", "viola", "cello", "double-bass"],
 };
 
+/** "bar 4" or "bars 3–5", for a run of bar numbers in order. */
+const barsLabel = (bars: number[]) =>
+  bars.length === 1 ? `bar ${bars[0]}` : `bars ${bars[0]}–${bars[bars.length - 1]}`;
+
+/** Picking an instrument also picks its usual single-line setting, which can still be changed. */
+const instrumentPatch = (id: InstrumentId): Partial<TranscriptionSettings> => ({
+  instrument: id,
+  monophonic: playsSingleLine(INSTRUMENTS[id]),
+});
+
 export default function Studio() {
   const [file, setFile] = useState<File | null>(null);
   const [audio, setAudio] = useState<{ left: Float32Array; right: Float32Array } | null>(null);
@@ -111,7 +125,6 @@ export default function Studio() {
   }>({ playing: false, time: 0, duration: 0, rate: 1, semitones: 0, rendering: null });
   const [loop, setLoop] = useState<[number, number] | null>(null);
 
-  const [recArmed, setRecArmed] = useState(false);
   const [recording, setRecording] = useState(false);
   const [overdub, setOverdub] = useState<{ left: Float32Array; right: Float32Array } | null>(null);
   const [nudgeMs, setNudgeMs] = useState(0);
@@ -133,6 +146,8 @@ export default function Studio() {
   const [countInBars, setCountInBars] = useState(1);
   const [counting, setCounting] = useState(false);
   const countRef = useRef<{ cancel: () => void } | null>(null);
+  /** Identifies the count-in that may go on to start playback; null once it is cancelled. */
+  const countToken = useRef<object | null>(null);
 
   /**
    * The speed trainer: every time the loop comes round, nudge the tempo up a
@@ -159,6 +174,8 @@ export default function Studio() {
 
   /** The saved chart this session is editing, once there is one. */
   const [chartId, setChartId] = useState<string | null>(null);
+  /** The song that chart was written from. Loading any other song detaches the chart. */
+  const chartSongRef = useRef<string | null>(null);
   // Signed in, there are saved songs the assistant can point to.
   const { user: signedIn } = useAccount();
 
@@ -166,6 +183,16 @@ export default function Studio() {
   const recorderRef = useRef<MicRecorder | null>(null);
   const recStartRef = useRef(0);
   const cancelSplitRef = useRef<(() => void) | null>(null);
+  /** Bumped by every song load: work that finds it changed belongs to a song no longer open. */
+  const loadSeq = useRef(0);
+  /** The samples of the original song a trim kept, [start, end), or null when not trimmed. */
+  const trimRef = useRef<[number, number] | null>(null);
+  /** The loop that was repeating when the take started, so the take can be folded back onto it. */
+  const recLoopRef = useRef<[number, number] | null>(null);
+  /** The recording the engine's tracks were loaded from: a new one is a new song, not an edit. */
+  const engineAudioRef = useRef<unknown>(null);
+  /** Synthesised guide per part object, so editing one part does not re-synthesise the others. */
+  const guideCache = useRef(new WeakMap<Part, { audio: unknown; track: { id: string; left: Float32Array; right: Float32Array } }>());
   const partSeq = useRef(0);
 
   if (!engineRef.current && typeof window !== "undefined") engineRef.current = new PracticeEngine();
@@ -180,21 +207,47 @@ export default function Studio() {
     return () => { void e.dispose(); };
   }, []);
 
+  // Leaving the studio: stop a count-in that would otherwise go on to start playback,
+  // and close the microphone.
+  useEffect(() => {
+    const recorder = recorderRef.current;
+    return () => {
+      countToken.current = null;
+      countRef.current?.cancel();
+      recorder?.release();
+    };
+  }, []);
+
+  /** Edits belong to the parts they were made on: new parts or a new song start with none. */
+  const resetEdits = useCallback(() => {
+    setUndoStack([]);
+    setPickedBeat(null);
+  }, []);
+
   /* ------------------------------------------------------------------ load */
 
   /** `restoring`: bringing back the last song on return — keep whatever chart is open. */
   const loadFile = useCallback(async (f: File, restoring = false) => {
+    // A later load wins: every step below stops once another song has started loading.
+    const my = ++loadSeq.current;
+    const stale = () => my !== loadSeq.current;
+    // A split still running belongs to the song being replaced.
+    cancelSplitRef.current?.();
+    cancelSplitRef.current = null;
     setError(null);
     setBusy({ label: `Decoding ${f.name}…` });
     try {
       const buf = await fileToAudioBuffer(f);
       const stereo = await toStereo(buf, DEMUCS_SAMPLE_RATE);
+      if (stale()) return;
+      trimRef.current = null;
       setFile(f);
       setAudio({ left: stereo.left, right: stereo.right });
       setWavePeaks(peaksOf(toMono(stereo.left, stereo.right), 2200));
       setStems(null);
       setStemMode("none");
       if (!restoring) setParts([]);
+      resetEdits();
       setSource("mix");
       setRestored(null);
       partsFor.current = null;
@@ -202,11 +255,22 @@ export default function Studio() {
       // Have we taken this song apart before? Separating costs minutes, so it
       // is worth a moment's hashing to find out.
       const id = await songKey(f);
+      if (stale()) return;
+      // A different song is a new chart: "Save changes" must not overwrite the one that was open.
+      if (!restoring && !keepChartLink(chartSongRef.current, id)) {
+        setChartId(null);
+        chartSongRef.current = null;
+      }
       setKey(id);
       setWantedSong(null);
       if (!restoring) void rememberSong(id, f);
       setBusy({ label: "Looking for work you have already done…" });
-      const cached = await getStems(id, DEMUCS_SAMPLE_RATE);
+      const found = await getStems(id, DEMUCS_SAMPLE_RATE);
+      if (stale()) return;
+      // Stems of another length are not this recording's: older versions saved a trimmed
+      // clip's split under the whole song's key. Treat those as not cached.
+      const firstStem = found ? Object.values(found.stems)[0] : undefined;
+      const cached = firstStem && Math.abs(firstStem.left.length - stereo.left.length) <= DEMUCS_SAMPLE_RATE * 0.05 ? found : null;
       if (cached) {
         setStems(cached.stems as StemSet);
         setStemMode(cached.mode as StemMode);
@@ -216,17 +280,21 @@ export default function Studio() {
       // Transcribed parts come back too, unless a saved chart just brought its own.
       if (!restoring || !handedOff.current) {
         const saved = await getScore<Part[]>(id, "parts");
+        if (stale()) return;
         if (saved?.length) {
           setParts(saved);
           setRestored((r) => `${r ? r + " " : ""}${saved.length} transcribed ${saved.length === 1 ? "part" : "parts"} restored.`);
         }
       }
+      const savedSettings = readSavedSettings(await getScore<unknown>(id, "settings"));
       const session = await getSession(id);
+      if (stale()) return;
       if (session) {
         setMix(session.mix);
         setSoloed(session.soloed);
         if (session.overdub) {
           const track = await unpackTrack(session.overdub, DEMUCS_SAMPLE_RATE);
+          if (stale()) return;
           setOverdub(track);
           setRestored((r) => `${r ? r + " " : ""}Mixer and your last take restored.`);
         } else {
@@ -240,6 +308,7 @@ export default function Studio() {
       partsFor.current = id;
       if (!cached) {
         const partial = await doneBlocks(partialKey(id, stereo.left.length));
+        if (stale()) return;
         if (partial.size) {
           setRestored(
             `An AI split of this song stopped partway — ${partial.size} ${partial.size === 1 ? "part is" : "parts are"} kept. ` +
@@ -250,23 +319,38 @@ export default function Studio() {
 
       const mono = toMono(stereo.left, stereo.right);
       const tempo = estimateTempo(mono, DEMUCS_SAMPLE_RATE);
-      if (!restoring) {
-        setSettings((s) => ({ ...s, bpm: tempo.bpm, offsetSeconds: tempo.offsetSeconds }));
-        setLog(`Detected ${tempo.bpm} BPM (confidence ${(tempo.confidence * 100).toFixed(0)}%)`);
+      // Tempo, offset, key choices, sections and loop are kept per song like the parts are —
+      // the parts' notes are in seconds and only mean anything against the tempo they were written at.
+      const onLoad = settingsOnLoad(savedSettings, restoring && handedOff.current, tempo);
+      if (onLoad.kind === "saved") {
+        setSettings({ ...DEFAULT_SETTINGS, ...(onLoad.value.settings as unknown as TranscriptionSettings) });
+        setSections(onLoad.value.sections);
+        setLoop(onLoad.value.loop);
+        setLog(restoring ? `Brought back ${f.name} from last time.` : `Brought back your tempo and settings for ${f.name}.`);
+      } else if (onLoad.kind === "detected") {
+        setSettings((s) => ({ ...s, bpm: onLoad.bpm, offsetSeconds: onLoad.offsetSeconds }));
+        setLog(restoring
+          ? `Brought back ${f.name} from last time — tempo re-detected at ${tempo.bpm} BPM.`
+          : `Detected ${tempo.bpm} BPM (confidence ${(tempo.confidence * 100).toFixed(0)}%)`);
       } else {
         setLog(`Brought back ${f.name} from last time.`);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "could not read that file");
+      if (!stale()) setError(e instanceof Error ? e.message : "could not read that file");
     } finally {
-      setBusy(null);
+      if (!stale()) setBusy(null);
     }
-  }, []);
+  }, [resetEdits]);
 
   /** Keep this song's parts on the device, so reopening it brings them back. */
   useEffect(() => {
     if (key && partsFor.current === key) void putScore(key, "parts", parts);
   }, [key, parts]);
+
+  /** Tempo, offset, key choices, sections and loop — separate from the session so a BPM edit does not re-encode the take. */
+  useEffect(() => {
+    if (key && partsFor.current === key) void putScore(key, "settings", { settings, sections, loop });
+  }, [key, settings, sections, loop]);
 
   /** Mixer faders and overdub take — same cache key as stems and parts. */
   useEffect(() => {
@@ -347,6 +431,12 @@ export default function Studio() {
     return 57 + ((pc - 9 + 12) % 12); // 57 is A3
   }, [parts]);
 
+  /** SaveBar reports the chart it saved or dropped; remember which song it belongs to. */
+  const linkChart = useCallback((id: string | null) => {
+    setChartId(id);
+    chartSongRef.current = id ? key ?? chartSongRef.current : null;
+  }, [key]);
+
   /* ---------------------------------------------------------------- charts */
 
   /** Everything worth keeping about a song, and nothing that weighs anything. */
@@ -365,6 +455,11 @@ export default function Studio() {
   }, [parts, settings, sections, loop, file, key]);
 
   const openChart = useCallback((chart: Chart) => {
+    // Until the chart's own song is loaded, whatever is open belongs to another song:
+    // its cache must not be overwritten with these parts, and its edits must not undo into them.
+    partsFor.current = null;
+    chartSongRef.current = chart.songKey ?? null;
+    resetEdits();
     setSettings(chart.settings);
     setParts(chart.parts);
     setSections(chart.sections ?? []);
@@ -393,7 +488,7 @@ export default function Studio() {
         setLog(`Opened ${title}.`);
       }
     })();
-  }, [loadFile]);
+  }, [loadFile, resetEdits]);
 
   /** A chart arriving from a shared link, handed over through session storage. */
   useEffect(() => {
@@ -449,19 +544,27 @@ export default function Studio() {
 
   /* --------------------------------------------------------------- engine  */
 
-  /** One synthesised line per part, so each can be heard on its own. */
+  /**
+   * One synthesised line per part, so each can be heard on its own. At sounding pitch: the
+   * "write it in" transposition only changes the notation, and the engine's transpose moves
+   * the guide together with the backing. Parts are immutable, so an unchanged part object
+   * reuses its earlier synthesis (and the engine then does not re-render it either).
+   */
   const guideTracks = useMemo(() => {
     if (!audio) return [] as { id: string; left: Float32Array; right: Float32Array }[];
     return parts.map((part) => {
+      const hit = guideCache.current.get(part);
+      if (hit && hit.audio === audio) return hit.track;
       const [left, right] = synthesizeGuide(part.notes, {
         timbre: INSTRUMENTS[part.instrument].timbre,
         sampleRate: DEMUCS_SAMPLE_RATE,
         lengthSamples: audio.left.length,
-        transposeSemitones: settings.transposeSemitones,
       });
-      return { id: `guide:${part.id}`, left, right };
+      const track = { id: `guide:${part.id}`, left, right };
+      guideCache.current.set(part, { audio, track });
+      return track;
     });
-  }, [audio, parts, settings.transposeSemitones]);
+  }, [audio, parts]);
 
   const trackList = useMemo<{ id: string; label: string; hint?: string }[]>(() => {
     const out: { id: string; label: string; hint?: string }[] = [];
@@ -484,6 +587,9 @@ export default function Studio() {
     if (overdub) out.push({ id: "overdub", ...STEM_LABEL.overdub });
     return out;
   }, [stems, stemMode, audio, overdub, parts]);
+
+  /** The solo that still points at a track. A leftover id would silence every row with no solo button lit. */
+  const activeSolo = useMemo(() => liveSolo(soloed, trackList.map((t) => t.id)), [soloed, trackList]);
 
   const clickTrack = useMemo(() => {
     if (!audio) return null;
@@ -517,7 +623,14 @@ export default function Studio() {
     if (overdub) push("overdub", overdub.left, overdub.right);
 
     try {
-      await engine.load(tracks, DEMUCS_SAMPLE_RATE);
+      // A new recording starts over; anything else (a chart edit, a BPM change, a finished
+      // split) only swaps the tracks that changed, so playback and slowed renders carry on.
+      if (engineAudioRef.current !== audio) {
+        engineAudioRef.current = audio;
+        await engine.load(tracks, DEMUCS_SAMPLE_RATE);
+      } else {
+        await engine.updateTracks(tracks, DEMUCS_SAMPLE_RATE);
+      }
     } catch (e) {
       console.error("[riffscribe] audio engine failed", e);
       setError(e instanceof Error ? e.message : "could not start the audio engine");
@@ -538,7 +651,7 @@ export default function Studio() {
     });
   }, [audio, stems, stemMode, overdub, trackList, clickTrack, guideTracks]);
 
-  // rebuilding tears down the audio graph, so coalesce bursts (e.g. typing a BPM)
+  // each rebuild re-renders the tracks that changed, so coalesce bursts (e.g. typing a BPM)
   useEffect(() => {
     const id = setTimeout(() => void rebuildEngine(), 350);
     return () => clearTimeout(id);
@@ -551,10 +664,10 @@ export default function Studio() {
     for (const t of trackList) {
       const m = mix[t.id];
       if (!m) continue;
-      const audible = !m.muted && (soloed === null || soloed === t.id);
+      const audible = !m.muted && (activeSolo === null || activeSolo === t.id);
       engine.setGain(t.id, audible ? m.gain : 0);
     }
-  }, [mix, soloed, trackList]);
+  }, [mix, activeSolo, trackList]);
 
   useEffect(() => { void engineRef.current?.setLoop(loop); }, [loop]);
 
@@ -572,31 +685,60 @@ export default function Studio() {
     if (!wrapped) return;
     setPasses((n) => n + 1);
     if (!trainer) return;
-    const next = Math.min(trainer.target, Math.round((transport.rate + trainer.step) * 100) / 100);
-    if (next > transport.rate) {
-      void engineRef.current?.setRate(next);
-      setLog(`Clean pass — up to ${Math.round(next * 100)}%.`);
-    } else if (transport.rate >= trainer.target) {
+    const step = trainerStep(transport.rate, trainer);
+    if (step.kind === "up") {
+      void engineRef.current?.setRate(step.rate); // already rendered by the effect below, so this does not stall
+      setLog(`Pass done — up to ${Math.round(step.rate * 100)}%.`);
+    } else if (step.kind === "done") {
       setTrainer(null);
       setLog(`You are up to ${Math.round(trainer.target * 100)}%. Trainer off.`);
     }
   }, [transport.time, transport.playing, transport.rate, loop, trainer]);
 
+  // Rendering a speed stretches the whole song, which takes a while. Do the next step's
+  // render in the background while this pass plays, so the wrap into it is instant.
+  useEffect(() => {
+    if (!trainer || !loop || !transport.playing) return;
+    const step = trainerStep(transport.rate, trainer);
+    if (step.kind === "up") void engineRef.current?.prepareRate(step.rate);
+  }, [trainer, loop, transport.playing, transport.rate]);
+
+  // The trainer works on a loop; without one it would ramp the speed on the next loop set.
+  useEffect(() => {
+    if (!loop && trainer) {
+      setTrainer(null);
+      setLog("Loop cleared. Trainer off.");
+    }
+  }, [loop, trainer]);
+
   /** Play, but count it in first so you can come in with it. */
   const startPlaying = useCallback(async () => {
     const engine = engineRef.current;
     if (!engine) return;
-    if (transport.playing) {
-      countRef.current?.cancel();
+    // Pressed again during the count-in: that is "stop", not a second count-in.
+    if (countRef.current) {
+      countToken.current = null;
+      countRef.current.cancel();
+      countRef.current = null;
       setCounting(false);
+      return;
+    }
+    if (transport.playing) {
       await engine.pause();
       return;
     }
+    // Start the audio context now, inside the click: after a count-in the gesture has
+    // expired and iOS Safari would leave it suspended.
+    engine.warm();
     if (countInBars > 0) {
+      const token = {};
+      countToken.current = token;
       setCounting(true);
       const c = countIn(settings.bpm, transport.rate, settings.timeSignature[0], countInBars);
       countRef.current = c;
       await c.done;
+      if (countToken.current !== token) return; // cancelled while counting
+      countToken.current = null;
       countRef.current = null;
       setCounting(false);
     }
@@ -618,8 +760,21 @@ export default function Studio() {
 
   /* -------------------------------------------------------------- separate */
 
-  async function runInstant() {
-    if (!audio) return;
+  /**
+   * Where work on the audio as it is now is kept on this device. A clip trimmed to a loop
+   * is not the song its key was hashed from, so it gets a key of its own.
+   */
+  function workKey(): string | null {
+    const trim = trimRef.current;
+    return key && trim ? `${key}:trim:${trim[0]}-${trim[1]}` : key;
+  }
+
+  /** Each job below answers whether it finished, so the assistant does not report success after a failure. */
+  async function runInstant(): Promise<boolean> {
+    if (!audio) return false;
+    // Results are for this song as it is now: a song loaded meanwhile must not get them.
+    const my = loadSeq.current;
+    const trimmed = !!trimRef.current;
     setError(null);
     setBusy({ label: "Pulling the centre channel out…" });
     try {
@@ -628,31 +783,39 @@ export default function Studio() {
         Float32Array.from(audio.right),
         DEMUCS_SAMPLE_RATE
       );
+      // The stem cache is whole songs only: a trimmed clip's split would come back for the whole song.
+      if (key && file && !trimmed) void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "instant");
+      if (my !== loadSeq.current) return false;
       setStems(result);
       setStemMode("instant");
       setSource("other");
       setLog("Instant split done. For a cleaner result, run the AI split.");
-      if (key && file) void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "instant");
+      return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "instant split failed");
+      if (my === loadSeq.current) setError(e instanceof Error ? e.message : "instant split failed");
+      return false;
     } finally {
-      setBusy(null);
+      if (my === loadSeq.current) setBusy(null);
     }
   }
 
-  async function runDemucs() {
-    if (!audio) return;
+  async function runDemucs(): Promise<boolean> {
+    if (!audio) return false;
+    const my = loadSeq.current;
+    const trimmed = !!trimRef.current;
+    const current = () => my === loadSeq.current;
     setError(null);
     setBusy({ label: "Loading the separation model…" });
     try {
       // Without a song key (should not happen once loaded) blocks are simply not reused.
-      const pkey = partialKey(key ?? `unsaved-${Date.now()}`, audio.left.length);
+      const pkey = partialKey(workKey() ?? `unsaved-${Date.now()}`, audio.left.length);
       const { promise, cancel } = separateResumable(
         pkey,
         audio.left,
         audio.right,
         { done: doneBlocks, get: getBlock, put: putBlock, clear: clearBlocks },
         (p) => {
+          if (!current()) return;
           if (p.phase === "download") setBusy({ label: `Downloading model (one time, ~180 MB) ${p.message ?? ""}`, value: p.value });
           else if (p.phase === "prepare") setBusy({ label: "Preparing the model — this takes a moment…" });
           else if (p.phase === "separate") setBusy({ label: `Separating stems ${p.message ?? ""}`, value: p.value });
@@ -661,18 +824,21 @@ export default function Studio() {
       );
       cancelSplitRef.current = cancel;
       const result = await promise;
+      // Minutes of work — never make anyone wait for it twice. Whole songs only, as above.
+      if (key && file && !trimmed) {
+        void requestPersistence();
+        void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "ai");
+      }
+      if (!current()) return false;
       setStems(result);
       setStemMode("ai");
       setSource("other");
       setAiSplitCautionGb(null);
       setLog("Four stems ready. Mute what you don't want to hear.");
-      // Minutes of work — never make anyone wait for it twice.
-      if (key && file) {
-        void requestPersistence();
-        void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "ai");
-      }
+      return true;
     } catch (e) {
-      if (e instanceof Error && e.message === SPLIT_PAUSED) return;
+      if (!current()) return false;
+      if (e instanceof Error && e.message === SPLIT_PAUSED) return false;
       const detail = e instanceof Error && e.message ? e.message : "stem separation failed";
       const native = await isNativePlatform();
       setError(
@@ -680,9 +846,12 @@ export default function Studio() {
           ? `This phone could not finish the AI stem split. The desktop site is the reliable place for it. Instant vocal removal still works on this phone. (${detail})`
           : detail,
       );
+      return false;
     } finally {
-      cancelSplitRef.current = null;
-      setBusy(null);
+      if (current()) {
+        cancelSplitRef.current = null;
+        setBusy(null);
+      }
     }
   }
 
@@ -712,6 +881,8 @@ export default function Studio() {
     const a = Math.max(0, Math.floor(loop[0] * DEMUCS_SAMPLE_RATE));
     const b = Math.min(audio.left.length, Math.floor(loop[1] * DEMUCS_SAMPLE_RATE));
     if (b - a < DEMUCS_SAMPLE_RATE) return;
+    const base = trimRef.current?.[0] ?? 0;
+    trimRef.current = [base + a, base + b];
     const left = audio.left.slice(a, b);
     const right = audio.right.slice(a, b);
     setAudio({ left, right });
@@ -720,6 +891,7 @@ export default function Studio() {
     setStemMode("none");
     partsFor.current = null; // parts of a trimmed clip no longer line up with the song
     setParts([]);
+    resetEdits();
     setOverdub(null);
     setSource("mix");
     setLoop(null);
@@ -729,10 +901,10 @@ export default function Studio() {
 
   /* ------------------------------------------------------------ transcribe */
 
-  const sourceChannels = useCallback((): { left: Float32Array; right: Float32Array } | null => {
+  const sourceChannels = useCallback((s: Source = source): { left: Float32Array; right: Float32Array } | null => {
     if (!audio) return null;
-    if (source === "mix" || !stems) return audio;
-    return stems[source];
+    if (s === "mix" || !stems) return audio;
+    return stems[s];
   }, [audio, stems, source]);
 
   /** Throw away what we remembered, for when a split went badly. */
@@ -742,6 +914,7 @@ export default function Studio() {
     setStems(null);
     setStemMode("none");
     setSource("mix");
+    setSoloed(null);
     setRestored(null);
     setLog("Forgotten. The next split will run from scratch.");
   }
@@ -754,28 +927,54 @@ export default function Studio() {
    * be compared with the chart directly. We transcribe it with the same model
    * that produced the chart, which means both sides carry the same biases and
    * a disagreement is more likely to be the player than the machine.
+   *
+   * Only the stretch that was recorded is listened to and marked. The take sits
+   * in a full-song buffer padded with silence; marking it against the whole
+   * chart called every bar the player never reached "missed".
+   *
+   * Returns a sentence instead of a report when there is nothing to mark.
    */
-  async function checkTake(): Promise<TakeReport | null> {
+  async function checkTake(): Promise<TakeReport | string | null> {
     const part = parts.find((x) => x.id === checkPart) ?? parts[0];
     if (!overdub || !part) return null;
     const inst = INSTRUMENTS[part.instrument];
+    const span = takeSpan(overdub.left, overdub.right, DEMUCS_SAMPLE_RATE);
+    const chart = span ? chartInWindow(part.notes, span[0], span[1]) : [];
+    if (!span || !chart.length) {
+      const why = !span
+        ? "That take is silent — record it again."
+        : "Nothing is written in the bars you played — record over a stretch the part plays in.";
+      setReport(null);
+      setLog(why);
+      return why;
+    }
     setError(null);
     setBusy({ label: "Listening to your take…", value: 0 });
     try {
-      const buffer = channelsToAudioBuffer([overdub.left, overdub.right], DEMUCS_SAMPLE_RATE);
+      const pad = 0.5;
+      const a = Math.max(0, Math.floor((span[0] - pad) * DEMUCS_SAMPLE_RATE));
+      const b = Math.min(overdub.left.length, Math.ceil((span[1] + pad) * DEMUCS_SAMPLE_RATE));
+      const buffer = channelsToAudioBuffer([overdub.left.slice(a, b), overdub.right.slice(a, b)], DEMUCS_SAMPLE_RATE);
       const mono22 = await toModelInput(buffer);
-      const played = await transcribeAudio(mono22, {
+      // The player reads the written part, so a transposed part is played (and
+      // must be listened for) that far from the chart's sounding pitch.
+      const shift = settings.transposeSemitones;
+      const midi = (m: number) => Math.max(0, Math.min(127, m + shift));
+      const heard = await transcribeAudio(mono22, {
         onsetThreshold: settings.onsetThreshold,
         frameThreshold: settings.frameThreshold,
         minNoteLength: settings.minNoteLength,
-        minMidi: inst.range[0],
-        maxMidi: inst.range[1],
+        minMidi: midi(inst.range[0]),
+        maxMidi: midi(inst.range[1]),
         onProgress: (p) => setBusy({ label: "Listening to your take…", value: p }),
       });
-      const r = markTake(part.notes, played, {
+      const line = playsSingleLine(inst) ? consolidateMonophonic(extractMelody(heard)) : heard;
+      const played = line.map((n) => ({ ...n, startTimeSeconds: n.startTimeSeconds + a / DEMUCS_SAMPLE_RATE }));
+      const r = markTake(chart, played, {
         bpm: settings.bpm,
         beatsPerBar: settings.timeSignature[0],
-        offsetSeconds: settings.offsetSeconds,
+        offsetSeconds: barLineSeconds,
+        transposeSemitones: shift,
       });
       setReport(r);
       setLog(summarise(r));
@@ -793,24 +992,27 @@ export default function Studio() {
     const range = barsToRange(report.worstBars, {
       bpm: settings.bpm,
       beatsPerBar: settings.timeSignature[0],
-      offsetSeconds: settings.offsetSeconds,
+      offsetSeconds: barLineSeconds,
     });
     if (!range) return;
     setLoop(range);
     void engineRef.current?.seek(range[0]);
-    setLog(`Looping the bars that need it: ${report.worstBars.map((b) => b.bar).join(", ")}.`);
+    setLog(`Looping the bars that need it: ${barsLabel(barsToLoop(report.worstBars))}.`);
   }
 
-  async function runTranscribe() {
-    const src = sourceChannels();
-    if (!src) return;
+  /** `from` is for callers that have just changed the source: state would still hold the old one. */
+  async function runTranscribe(from?: Source): Promise<boolean> {
+    const which = from ?? source;
+    const src = sourceChannels(which);
+    if (!src) return false;
     const inst = INSTRUMENTS[settings.instrument];
     setError(null);
     setBusy({ label: "Listening for notes…", value: 0 });
     const startedAt = performance.now();
-    const variant = `${source}:${settings.instrument}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}`;
+    const variant = `${which}:${settings.instrument}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}`;
     try {
-      let found = key ? await getScore<NoteEvent[]>(key, variant) : null;
+      const store = workKey();
+      let found = store ? await getScore<NoteEvent[]>(store, variant) : null;
       const fromCache = !!found;
       if (!found) {
         const buffer = channelsToAudioBuffer([src.left, src.right], DEMUCS_SAMPLE_RATE);
@@ -823,13 +1025,17 @@ export default function Studio() {
           maxMidi: inst.range[1],
           onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
         });
-        if (key) void putScore(key, variant, found);
+        if (store) void putScore(store, variant, found);
       }
-      const k = estimateKey(chromaFromNotes(found));
+      // A single line keeps one note at a time, chosen by loudness rather than
+      // height, with re-triggered held notes joined back up — done here so the
+      // sheet, the guide and the take marker all read the same notes.
+      const notes = settings.monophonic ? consolidateMonophonic(extractMelody(found)) : found;
+      const k = estimateKey(chromaFromNotes(notes));
       addPart({
-        source,
+        source: which,
         instrument: settings.instrument,
-        notes: found,
+        notes,
         tonicPc: k.tonic,
         fifths: k.fifths,
         keyName: k.name,
@@ -839,15 +1045,18 @@ export default function Studio() {
       const how = fromCache
         ? "reused an earlier pass"
         : `took ${elapsed}s${lastTranscriptionRanIn() === "worker" ? "" : " (on the page — this browser would not run it in the background)"}`;
-      setLog(`${found.length} notes • ${k.name} • ${settings.bpm} BPM • ${how}`);
+      setLog(`${notes.length} notes • ${k.name} • ${settings.bpm} BPM • ${how}`);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : "transcription failed");
+      return false;
     } finally {
       setBusy(null);
     }
   }
 
   function addPart(p: Omit<Part, "id">) {
+    resetEdits();
     setParts((list) => [
       ...list,
       { ...p, id: `${p.instrument}-${p.source}-${list.length}-${partSeq.current++}` },
@@ -855,11 +1064,16 @@ export default function Studio() {
   }
 
   function removePart(id: string) {
+    resetEdits();
+    if (soloed === `guide:${id}`) setSoloed(null);
     setParts((list) => list.filter((p) => p.id !== id));
   }
 
+  /** Re-targeting a part also moves it by octaves into the new instrument's range, if it needs it. */
   function setPartInstrument(id: string, instrument: InstrumentId) {
-    setParts((list) => list.map((p) => (p.id === id ? { ...p, instrument } : p)));
+    setParts((list) =>
+      list.map((p) => (p.id === id ? { ...p, instrument, notes: fitToRange(p.notes, INSTRUMENTS[instrument].range) } : p))
+    );
   }
 
   /**
@@ -896,6 +1110,7 @@ export default function Studio() {
       setError("There was nothing to split into voices.");
       return;
     }
+    resetEdits();
     setParts((list) => [...list.filter((p) => p.id !== id), ...made]);
     setLog(`Arranged into ${made.length} parts: ${made.map((m) => INSTRUMENTS[m.instrument].label).join(", ")}.`);
   }
@@ -904,6 +1119,12 @@ export default function Studio() {
   const partSheets = useMemo(() => engraveParts(parts, settings), [parts, settings]);
 
   const sheet: Sheet | null = partSheets[0]?.sheet ?? null;
+
+  /**
+   * Where bar 1 of the score starts. Earlier than the offset setting when the
+   * music has a pickup, so take marks and loops count bars the way the score does.
+   */
+  const barLineSeconds = sheet?.offsetSeconds ?? settings.offsetSeconds;
 
   // when each written beat sounds, so the play-along highlight can follow the
   // top staff — the one a player is most likely reading
@@ -960,40 +1181,53 @@ export default function Studio() {
     return parts[0].notes.filter((n) => n.startTimeSeconds >= start - 1e-3 && n.startTimeSeconds < end - 1e-3);
   }, [pickedBeat, timeline, parts]);
 
+  /** A way to choose a beat without the mouse: the score itself only answers clicks. */
+  function stepBeat(dir: 1 | -1) {
+    if (!timeline.length) return;
+    setPickedBeat((b) => (b == null ? (dir > 0 ? 0 : timeline.length - 1) : Math.max(0, Math.min(timeline.length - 1, b + dir))));
+  }
+
   function rememberForUndo() {
     setUndoStack((s) => [...s.slice(-19), parts.map((p) => ({ ...p, notes: [...p.notes] }))]);
   }
 
   function undoEdit() {
-    setUndoStack((s) => {
-      if (!s.length) return s;
-      setParts(s[s.length - 1]);
-      return s.slice(0, -1);
-    });
+    const last = undoStack[undoStack.length - 1];
+    if (!last) return;
+    setParts(last);
+    setUndoStack(undoStack.slice(0, -1));
     setLog("Put that back.");
   }
 
-  /** Move the selected notes by semitones, keeping them inside the instrument. */
+  /**
+   * Move the selected notes by semitones. A note the move would take outside
+   * the instrument stays where it is: landing it on the range edge instead
+   * turned "octave up" into some other interval, or even a move down.
+   */
   function nudgePicked(semitones: number) {
     if (!pickedNotes.length || !parts[0]) return;
-    const range = INSTRUMENTS[parts[0].instrument].range;
-    const picked = new Set(pickedNotes);
+    const inst = INSTRUMENTS[parts[0].instrument];
+    const fits = (n: NoteEvent) => n.pitchMidi + semitones >= inst.range[0] && n.pitchMidi + semitones <= inst.range[1];
+    const moving = new Set(pickedNotes.filter(fits));
+    const stayed = pickedNotes.length - moving.size;
+    if (!moving.size) {
+      setLog(`That would take ${pickedNotes.length === 1 ? "it" : "them"} ${semitones > 0 ? "above" : "below"} the ${inst.label}'s range.`);
+      return;
+    }
     rememberForUndo();
     setParts((list) =>
       list.map((p, i) =>
         i !== 0
           ? p
-          : {
-              ...p,
-              notes: p.notes.map((n) =>
-                picked.has(n)
-                  ? { ...n, pitchMidi: Math.max(range[0], Math.min(range[1], n.pitchMidi + semitones)) }
-                  : n
-              ),
-            }
+          : { ...p, notes: p.notes.map((n) => (moving.has(n) ? { ...n, pitchMidi: n.pitchMidi + semitones } : n)) }
       )
     );
-    setLog(`Moved ${pickedNotes.length === 1 ? "that note" : `those ${pickedNotes.length} notes`} ${semitones > 0 ? "up" : "down"}.`);
+    const dir = semitones > 0 ? "up" : "down";
+    setLog(
+      stayed
+        ? `Moved ${moving.size} ${moving.size === 1 ? "note" : "notes"} ${dir}; ${stayed} stayed because ${stayed === 1 ? "it" : "they"} would leave the range.`
+        : `Moved ${moving.size === 1 ? "that note" : `those ${moving.size} notes`} ${dir}.`
+    );
   }
 
   function deletePicked() {
@@ -1007,22 +1241,30 @@ export default function Studio() {
 
   /* ----------------------------------------------------------------- record */
 
-  async function armMic() {
-    try {
-      await recorderRef.current!.arm();
-      setRecArmed(true);
-      setError(null);
-    } catch {
-      setError("Microphone permission denied — allow it in the browser to record.");
-    }
-  }
-
+  /**
+   * The microphone is open only while a take is being recorded: it is opened here, on the press,
+   * and closed again in stopRecording, so the browser's recording light is not left on.
+   */
   async function startRecording() {
     const engine = engineRef.current;
     if (!engine || !recorderRef.current) return;
-    await engine.play();
-    recorderRef.current.start();
+    try {
+      await recorderRef.current.arm();
+    } catch {
+      setError("Microphone permission denied — allow it in the browser to record.");
+      return;
+    }
+    setError(null);
+    try {
+      await engine.play();
+      recorderRef.current.start();
+    } catch (e) {
+      recorderRef.current.release();
+      setError(e instanceof Error ? e.message : "could not start recording");
+      return;
+    }
     recStartRef.current = engine.state().time;
+    recLoopRef.current = engine.state().loop;
     setRecording(true);
   }
 
@@ -1030,7 +1272,15 @@ export default function Studio() {
     const engine = engineRef.current;
     if (!engine || !recorderRef.current) return;
     setRecording(false);
-    const blob = await recorderRef.current.stop();
+    let blob: Blob;
+    try {
+      blob = await recorderRef.current.stop();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "could not stop the recording");
+      return;
+    } finally {
+      recorderRef.current.release();
+    }
     await engine.pause();
     setBusy({ label: "Lining your take up with the song…" });
     try {
@@ -1042,10 +1292,18 @@ export default function Studio() {
       const latency = estimateLatency(engine.ctx) * rate;
       const start = Math.max(0, recStartRef.current - latency + nudgeMs / 1000);
       const total = audio ? audio.left.length : l.length;
-      const [pl, pr] = placeTake({ left: l, right: r, startSeconds: start, sampleRate: DEMUCS_SAMPLE_RATE }, total);
+      const take = { left: l, right: r, startSeconds: start, sampleRate: DEMUCS_SAMPLE_RATE };
+      // Recorded over a repeating loop: keep one pass, on the loop, not every pass in a row.
+      const loopAt = recLoopRef.current;
+      const placed = loopAt ? foldLoopTake(take, loopAt) : take;
+      const [pl, pr] = placeTake(placed, total);
       setOverdub({ left: pl, right: pr });
       setReport(null);
-      setLog(`Take captured at ${Math.round(rate * 100)}% speed and mapped back to full tempo.`);
+      setLog(
+        placed !== take
+          ? `Take captured at ${Math.round(rate * 100)}% speed. You played the loop more than once, so your last full pass was kept.`
+          : `Take captured at ${Math.round(rate * 100)}% speed and mapped back to full tempo.`
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not process the recording");
     } finally {
@@ -1073,11 +1331,12 @@ export default function Studio() {
   function exportMusicXml() {
     if (!partSheets.length) return;
     const xml = sheetsToMusicXml(
-      partSheets.map(({ sheet: sh, instrument, fifths }) => ({
+      partSheets.map(({ sheet: sh, instrument, fifths, clef }) => ({
         sheet: sh,
         options: {
           instrument,
           fifths,
+          clef,
           capo: settings.capo,
           partName: instrument.label,
         },
@@ -1160,7 +1419,7 @@ export default function Studio() {
       .filter((id) => {
         if (!parts[id]) return false;
         const m = mix[id] ?? { gain: 1, muted: false };
-        if (m.muted || (soloed !== null && soloed !== id)) return false;
+        if (m.muted || (activeSolo !== null && activeSolo !== id)) return false;
         gains[id] = m.gain;
         return true;
       });
@@ -1225,29 +1484,46 @@ export default function Studio() {
 
     setInstrument: (id) => {
       if (!(id in INSTRUMENTS)) return `I do not know an instrument called "${id}".`;
-      patch({ instrument: id as InstrumentId });
+      patch(instrumentPatch(id as InstrumentId));
       return `The part is now written for ${INSTRUMENTS[id as InstrumentId].label}.`;
     },
 
     splitStems: async (mode) => {
       if (!audio) return "Load a song first.";
       if (busy) return "Something else is already running.";
-      if (mode === "instant") { await runInstant(); return "Instant split done — vocal and backing are separate rows in the mixer."; }
+      if (mode === "instant") {
+        return (await runInstant())
+          ? "Instant split done — vocal and backing are separate rows in the mixer."
+          : "The instant split did not work — the reason is shown on the page.";
+      }
       const mem = await nativeDeviceMemoryGb();
       if (mem != null && mem <= 4) {
         setAiSplitCautionGb(mem);
         return `This phone reports about ${mem} GB of memory. AI stem split may fail here — the warning on the page can continue anyway. Instant vocal removal still works. The desktop site is the reliable place for the AI split.`;
       }
-      await runDemucs();
-      return "The AI split finished — vocals, drums, bass and everything else are separate rows now.";
+      return (await runDemucs())
+        ? "The AI split finished — vocals, drums, bass and everything else are separate rows now."
+        : "The AI split did not finish — it was paused or failed; the page says which. Finished parts are kept.";
     },
 
     transcribe: async (src) => {
       if (!audio) return "Load a song first.";
       if (busy) return "Something else is already running.";
-      if (src) setSource(src as Source);
-      await runTranscribe();
-      return `Written out for ${INSTRUMENTS[settings.instrument].label}.`;
+      let from: Source | undefined;
+      if (src) {
+        const wanted = src.toLowerCase().trim();
+        const have: string[] = !stems ? [] : stemMode === "ai" ? [...STEM_NAMES] : ["vocals", "other"];
+        if (wanted !== "mix" && !have.includes(wanted)) {
+          return stems
+            ? `There is no "${src}" source here. Available: mix${have.length ? `, ${have.join(", ")}` : ""}.`
+            : `There is no "${src}" source yet — split the song into stems first, or transcribe the full mix.`;
+        }
+        from = wanted as Source;
+        setSource(from);
+      }
+      return (await runTranscribe(from))
+        ? `Written out for ${INSTRUMENTS[settings.instrument].label}.`
+        : "That did not work — the reason is shown on the page.";
     },
 
     setTempo: (bpm) => { patch({ bpm: Math.max(30, Math.min(300, bpm)) }); return `Tempo set to ${Math.round(bpm)} BPM.`; },
@@ -1315,6 +1591,7 @@ export default function Studio() {
       if (!overdub) return "There is no take to mark yet — record one first.";
       if (!parts.length) return "Nothing to mark it against — transcribe the part first.";
       const r = await checkTake();
+      if (typeof r === "string") return r;
       if (!r) return "That take could not be marked.";
       return summarise(r) + (r.worstBars.length ? ` Weakest: ${r.worstBars.map((b) => `bar ${b.bar}`).join(", ")}.` : "");
     },
@@ -1322,7 +1599,7 @@ export default function Studio() {
       if (!report) return "Mark a take first and I will know which bars need the work.";
       if (!report.worstBars.length) return "No bar stands out as weak — take the speed up instead.";
       loopWorstBars();
-      return `Looping bars ${report.worstBars.map((b) => b.bar).join(", ")}.`;
+      return `Looping ${barsLabel(barsToLoop(report.worstBars))}.`;
     },
     arrange: (size) => {
       const target = parts.find((p) => p.source === "other") ?? parts[parts.length - 1];
@@ -1359,7 +1636,7 @@ export default function Studio() {
         label: t.label,
         level: Math.round((mix[t.id]?.gain ?? 1) * 100),
         muted: mix[t.id]?.muted ?? false,
-        soloed: soloed === t.id,
+        soloed: activeSolo === t.id,
       })),
       busy: busy?.label ?? null,
     }),
@@ -1389,12 +1666,21 @@ export default function Studio() {
       </header>
 
       {error && (
-        <p className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-red-500/40 bg-red-950/90 px-4 py-3 text-sm text-red-200 backdrop-blur">
-          {error}
+        <p
+          role="alert"
+          className="no-print sticky top-2 z-30 mb-5 flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-950/90 px-4 py-3 text-sm text-red-200 backdrop-blur"
+        >
+          <span className="min-w-0 flex-1">{error}</span>
+          <button className="btn shrink-0 py-0.5 text-xs" onClick={() => setError(null)} aria-label="Dismiss this message">
+            Dismiss
+          </button>
         </p>
       )}
       {busy && (
-        <div className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[#1a1608]/95 px-4 py-3 text-sm shadow-lg backdrop-blur">
+        <div
+          role="status"
+          aria-live="polite"
+          className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[#1a1608]/95 px-4 py-3 text-sm shadow-lg backdrop-blur">
           <p className="flex items-center gap-2 text-[var(--color-accent)]">
             <Loader2 className="animate-spin" size={16} /> {busy.label}
             {cancelSplitRef.current && (
@@ -1417,12 +1703,14 @@ export default function Studio() {
           <span className="step-badge">1</span> Load a song
         </h2>
         <label
-          className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-line)] px-4 py-8 text-center hover:border-white/30"
+          className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-line)] px-4 py-8 text-center hover:border-white/30 focus-within:border-[var(--color-accent)] focus-within:outline focus-within:outline-2 focus-within:outline-[var(--color-accent)]"
+          aria-disabled={!!busy || undefined}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
+            // A split or transcription still running would land on the new song.
             const f = e.dataTransfer.files?.[0];
-            if (f) void loadFile(f);
+            if (f && !busy) void loadFile(f);
           }}
         >
           <Upload size={20} className="text-white/50" />
@@ -1431,8 +1719,9 @@ export default function Studio() {
           </span>
           <span className="text-xs text-white/40">Nothing is uploaded. The file never leaves your browser.</span>
           <input
-            type="file" accept=".mp3,.wav,.m4a,.flac,.ogg,.aac,audio/*" className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadFile(f); }}
+            type="file" accept=".mp3,.wav,.m4a,.flac,.ogg,.aac,audio/*" className="sr-only"
+            disabled={!!busy}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f && !busy) void loadFile(f); }}
           />
         </label>
         {wantedSong && !audio && (
@@ -1469,7 +1758,7 @@ export default function Studio() {
         stays up here so the work is still reachable.
       */}
       {!audio && (
-        <SaveBar buildChart={buildChart} chartId={chartId} onChartId={setChartId} />
+        <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />
       )}
 
       {/* Tuning up comes before everything, so this does not wait for a song. */}
@@ -1532,7 +1821,7 @@ export default function Studio() {
             </p>
             <Mixer
               tracks={mixTracks}
-              soloed={soloed}
+              soloed={activeSolo}
               onSolo={setSoloed}
               onDownload={exportTrack}
               onChange={(id, p) => setMix((m) => ({ ...m, [id]: { ...(m[id] ?? { gain: 1, muted: false }), ...p } }))}
@@ -1585,7 +1874,7 @@ export default function Studio() {
             />
             <div className="mb-4 mt-2 flex flex-wrap items-center gap-3">
               <p className="text-xs text-white/40">Drag across the waveform to loop a section.</p>
-              <button className="btn text-xs" onClick={trimToLoop} disabled={!loop}>
+              <button className="btn text-xs" onClick={trimToLoop} disabled={!loop || !!busy}>
                 Trim song to loop
               </button>
               <button className="btn text-xs" onClick={nameLoop} disabled={!loop}>
@@ -1685,6 +1974,7 @@ export default function Studio() {
               semitones={transport.semitones}
               rendering={transport.rendering}
               loop={loop}
+              counting={counting}
               onToggle={() => void startPlaying()}
               onSeek={(t) => void engineRef.current?.seek(t)}
               onRate={(r) => void engineRef.current?.setRate(r)}
@@ -1719,7 +2009,7 @@ export default function Studio() {
                 <span className="mb-1 block text-white/60">Write the next part for</span>
                 <select
                   className="w-full" value={settings.instrument}
-                  onChange={(e) => patch({ instrument: e.target.value as InstrumentId })}
+                  onChange={(e) => patch(instrumentPatch(e.target.value as InstrumentId))}
                 >
                   {Object.values(INSTRUMENTS).map((i) => (
                     <option key={i.id} value={i.id}>{i.label}</option>
@@ -1818,7 +2108,7 @@ export default function Studio() {
             </details>
 
             <div className="no-print mb-4 flex flex-wrap gap-2">
-              <button className="btn btn-primary" onClick={runTranscribe} disabled={!!busy}>
+              <button className="btn btn-primary" onClick={() => void runTranscribe()} disabled={!!busy}>
                 {busy?.label.startsWith("Listening") ? <Loader2 className="animate-spin" size={15} /> : <FileMusic size={15} />}
                 {busy?.label.startsWith("Listening")
                   ? `Transcribing… ${Math.round((busy.value ?? 0) * 100)}%`
@@ -1941,6 +2231,10 @@ export default function Studio() {
                       Click a note on the top staff to correct it — the model is a good first draft, not a transcriber.
                     </span>
                   )}
+                  <span className="flex items-center gap-1" role="group" aria-label="Select a beat without the mouse">
+                    <button className="btn py-0.5 text-xs" onClick={() => stepBeat(-1)} aria-label="Select the previous beat">‹ beat</button>
+                    <button className="btn py-0.5 text-xs" onClick={() => stepBeat(1)} aria-label="Select the next beat">beat ›</button>
+                  </span>
                   {undoStack.length > 0 && (
                     <button className="btn ml-auto text-xs" onClick={undoEdit}>
                       <Undo2 size={13} /> Undo
@@ -1958,7 +2252,7 @@ export default function Studio() {
             )}
           </section>
 
-          <SaveBar buildChart={buildChart} chartId={chartId} onChartId={setChartId} />
+          <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />
 
           {/* 5 — record */}
           <section className="panel no-print mb-5 p-5">
@@ -1966,9 +2260,7 @@ export default function Studio() {
               <span className="step-badge">5</span> Play or sing over it
             </h2>
             <div className="flex flex-wrap items-center gap-2">
-              {!recArmed ? (
-                <button className="btn" onClick={armMic}><Mic size={15} /> Enable microphone</button>
-              ) : recording ? (
+              {recording ? (
                 <button className="btn bg-red-500/20 text-red-200" onClick={stopRecording}>
                   <Square size={15} /> Stop
                 </button>
@@ -2052,7 +2344,7 @@ export default function Studio() {
                           {report.worstBars.map((b) => b.bar).join(", ")}
                         </span>
                         <button className="btn text-xs" onClick={loopWorstBars}>
-                          <Repeat size={13} /> Loop those and go again
+                          <Repeat size={13} /> Loop {barsLabel(barsToLoop(report.worstBars))} and go again
                         </button>
                       </div>
                     ) : (
@@ -2089,10 +2381,10 @@ export default function Studio() {
             <button
               className="btn btn-primary"
               onClick={() => void startPlaying()}
-              aria-label={transport.playing ? "Pause" : "Play"}
+              aria-label={counting ? "Cancel the count-in" : transport.playing ? "Pause" : "Play"}
             >
               {counting ? <Loader2 className="animate-spin" size={16} /> : transport.playing ? <Pause size={16} /> : <Play size={16} />}
-              {counting ? "Counting in…" : transport.playing ? "Pause" : "Play"}
+              {counting ? "Counting in… (stop)" : transport.playing ? "Pause" : "Play"}
             </button>
             <button
               className="btn"

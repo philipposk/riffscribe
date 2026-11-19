@@ -48,12 +48,6 @@ export function encodeWav(channels: Channels, sampleRate: number): Blob {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-export function audioBufferToWav(buf: AudioBuffer): Blob {
-  const chans: Channels = [];
-  for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
-  return encodeWav(chans, buf.sampleRate);
-}
-
 export function downloadBlob(blob: Blob, filename: string) {
   void deliverBlob(blob, filename);
 }

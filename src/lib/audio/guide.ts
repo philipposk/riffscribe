@@ -104,9 +104,21 @@ export function synthesizeGuide(notes: NoteEvent[], o: GuideOptions): [Float32Ar
 
     const total = Math.min(Math.floor((dur + v.release) * sr), out.length - start);
     const twoPiOverSr = (2 * Math.PI) / sr;
+    // Accumulated, not f·t: with vibrato f changes per sample, and sin(2π·f(t)·t)
+    // would swing further off pitch the longer the note is held.
+    let phase = 0;
 
     for (let i = 0; i < total; i++) {
       const t = i / sr;
+
+      // vibrato only after the note has settled — a stab should not wobble
+      let f = freq;
+      if (v.vibratoHz && t > v.vibratoOnset) {
+        const ramp = Math.min(1, (t - v.vibratoOnset) / 0.25);
+        f = freq * (1 + v.vibratoDepth * ramp * Math.sin(2 * Math.PI * v.vibratoHz * t));
+      }
+      const p = phase;
+      phase += twoPiOverSr * f;
 
       // ADSR, with an exponential fade for instruments that die away
       let env: number;
@@ -117,16 +129,8 @@ export function synthesizeGuide(notes: NoteEvent[], o: GuideOptions): [Float32Ar
       if (v.damping) env *= Math.exp(-v.damping * t);
       if (env <= 1e-4) continue;
 
-      // vibrato only after the note has settled — a stab should not wobble
-      let f = freq;
-      if (v.vibratoHz && t > v.vibratoOnset) {
-        const ramp = Math.min(1, (t - v.vibratoOnset) / 0.25);
-        f = freq * (1 + v.vibratoDepth * ramp * Math.sin(2 * Math.PI * v.vibratoHz * t));
-      }
-
       let s = 0;
-      const phase = twoPiOverSr * f * i;
-      for (let h = 0; h < partials.length; h++) s += partials[h] * Math.sin(phase * (h + 1));
+      for (let h = 0; h < partials.length; h++) s += partials[h] * Math.sin(p * (h + 1));
       if (v.noise) s += v.noise * (Math.random() * 2 - 1);
 
       out[start + i] += s * env * amp;
@@ -141,5 +145,6 @@ export function synthesizeGuide(notes: NoteEvent[], o: GuideOptions): [Float32Ar
     for (let i = 0; i < out.length; i++) out[i] *= g;
   }
 
-  return [out, Float32Array.from(out)];
+  // mono: both channels share one array (nothing writes to them afterwards)
+  return [out, out];
 }

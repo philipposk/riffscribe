@@ -115,6 +115,8 @@ create trigger riffscribe_charts_cap
   before insert on public.riffscribe_charts
   for each row execute function public.riffscribe_charts_cap();
 
+-- Replaced by supabase/migrations/0003_review_fixes.sql, which keeps this
+-- month's usage counter so deleting cannot reset the assistant allowance.
 -- Delete this person's Riffscribe data. The login itself is shared with other
 -- 6x7 apps, so it stays; so does any cross-app 'global' subscription.
 create or replace function public.riffscribe_delete_my_data()

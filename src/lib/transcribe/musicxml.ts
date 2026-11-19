@@ -47,6 +47,26 @@ export interface MusicXmlOptions {
   capo?: number;
   /** Staff name; defaults to the instrument's label. */
   partName?: string;
+  /** Clef for this staff, when it differs from the instrument's usual one. */
+  clef?: Instrument["clef"];
+}
+
+// Diatonic steps for an interval of 0-11 semitones, for <transpose>.
+const DIATONIC = [0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 6, 6];
+
+/**
+ * A transposing instrument's part is written above what it sounds. Without
+ * <transpose>, readers take the written notes as concert pitch and play the
+ * part out of key — a tenor sax a ninth too high.
+ */
+function transposeXml(inst: Instrument): string {
+  const ws = inst.writtenSemitones ?? 0;
+  if (ws <= 0) return "";
+  const octaves = Math.floor(ws / 12);
+  const rest = ws % 12;
+  return `<transpose><diatonic>${-DIATONIC[rest]}</diatonic><chromatic>${-rest}</chromatic>${
+    octaves ? `<octave-change>${-octaves}</octave-change>` : ""
+  }</transpose>`;
 }
 
 function measuresFor(sheet: Sheet, o: MusicXmlOptions): string {
@@ -69,12 +89,13 @@ function measuresFor(sheet: Sheet, o: MusicXmlOptions): string {
         .join("")}${o.capo ? `<capo>${o.capo}</capo>` : ""}</staff-details>`
     : "";
 
+  const clef = o.clef ?? inst.clef;
   const clefXml =
-    inst.clef === "bass"
+    clef === "bass"
       ? `<clef><sign>F</sign><line>4</line>${inst.transposeOctaves ? `<clef-octave-change>-1</clef-octave-change>` : ""}</clef>`
-      : inst.clef === "alto"
+      : clef === "alto"
         ? `<clef><sign>C</sign><line>3</line></clef>`
-        : inst.clef === "tenor"
+        : clef === "tenor"
           ? `<clef><sign>C</sign><line>4</line></clef>`
           : `<clef><sign>G</sign><line>2</line>${inst.transposeOctaves ? `<clef-octave-change>-1</clef-octave-change>` : ""}</clef>`;
 
@@ -82,7 +103,7 @@ function measuresFor(sheet: Sheet, o: MusicXmlOptions): string {
     .map((bar, bi) => {
       const attrs =
         bi === 0
-          ? `<attributes><divisions>${divisionsPerQuarter}</divisions><key><fifths>${o.fifths ?? 0}</fifths></key><time><beats>${beats}</beats><beat-type>${beatType}</beat-type></time>${clefXml}${staffDetails}</attributes>` +
+          ? `<attributes><divisions>${divisionsPerQuarter}</divisions><key><fifths>${o.fifths ?? 0}</fifths></key><time><beats>${beats}</beats><beat-type>${beatType}</beat-type></time>${clefXml}${staffDetails}${transposeXml(inst)}</attributes>` +
             `<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>${Math.round(sheet.bpm)}</per-minute></metronome></direction-type><sound tempo="${Math.round(sheet.bpm)}"/></direction>`
           : "";
 
@@ -107,7 +128,7 @@ function measuresFor(sheet: Sheet, o: MusicXmlOptions): string {
                   : "";
               const notations =
                 tiedNotations || tech ? `<notations>${tiedNotations}${tech}</notations>` : "";
-              return `<note>${ni ? "<chord/>" : ""}${pitchXml(n.midi, o.fifths ?? 0)}${ties}<duration>${dur}</duration><type>${type}</type>${dot}${notations}</note>`;
+              return `<note>${ni ? "<chord/>" : ""}${pitchXml(n.midi, o.fifths ?? 0)}<duration>${dur}</duration>${ties}<type>${type}</type>${dot}${notations}</note>`;
             })
             .join("");
         })

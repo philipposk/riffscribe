@@ -7,7 +7,8 @@
     "dev": "npm run assets && next dev",
     "build": "npm run assets && next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "tsc --noEmit",
+    "test": "for f in scripts/verify-*.mjs; do node --experimental-strip-types \"$f\" || exit 1; done",
     "postinstall": "node scripts/copy-assets.mjs",
     "fetch-server": "node local/fetch-server.mjs"
   },

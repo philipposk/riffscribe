@@ -62,7 +62,8 @@ export default function Privacy() {
         <H>Deleting</H>
         <p>Delete a song from <a className="underline" href="/songs">My songs</a>, or everything from your{" "}
           <a className="underline" href="/account">account page</a>. The sign-in itself is shared with other 6x7 apps;
-          email us to remove it too.</p>
+          email us to remove it too. This month&rsquo;s count of assistant requests is kept until the month ends, so
+          deleting cannot reset your plan&rsquo;s allowance.</p>
 
         <H>Your rights</H>
         <p>Under GDPR and similar laws you can access, correct, export or delete your data, and object to processing.
