@@ -40,7 +40,8 @@ export default function Transport(p: Props) {
               <button
                 key={s}
                 onClick={() => { setRate(s); p.onRate(s); }}
-                className={`rounded px-1.5 py-0.5 text-xs ${
+                aria-pressed={Math.abs(rate - s) < 0.005}
+                className={`min-h-6 min-w-6 rounded px-1.5 py-0.5 text-xs ${
                   Math.abs(rate - s) < 0.005 ? "bg-[var(--color-accent)] text-black" : "bg-white/5 text-white/60 hover:bg-white/10"
                 }`}
               >
@@ -48,7 +49,7 @@ export default function Transport(p: Props) {
               </button>
             ))}
           </span>
-          <span className="mt-1 block text-xs text-white/40">Pitch stays exactly where it was.</span>
+          <span className="mt-1 block text-xs text-faint">Pitch stays exactly where it was.</span>
         </label>
 
         <label className="block">
@@ -64,7 +65,7 @@ export default function Transport(p: Props) {
             aria-valuetext={`${semitones > 0 ? "plus " : ""}${semitones} semitones`}
             className="w-full"
           />
-          <span className="mt-1 block text-xs text-white/40">
+          <span className="mt-1 block text-xs text-faint">
             Move the song into your range — the tempo does not change.
           </span>
         </label>

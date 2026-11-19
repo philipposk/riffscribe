@@ -96,16 +96,16 @@ export default function Songs() {
       {rows && rows.length > 0 && (
         <label className="panel mb-3 flex max-w-md items-center gap-2 px-3 py-2 text-sm focus-within:outline focus-within:outline-2 focus-within:outline-[var(--color-accent)]">
           <span className="sr-only">Search your songs</span>
-          <Search className="shrink-0 text-white/35" size={14} />
+          <Search className="shrink-0 text-faint" size={14} />
           <input
             type="search"
             value={query}
             onChange={(e) => search(e.target.value)}
             placeholder="Search your songs"
             aria-label="Search your songs"
-            className="min-w-0 flex-1 bg-transparent placeholder:text-white/30"
+            className="min-w-0 flex-1 bg-transparent placeholder:text-faint"
           />
-          {query.trim() && <span className="shrink-0 text-xs text-white/30">{shown.length} of {rows.length}</span>}
+          {query.trim() && <span className="shrink-0 text-xs text-faint">{shown.length} of {rows.length}</span>}
         </label>
       )}
       {!rows ? (
@@ -119,11 +119,11 @@ export default function Songs() {
           <li className="sr-only">Loading…</li>
         </ul>
       ) : rows.length === 0 ? (
-        <p className="text-sm text-white/45">
+        <p className="text-sm text-faint">
           Nothing saved yet. Transcribe a part in the <a className="underline" href="/studio">studio</a> and press Save.
         </p>
       ) : shown.length === 0 ? (
-        <p className="text-sm text-white/45">
+        <p className="text-sm text-faint">
           No saved song matches “{query.trim()}”.{" "}
           <button className="underline" onClick={() => search("")}>Show them all</button>
         </p>
@@ -131,15 +131,15 @@ export default function Songs() {
         <ul className="panel divide-y divide-white/5">
           {shown.map((r) => (
             <li key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
-              <button className="min-w-0 flex-1 truncate text-left hover:text-[var(--color-accent)]" onClick={() => void open(r)}>
+              <button className="min-h-6 min-w-0 flex-1 truncate text-left hover:text-[var(--color-accent)]" onClick={() => void open(r)}>
                 {r.title}
               </button>
               {r.shared && <span className="text-[10px] uppercase tracking-wide text-emerald-300/70">shared</span>}
-              <span className="text-xs text-white/30">{new Date(r.updated_at).toLocaleDateString()}</span>
-              {busy === r.id && <Loader2 className="animate-spin text-white/40" size={14} />}
+              <span className="text-xs text-faint">{new Date(r.updated_at).toLocaleDateString()}</span>
+              {busy === r.id && <Loader2 className="animate-spin text-faint" size={14} />}
               {r.shared && (
                 <button
-                  className="text-white/35 hover:text-white"
+                  className="grid min-h-6 min-w-6 place-items-center text-faint hover:text-white"
                   aria-label="Copy link"
                   onClick={async () => {
                     await navigator.clipboard.writeText(shareLink(r.id));
@@ -147,26 +147,26 @@ export default function Songs() {
                     setTimeout(() => setCopied(null), 2000);
                   }}
                 >
-                  {copied === r.id ? <Check size={14} className="text-emerald-300" /> : <Link2 size={14} />}
+                  {copied === r.id ? <Check size={14} className="text-emerald-300" aria-hidden /> : <Link2 size={14} aria-hidden />}
                 </button>
               )}
               <button
-                className={r.shared ? "text-emerald-300/70 hover:text-white" : "text-white/35 hover:text-white"}
+                className={`grid min-h-6 min-w-6 place-items-center ${r.shared ? "text-emerald-300/70 hover:text-white" : "text-faint hover:text-white"}`}
                 aria-label={r.shared ? "Stop sharing" : "Share with a link"}
                 title={r.shared ? "Stop sharing" : "Share with a link"}
                 onClick={() => void run(r.id, async () => { await setShared(r.id, !r.shared); await refresh(); })}
               >
-                <Share2 size={14} />
+                <Share2 size={14} aria-hidden />
               </button>
               <button
-                className="text-white/35 hover:text-red-300"
+                className="grid min-h-6 min-w-6 place-items-center text-faint hover:text-red-300"
                 aria-label={`Delete ${r.title}`}
                 onClick={() => {
                   if (!confirm(`Delete "${r.title}"? This cannot be undone.`)) return;
                   void run(r.id, async () => { await deleteChart(r.id); await refresh(); accountChanged(); });
                 }}
               >
-                <Trash2 size={14} />
+                <Trash2 size={14} aria-hidden />
               </button>
             </li>
           ))}

@@ -119,7 +119,7 @@ export default function PartsPanel({
             <span className="mb-1 block text-white/60">Note sensitivity {settings.onsetThreshold.toFixed(2)}</span>
             <input type="range" min={0.1} max={0.9} step={0.05} value={settings.onsetThreshold}
               onChange={(e) => patch({ onsetThreshold: Number(e.target.value) })} className="w-full" />
-            <span className="text-xs text-white/35">Lower finds more notes (and more mistakes).</span>
+            <span className="text-xs text-faint">Lower finds more notes (and more mistakes).</span>
           </label>
           <label>
             <span className="mb-1 block text-white/60">Sustain {settings.frameThreshold.toFixed(2)}</span>
@@ -140,7 +140,7 @@ export default function PartsPanel({
             <span className="mb-1 block text-white/60">
               Write it in
               {settings.transposeSemitones !== 0 && (
-                <span className="ml-1 text-white/35">
+                <span className="ml-1 text-faint">
                   ({settings.transposeSemitones > 0 ? "+" : ""}{settings.transposeSemitones} st)
                 </span>
               )}
@@ -195,7 +195,7 @@ export default function PartsPanel({
         </label>
       </div>
       {tex && playAlong && (
-        <p className="no-print mb-3 text-xs text-white/40">
+        <p className="no-print mb-3 text-xs text-faint">
           The score scrolls itself and highlights the beat being played, so you can leave your
           hands on the instrument. Set a loop on the waveform above to drill one phrase.
         </p>
@@ -210,6 +210,7 @@ export default function PartsPanel({
             >
               <select
                 className="text-sm"
+                aria-label="Instrument for this part"
                 value={part.instrument}
                 onChange={(e) => setPartInstrument(part.id, e.target.value as InstrumentId)}
               >
@@ -217,7 +218,7 @@ export default function PartsPanel({
                   <option key={i.id} value={i.id}>{i.label}</option>
                 ))}
               </select>
-              <span className="text-xs text-white/45">
+              <span className="text-xs text-faint">
                 {part.notes.length} notes · {part.keyName} · from{" "}
                 {part.source === "mix" ? "the full mix" : part.source}
               </span>
@@ -244,7 +245,7 @@ export default function PartsPanel({
               </span>
             </div>
           ))}
-          <label className="flex items-center gap-2 text-xs text-white/45">
+          <label className="flex items-center gap-2 text-xs text-faint">
             Ensemble size
             <select
               className="text-xs"
@@ -264,7 +265,7 @@ export default function PartsPanel({
         </div>
       )}
 
-      <div id="studio-score" tabIndex={-1} className="scroll-mt-24 focus:outline-none">
+      <div id="studio-score" tabIndex={-1} className="scroll-mt-24">
         {tex ? (
           <>
             <ScoreView
@@ -300,7 +301,7 @@ export default function PartsPanel({
                   </button>
                 </>
               ) : (
-                <span className="text-white/35">
+                <span className="text-faint">
                   Click a note on the top staff to correct it — the model is a good first draft, not a transcriber.
                 </span>
               )}
@@ -316,7 +317,7 @@ export default function PartsPanel({
             </div>
           </>
         ) : (
-          <p className="text-sm text-white/40">
+          <p className="text-sm text-faint">
             Run the transcriber to see notation and tablature here. Transcribe as many parts as you
             like — pick a stem, choose an instrument, and each one is added as another staff on the
             same score. One instrument at a time is where this model is strongest, so split the stems

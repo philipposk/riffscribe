@@ -98,13 +98,13 @@ export default function SharedChart({ id }: { id: string }) {
         </button>
       </div>
 
-      <p className="no-print mt-3 text-xs text-white/40">
+      <p className="no-print mt-3 text-xs text-faint">
         The notes travelled; the recording did not. To play along, open this in the studio and load
         your own copy of the song — it never leaves your machine.
       </p>
 
       {chart.sections.length > 0 && (
-        <p className="no-print mt-3 text-xs text-white/40">
+        <p className="no-print mt-3 text-xs text-faint">
           Sections: {chart.sections.map((s) => s.name).join(" · ")}
         </p>
       )}

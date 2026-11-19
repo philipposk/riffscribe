@@ -1,6 +1,6 @@
 # Riffscribe: rules for the coding agent
 
-Riffscribe turns a song or a recording into a chart, a score and play-along practice tracks, in the browser. Next.js app, Supabase for accounts and saved charts, Stripe for billing. Read `HANDOFF.md` first: it explains how the audio engine works and why.
+Riffscribe turns a song or a recording into a chart, a score and play-along practice tracks, in the browser, and can replace a singer with a cello. Next.js app, Supabase for accounts and saved charts, Stripe for billing, Claude (with OpenRouter as the fallback) for the assistant. Read `HANDOFF.md` first: it explains how the audio engine works and why. The map is `docs/architecture.md`; the voice-to-cello pipeline is `docs/voice-to-cello.md`; the evaluation harness is `docs/eval-cello.md`.
 
 ## Always
 
@@ -8,11 +8,12 @@ Riffscribe turns a song or a recording into a chart, a score and play-along prac
 - Run these before saying a task is done, and say what you did not run:
   - `npm run typecheck`
   - `npm run lint`
-  - `npm test` (the `scripts/verify-*.mjs` scripts and the cello eval in `--ci` mode)
+  - `npm test` (the `scripts/verify-*.mjs` scripts and the cello eval in `--ci` mode). When you change anything in the voice path (notes, contour, register, guide, split) also run `npm run eval:cello`, with `RIFFSCRIBE_EVAL_DATA` set when you can so the real-singing stages run; a number that gets worse fails the run, and a number that is meant to move needs its baseline updated in the same change
   - `npm run build` with `NEXT_PUBLIC_SUPABASE_URL=https://example.supabase.co NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder`
 - Add or update a verify script or an eval stage for every piece of logic. A verify script that cannot load its code must exit 1, never 0.
 - Keep each pull request at 150 changed files or fewer (CodeRabbit skips bigger ones). Ship a bigger change as a stack of pull requests.
 - Commits are normal prose. Never add a Claude co-author line or footer to a commit or a pull request.
+- The evaluation recordings (vocadito, MUSDB18-7s) stay outside the repo, in the folder `RIFFSCRIBE_EVAL_DATA` points at. MUSDB18-7s is non-commercial: never commit, copy or redistribute it. Only aggregate numbers go into `scripts/eval-cello/baselines/`.
 - Never open, print or search `.env.local` or any other `.env` file except `.env.example`. Never commit keys: `node scripts/secret-scan.mjs` must pass.
 - Never put a secret behind `NEXT_PUBLIC_`: that prefix publishes the value to every visitor.
 - Touch only the files your task needs. If a task seems to need another area's file, stop and say so.
@@ -24,6 +25,7 @@ Riffscribe turns a song or a recording into a chart, a score and play-along prac
 - Change the database only with a new numbered file in `supabase/migrations/`, idempotent (`if not exists`, `drop policy if exists` before `create policy`, `create or replace`). Never edit a migration that has already run.
 - Every table has row level security on, with one policy per action limited to the owner.
 - Code that reads a table or function a migration adds must still work when that migration has not run yet: treat the database error as "not admin", "default settings", "no stored customer", "skip logging".
+- Migrations `0003` to `0007` exist; a new one is `0008` or later. The order to apply them, and which must wait for a deploy, is `supabase/README.md`. A new migration must be compatible with all of them.
 
 ## Hard limits from the gotchas below (G1 is gotcha 1, and so on)
 
@@ -33,6 +35,9 @@ Riffscribe turns a song or a recording into a chart, a score and play-along prac
 - G6: no new cross-origin fetches.
 - G7: every SQL object is prefixed `riffscribe_`.
 - G11: leave the `lendStudio` effect and `AssistantHost` mounting exactly as they are.
+- G12: the guide is rendered at sounding pitch. Never pass the written key or a transpose to the guide synth.
+- G13: `@tensorflow/tfjs` is importable only in `scripts/eval-cello/lib/bp-node.cjs`.
+- Package bumps: no major upgrade of `next`, `react`, `@spotify/basic-pitch`, `@tensorflow/tfjs`, `onnxruntime-web`, `demucs-web`, `signalsmith-stretch` or `@coderline/alphatab` without testing the studio in a browser (audio, split, transcription, score).
 
 ## Hard-won gotchas — read before touching audio
 
@@ -72,9 +77,10 @@ code is "cleaned up" past them.
    beat sits on the page (`boundsLookup`) and positions the highlight from our
    playback clock.
 
-6. **COOP/COEP are set globally** (`credentialless`) so onnxruntime can use
-   SharedArrayBuffer for Demucs. Anything cross-origin the app fetches must be
-   CORS-clean.
+6. **COOP/COEP on the studio, CORS-clean everywhere.** `/studio` is served with
+   `same-origin` and `credentialless` so onnxruntime can use SharedArrayBuffer for
+   Demucs; other pages use `same-origin-allow-popups` so the Google sign-in popup
+   works. Anything cross-origin the studio fetches must be CORS-clean.
 
 7. **The 6x7 Supabase project is shared by ~18 apps in one `public` schema** —
    88 tables, and already two different functions named `touch_updated_at`.
@@ -105,3 +111,13 @@ code is "cleaned up" past them.
    widget import is async, so in development the first pass is always torn down
    before it resolves. Guarding with a "have I started?" ref blocks the second
    pass and the assistant then never appears while developing.
+
+12. **The guide is rendered at sounding pitch; the written key never reaches it.**
+   "Write it in" changes the notation only. If it also shifted the guide, the
+   cello would play in a different key from the backing stems, which is what
+   happened until the November 2026 review.
+
+13. **TensorFlow.js is importable in exactly one place:
+   `scripts/eval-cello/lib/bp-node.cjs`**, the Node copy of Basic Pitch the
+   evaluation harness uses. Nothing under `src/` imports it, and the pitch
+   contour code is plain arithmetic on peaks the worker returns for that reason.

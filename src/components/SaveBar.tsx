@@ -138,7 +138,7 @@ export default function SaveBar({ buildChart, chartId, onChartId }: Props) {
             )}
           </>
         )}
-        <Link className="ml-auto text-xs text-white/40 hover:text-white/80" href="/songs">
+        <Link className="ml-auto text-xs text-faint hover:text-white/80" href="/songs">
           My songs →
         </Link>
       </div>

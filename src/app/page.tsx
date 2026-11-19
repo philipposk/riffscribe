@@ -76,7 +76,7 @@ export default function Home() {
         <a className="btn btn-primary" href="/studio?demo=1">Try the demo song</a>
         <a className="btn" href="/studio">Open your own</a>
       </div>
-      <p className="mt-3 text-xs text-white/40">
+      <p className="mt-3 text-xs text-faint">
         Runs in your browser. Nothing is uploaded, and no account is needed to transcribe.
       </p>
 
@@ -111,7 +111,7 @@ export default function Home() {
         </p>
       </section>
 
-      <footer className="mt-12 text-xs text-white/30">
+      <footer className="mt-12 text-xs text-faint">
         Built on Basic Pitch (Spotify, Apache-2.0), Demucs (Meta, MIT), alphaTab (MPL-2.0) and
         Signalsmith Stretch (MIT).
       </footer>

@@ -1828,7 +1828,7 @@ export default function Studio() {
         </div>
       </header>
 
-      <main id="studio-main" tabIndex={-1} className="focus:outline-none">
+      <main id="studio-main" tabIndex={-1}>
         <StatusBanners {...{ error, setError, busy, cancelSplitRef, cancelJob }} />
 
         {/* 1 — load */}

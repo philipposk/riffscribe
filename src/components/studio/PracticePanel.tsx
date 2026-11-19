@@ -1,4 +1,4 @@
-import { Bookmark, Pencil } from "lucide-react";
+import { Bookmark, Pencil, X } from "lucide-react";
 
 import Waveform from "../Waveform";
 import {
@@ -45,7 +45,7 @@ export default function PracticePanel({
         onLoop={setLoop}
       />
       <div className="mb-4 mt-2 flex flex-wrap items-center gap-3">
-        <p className="text-xs text-white/40">Drag across the waveform to loop a section.</p>
+        <p className="text-xs text-faint">Drag across the waveform to loop a section.</p>
         <button className="btn text-xs" onClick={trimToLoop} disabled={!loop || !!busy}>
           Trim song to loop
         </button>
@@ -56,13 +56,14 @@ export default function PracticePanel({
 
       {sections.length > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <span className="text-xs text-white/40">Sections:</span>
+          <span className="text-xs text-faint">Sections:</span>
           {sections.map((s, i) => (
             <span key={`${s.from}-${s.to}-${i}`} className="flex items-center overflow-hidden rounded bg-white/5">
               {editingSection === i ? (
                 <input
                   autoFocus
-                  className="w-28 bg-transparent px-2 py-1 text-xs text-white outline-none"
+                  className="w-28 bg-transparent px-2 py-1 text-xs text-white focus-visible:outline-offset-[-2px]"
+                  aria-label={`Name for ${s.name}`}
                   defaultValue={s.name}
                   onBlur={(e) => {
                     const name = e.target.value.trim() || s.name;
@@ -76,18 +77,18 @@ export default function PracticePanel({
                 />
               ) : (
                 <button
-                  className="px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white"
+                  className="min-h-6 min-w-6 px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white"
                   onClick={() => { setLoop([s.from, s.to]); void engineRef.current?.seek(s.from); }}
                   onDoubleClick={() => setEditingSection(i)}
                   title={`${fmtTime(s.from)}–${fmtTime(s.to)} — double-click to rename`}
                 >
-                  {i < 9 && <span className="mr-1 text-white/30" aria-hidden>{i + 1}</span>}
+                  {i < 9 && <span className="mr-1 text-faint" aria-hidden>{i + 1}</span>}
                   {s.name}
                 </button>
               )}
               {editingSection !== i && (
                 <button
-                  className="px-1 py-1 text-white/30 hover:text-white/70"
+                  className="grid min-h-6 min-w-6 place-items-center px-1 py-1 text-faint hover:text-white/70"
                   onClick={() => setEditingSection(i)}
                   aria-label={`Rename ${s.name}`}
                   title="Rename"
@@ -96,11 +97,12 @@ export default function PracticePanel({
                 </button>
               )}
               <button
-                className="px-1.5 py-1 text-xs text-white/25 hover:text-white/70"
+                className="grid min-h-6 min-w-6 place-items-center px-1.5 py-1 text-xs text-faint hover:text-white/70"
                 onClick={() => setSections((l) => l.filter((_, j) => j !== i))}
                 aria-label={`Remove ${s.name}`}
+                title="Remove"
               >
-                ✕
+                <X size={12} aria-hidden />
               </button>
             </span>
           ))}
@@ -131,7 +133,7 @@ export default function PracticePanel({
           Speed trainer
           {trainer && (
             <>
-              <span className="text-white/35">+5% a pass, up to</span>
+              <span className="text-faint">+5% a pass, up to</span>
               <select
                 className="bg-transparent text-xs"
                 value={trainer.target}
@@ -146,8 +148,8 @@ export default function PracticePanel({
           )}
         </label>
 
-        {loop && <span className="text-xs text-white/35">{passes} {passes === 1 ? "pass" : "passes"}</span>}
-        {!loop && <span className="text-xs text-white/25">The trainer needs a loop.</span>}
+        {loop && <span className="text-xs text-faint">{passes} {passes === 1 ? "pass" : "passes"}</span>}
+        {!loop && <span className="text-xs text-faint">The trainer needs a loop.</span>}
       </div>
     </section>
   );

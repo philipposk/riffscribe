@@ -24,7 +24,7 @@ export default function SiteHeader() {
 export function SiteFooter() {
   const identity = companyLine();
   return (
-    <footer className="no-print mx-auto mt-16 max-w-5xl px-5 pb-10 text-xs text-white/30 sm:px-8">
+    <footer className="no-print mx-auto mt-16 max-w-5xl px-5 pb-10 text-xs text-faint sm:px-8">
       <div className="flex flex-wrap gap-x-5 gap-y-2">
         <Link className="hover:text-white/60" href="/pricing">Pricing</Link>
         <Link className="hover:text-white/60" href="/terms">Terms</Link>

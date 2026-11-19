@@ -75,7 +75,7 @@ export default function SplitPanel({
           </button>
         </p>
       )}
-      <p className="mb-4 text-xs text-white/45">
+      <p className="mb-4 text-xs text-faint">
         Instant is phase-based: no download, about a second, decent on most pop mixes.
         The AI split runs Demucs on your machine — first run pulls a ~180 MB model, then it is cached.
         Stems are kept on this device afterwards, so a song is only ever separated once.
@@ -90,7 +90,7 @@ export default function SplitPanel({
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <ExportMenu {...exportMenu} />
       </div>
-      <p className="mt-2 text-xs text-white/35">
+      <p className="mt-2 text-xs text-faint">
         The arrow on each row downloads that track on its own. Audio exports use your current
         practice speed and key, and your mix and take are kept on this device when you come back.
       </p>

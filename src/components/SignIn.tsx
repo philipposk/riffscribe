@@ -35,7 +35,7 @@ export default function SignIn({ stacked = false }: { stacked?: boolean }) {
             Continue with Google
           </button>
         </GoogleIdentityButton>
-        <span className="text-center text-xs text-white/30">or</span>
+        <span className="text-center text-xs text-faint">or</span>
         <label htmlFor="signin-email" className="sr-only">Email address</label>
         <input
           id="signin-email"

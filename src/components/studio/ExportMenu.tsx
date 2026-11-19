@@ -122,14 +122,14 @@ export default function ExportMenu({
                     key={f}
                     type="button"
                     aria-pressed={exportFormat === f}
-                    className={`rounded px-2 py-1 uppercase ${exportFormat === f ? "bg-white/15 text-white" : "text-white/55 hover:text-white/80"}`}
+                    className={`min-h-6 min-w-6 rounded px-2 py-1 uppercase ${exportFormat === f ? "bg-white/15 text-white" : "text-white/55 hover:text-white/80"}`}
                     onClick={() => setExportFormat(f)}
                   >
                     {f}
                   </button>
                 ))}
               </span>
-              <label htmlFor={loopId} className={`flex items-center gap-2 text-xs ${loop ? "text-white/70" : "text-white/35"}`}>
+              <label htmlFor={loopId} className={`flex items-center gap-2 text-xs ${loop ? "text-white/70" : "text-faint"}`}>
                 <input
                   id={loopId}
                   type="checkbox"

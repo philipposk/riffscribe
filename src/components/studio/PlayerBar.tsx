@@ -76,7 +76,7 @@ export default function PlayerBar({
         </button>
         <span className="shrink-0 font-mono text-xs tabular-nums text-white/70 sm:text-sm">
           {fmtTime(transport.time)}
-          <span className="text-white/30"> / {fmtTime(transport.duration)}</span>
+          <span className="text-faint"> / {fmtTime(transport.duration)}</span>
         </span>
 
         <SpeedKeyPopover rate={transport.rate} semitones={transport.semitones} onRate={onRate} onSemitones={onSemitones} />

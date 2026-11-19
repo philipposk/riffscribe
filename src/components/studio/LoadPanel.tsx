@@ -41,7 +41,7 @@ export default function LoadPanel({
         <span className="text-sm">
           {file ? <b>{file.name}</b> : "Drop an mp3, wav, m4a, flac or ogg here — or click to pick one"}
         </span>
-        <span className="text-xs text-white/40">Nothing is uploaded. The file never leaves your browser.</span>
+        <span className="text-xs text-faint">Nothing is uploaded. The file never leaves your browser.</span>
         <input
           type="file" accept=".mp3,.wav,.m4a,.flac,.ogg,.aac,audio/*" className="sr-only"
           disabled={!!busy}
@@ -49,7 +49,7 @@ export default function LoadPanel({
         />
       </label>
       {!file && (
-        <p className="mt-3 flex flex-wrap items-center gap-2 text-xs text-white/45">
+        <p className="mt-3 flex flex-wrap items-center gap-2 text-xs text-faint">
           <button type="button" className="btn py-1 text-xs" onClick={() => void loadDemo()} disabled={!!busy}>
             <Music size={14} aria-hidden /> Try the demo song
           </button>
@@ -67,6 +67,7 @@ export default function LoadPanel({
           <input
             type="text"
             className="min-w-0 flex-1"
+            aria-label="Link to a song"
             placeholder="…or paste a link (YouTube, SoundCloud, a direct mp3)"
             value={linkUrl}
             onChange={(e) => setLinkUrl(e.target.value)}
@@ -82,7 +83,7 @@ export default function LoadPanel({
         </div>
       )}
       {/* always in the page, so a screen reader hears each new line */}
-      <p role="status" aria-live="polite" className={log ? "mt-3 text-xs text-white/45" : "sr-only"}>{log}</p>
+      <p role="status" aria-live="polite" className={log ? "mt-3 text-xs text-faint" : "sr-only"}>{log}</p>
     </section>
   );
 }

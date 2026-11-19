@@ -46,7 +46,7 @@ function Table({ head, rows }: { head: string[]; rows: string[][] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
-        <thead className="text-white/40">
+        <thead className="text-faint">
           <tr>{head.map((h) => <th key={h} className="py-1 pr-4 align-bottom font-normal">{h}</th>)}</tr>
         </thead>
         <tbody>
@@ -69,7 +69,7 @@ export default function Privacy() {
       <SiteHeader />
       <main className="mx-auto max-w-3xl px-5 py-10 text-sm leading-relaxed text-white/65 sm:px-8">
         <h1 className="text-3xl font-semibold tracking-tight text-white">Privacy</h1>
-        <p className="mt-2 text-xs text-white/35">Last updated {UPDATED}</p>
+        <p className="mt-2 text-xs text-faint">Last updated {UPDATED}</p>
 
         <H>The short version</H>
         <p>Your audio never leaves your device. Transcription, stem splitting and slow-down all run inside your browser.

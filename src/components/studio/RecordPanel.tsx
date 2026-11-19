@@ -66,6 +66,7 @@ export default function RecordPanel({
             {parts.length > 1 && (
               <select
                 className="text-xs"
+                aria-label="Part to check against"
                 value={checkPart ?? parts[0].id}
                 onChange={(e) => setCheckPart(e.target.value)}
               >
@@ -81,7 +82,7 @@ export default function RecordPanel({
                 <b className={report.accuracy >= 0.9 ? "text-emerald-300" : report.accuracy >= 0.7 ? "text-[var(--color-accent)]" : "text-red-300"}>
                   {Math.round(report.accuracy * 100)}%
                 </b>
-                <span className="text-white/45"> clean</span>
+                <span className="text-faint"> clean</span>
               </span>
             )}
           </div>
@@ -129,7 +130,7 @@ export default function RecordPanel({
                 <p className="text-xs text-emerald-300/80">Nothing stands out as weak. Take the speed up.</p>
               )}
 
-              <p className="mt-3 text-xs text-white/35">
+              <p className="mt-3 text-xs text-faint">
                 Marked by transcribing your take and lining it up with the written part, so it
                 inherits the same blind spots as the transcription — treat a surprising result as
                 a question rather than a verdict.
@@ -139,7 +140,7 @@ export default function RecordPanel({
         </div>
       )}
 
-      <p className="mt-3 text-xs text-white/45">
+      <p className="mt-3 text-xs text-faint">
         Record at any speed — a take played at 60% is stretched back to full tempo without going
         chipmunk. Use headphones so the backing track does not bleed into the mic.
         {parts.length > 0 && " Mute your own part in the mixer first, so you are playing the line rather than doubling it."}

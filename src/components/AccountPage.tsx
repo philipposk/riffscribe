@@ -105,7 +105,7 @@ export default function AccountPage() {
         <div className="mb-4 flex items-baseline justify-between gap-3">
           <h2 className="text-base font-medium">{account ? planLabel(account.plan) : "…"} plan</h2>
           {account?.renews_at && !free && (
-            <span className="text-xs text-white/40">
+            <span className="text-xs text-faint">
               {account.cancel_at_period_end || account.status === "canceled" ? "ends" : "renews"}{" "}
               {new Date(account.renews_at).toLocaleDateString()}
             </span>
@@ -117,7 +117,7 @@ export default function AccountPage() {
             <Meter label={`Assistant requests (${account.period})`} used={account.assistant} limit={account.assistant_limit} />
           </div>
         )}
-        <p className="mb-4 text-xs text-white/40">
+        <p className="mb-4 text-xs text-faint">
           Transcribing, splitting stems and slowing down run on your own device, so they are unlimited on every plan.
         </p>
         <div className="flex flex-wrap gap-2">
@@ -145,7 +145,7 @@ export default function AccountPage() {
           <Link className="btn" href="/pricing">Compare plans</Link>
         </div>
         {account?.has_billing && !free && BILLING_LIVE && (
-          <div className="mt-3 text-xs text-white/45">
+          <div className="mt-3 text-xs text-faint">
             {!withdrawOpen ? (
               <button className="underline underline-offset-2 hover:text-white/70" onClick={() => setWithdrawOpen(true)}>
                 Withdraw within 14 days

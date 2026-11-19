@@ -147,7 +147,7 @@ export default function AdminSettings() {
                   );
                 })}
               </select>
-              <p className="mt-1 text-xs text-white/40">
+              <p className="mt-1 text-xs text-faint">
                 Fallback when Claude is unavailable: {data.models[task.fallback]?.label ?? task.fallback}
               </p>
             </div>
@@ -179,7 +179,7 @@ export default function AdminSettings() {
 
       <section className="panel p-5" aria-labelledby="usage-heading">
         <h2 id="usage-heading" className="mb-1 font-medium">Usage, last 30 days</h2>
-        <p className="mb-3 text-xs text-white/45">
+        <p className="mb-3 text-xs text-faint">
           {data.usageAvailable
             ? `${num(totals.requests)} requests, about ${usd(totals.cost)} at list prices.`
             : "No usage table yet (run supabase/migrations/0007_admin.sql)."}
@@ -187,7 +187,7 @@ export default function AdminSettings() {
         {data.usage.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[36rem] text-left text-xs tabular-nums">
-              <thead className="text-white/45">
+              <thead className="text-faint">
                 <tr>
                   <th scope="col" className="py-1 pr-3 font-normal">Day</th>
                   <th scope="col" className="py-1 pr-3 font-normal">Task</th>

@@ -19,7 +19,7 @@ export default function Terms() {
       <SiteHeader />
       <main className="mx-auto max-w-3xl px-5 py-10 text-sm leading-relaxed text-white/65 sm:px-8">
         <h1 className="text-3xl font-semibold tracking-tight text-white">Terms of service</h1>
-        <p className="mt-2 text-xs text-white/35">Last updated {UPDATED}</p>
+        <p className="mt-2 text-xs text-faint">Last updated {UPDATED}</p>
 
         <p className="mt-6">By using Riffscribe (&ldquo;the service&rdquo;) you agree to these terms.</p>
 

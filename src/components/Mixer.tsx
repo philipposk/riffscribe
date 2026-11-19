@@ -42,7 +42,7 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
             </button>
             <div className="w-20 shrink-0 sm:w-28">
               <div className="truncate text-sm font-medium" title={t.label}>{t.label}</div>
-              {t.hint && <div className="truncate text-[11px] text-white/40">{t.hint}</div>}
+              {t.hint && <div className="truncate text-[11px] text-faint">{t.hint}</div>}
             </div>
             <input
               type="range" min={0} max={1.5} step={0.01} value={t.gain}
@@ -65,7 +65,7 @@ export default function Mixer({ tracks, soloed, onChange, onSolo, onDownload }: 
               solo
             </button>
             <button
-              className="grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center text-white/45 hover:text-white"
+              className="grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center text-faint hover:text-white"
               onClick={() => onDownload(t.id)}
               title={`Download ${t.label} on its own`}
               aria-label={`Download ${t.label}`}
