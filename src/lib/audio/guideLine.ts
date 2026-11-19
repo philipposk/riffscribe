@@ -75,8 +75,22 @@ const TABLE_SIZE = 4096;
 /** The envelope is sampled at 1 kHz: fine enough for a 40 ms dip, cheap to interpolate. */
 const ENV_FPS = 1000;
 
+/** How far before / after a written start to look for the singer's loudness dip. */
+const DIP_BEFORE = 0.1;
+const DIP_AFTER = 0.03;
+
 const midiToHz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** Time of the quietest loudness frame in [from, to] (not before `floor`), or null when out of range. */
+function dipTime(level: number[], fps: number, floor: number, from: number, to: number): number | null {
+  const a = Math.max(0, Math.ceil(Math.max(floor, from) * fps));
+  const b = Math.min(level.length - 1, Math.floor(to * fps));
+  if (b < a) return null;
+  let best = a;
+  for (let j = a + 1; j <= b; j++) if ((level[j] ?? 0) < (level[best] ?? 0)) best = j;
+  return best / fps;
+}
 
 /** A note as the line renderer sees it: transposed, with its (possibly shortened) end. */
 export interface LineNote {
@@ -169,6 +183,17 @@ export function planLine(
             }
             const mean = count ? sum / count : 0;
             slur = min >= 0.5 * mean;
+            if (!slur) {
+              // The singer re-articulates: the new stroke starts at their loudness dip, not at the
+              // written start (which sits later, in the middle of the glide into the note). The
+              // glide is then played by the new stroke, following the singer's curve.
+              const b = dipTime(level, cfps, prev.start + 0.02, n.start - DIP_BEFORE, n.start + DIP_AFTER);
+              if (b !== null && b < n.end - 0.01) {
+                n.start = b;
+                prev.end = Math.max(prev.start + 0.01, Math.min(prev.end, b));
+                if (g) g.end = prev.end;
+              }
+            }
           }
         }
       }
@@ -317,6 +342,16 @@ function controlsFor(group: SlurGroup, v: Voice, o: LineOptions, useContour: boo
       }
       pitch[k] = p;
       dyn[k] = level ? NaN : 0.75 + 0.25 * clamp(n.amplitude * 1.6, 0.25, 1);
+    } else if (useContour && contour) {
+      // between notes and in the release: keep following the singer rather than holding the
+      // last pitch, so a fading stroke never sits off pitch under the next one
+      const c = contour.midi[Math.round(t * cfps)] ?? 0;
+      const next = notes[ni + 1];
+      if (
+        c > 0 &&
+        (Math.abs(c + shift - n.pitch) <= CONTOUR_TRUST_SEMITONES ||
+          (next && Math.abs(c + shift - next.pitch) <= CONTOUR_TRUST_SEMITONES))
+      ) pitch[k] = c + shift;
     }
     if (level && t <= group.end) {
       const lv = level[Math.round(t * cfps)] ?? 0;

@@ -21,7 +21,7 @@ import { useAccount } from "@/lib/store/account";
 import { findSong, lastSong, rememberSong } from "@/lib/store/lastSong";
 import { buildAssistantActions } from "./studio/assistantActions";
 import {
-  ENSEMBLES, STEM_LABEL, barsLabel, type Busy, type Source, type StemMode,
+  ENSEMBLES, STEM_LABEL, barsLabel, type Busy, type Channels, type GuideTrack, type Source, type StemMode,
 } from "./studio/constants";
 import * as exp from "./studio/exports";
 import LoadPanel from "./studio/LoadPanel";
@@ -30,6 +30,7 @@ import PlayerBar from "./studio/PlayerBar";
 import PracticePanel from "./studio/PracticePanel";
 import RecordPanel from "./studio/RecordPanel";
 import SplitPanel from "./studio/SplitPanel";
+import Recipes from "./studio/Recipes";
 import StatusBanners from "./studio/StatusBanners";
 
 import { fileToAudioBuffer, peaks as peaksOf, toMono, toStereo } from "@/lib/audio/decode";
@@ -42,15 +43,21 @@ import { MicRecorder, estimateLatency, foldLoopTake, placeTake, stretchOffline }
 import {
   DEMUCS_SAMPLE_RATE, SPLIT_PAUSED, partialKey, separateInstantAsync, separateResumable, type StemSet,
 } from "@/lib/audio/stems";
-import { synthesizeGuide } from "@/lib/audio/guide";
+import { BODY_SCALE } from "@/lib/audio/body";
+import { loudnessCurve } from "@/lib/audio/envelope";
+import { renderGuide } from "@/lib/audio/guideClient";
 import {
   forget, getScore, getSession, getStems, packTrack, putScore, putSession, putStems, requestPersistence,
   songKey, unpackTrack,
 } from "@/lib/store/cache";
 import { clearBlocks, doneBlocks, getBlock, putBlock } from "@/lib/store/partialSplit";
 import {
-  channelsToAudioBuffer, lastTranscriptionRanIn, toModelInput, transcribeAudio,
+  channelsToAudioBuffer, lastTranscriptionRanIn, toModelInput, transcribeAudio, transcribeAudioFull,
+  type TranscribeFullOptions,
 } from "@/lib/transcribe/basicPitch";
+import { trackContour } from "@/lib/transcribe/contour";
+import { cleanMonoLine } from "@/lib/transcribe/monoline";
+import { placeInRegister } from "@/lib/transcribe/register";
 import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { barsToLoop, barsToRange, chartInWindow, markTake, summarise, takeSpan, type TakeReport } from "@/lib/transcribe/compare";
 import { consolidateMonophonic } from "@/lib/transcribe/cleanup";
@@ -62,9 +69,35 @@ import {
 import { CHART_VERSION, loadChart, type Chart } from "@/lib/store/charts";
 import { extractMelody, fitToRange, playsSingleLine, splitVoices, spreadSeats } from "@/lib/transcribe/voices";
 import {
-  DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part,
-  type TranscriptionSettings,
+  DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type ContourPeaks, type InstrumentId, type NoteEvent, type Part,
+  type PitchContour, type TranscriptionSettings,
 } from "@/lib/types";
+
+/** Instruments that hold their notes (not plucked or struck): they play one line, and vocals are their first choice. */
+const melodic = (id: InstrumentId) => {
+  const t = INSTRUMENTS[id].timbre;
+  return t !== "plucked" && t !== "struck";
+};
+
+/** What a guide render depends on: the same key means the same audio. */
+function guideKey(part: Part, length: number): string {
+  let sum = 0;
+  for (const n of part.notes) sum += n.startTimeSeconds + n.pitchMidi + n.durationSeconds;
+  return `${part.id}|${part.instrument}|${part.notes.length}|${sum.toFixed(4)}|${part.contour?.midi.length ?? 0}|${length}`;
+}
+
+/** RMS of a recording over the frames where the singer's curve is voiced. */
+function voicedRms(mono: Float32Array, contour: PitchContour, sampleRate: number): number | null {
+  const hop = sampleRate / contour.fps;
+  let acc = 0, count = 0;
+  for (let j = 0; j < contour.midi.length; j++) {
+    if (!(contour.midi[j] > 0)) continue;
+    const a = Math.floor(j * hop), b = Math.min(mono.length, Math.floor((j + 1) * hop));
+    for (let i = a; i < b; i++) acc += mono[i] * mono[i];
+    count += Math.max(0, b - a);
+  }
+  return count ? Math.sqrt(acc / count) : null;
+}
 
 export default function Studio() {
   const [file, setFile] = useState<File | null>(null);
@@ -80,7 +113,12 @@ export default function Studio() {
 
   const [parts, setParts] = useState<Part[]>([]);
   const [settings, setSettings] = useState<TranscriptionSettings>(DEFAULT_SETTINGS);
+  /** For callbacks that outlive a render (loadFile): the settings as they are now. */
+  const settingsRef = useRef(settings);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
   const [ensembleSize, setEnsembleSize] = useState(4);
+  /** The instrument "Replace the voice" writes for. */
+  const [recipeInstrument, setRecipeInstrument] = useState<InstrumentId>("cello");
   const [source, setSource] = useState<Source>("mix");
   const [zoom, setZoom] = useState(1);
 
@@ -157,8 +195,10 @@ export default function Studio() {
   const recLoopRef = useRef<[number, number] | null>(null);
   /** The recording the engine's tracks were loaded from: a new one is a new song, not an edit. */
   const engineAudioRef = useRef<unknown>(null);
-  /** Synthesised guide per part object, so editing one part does not re-synthesise the others. */
-  const guideCache = useRef(new WeakMap<Part, { audio: unknown; track: { id: string; left: Float32Array; right: Float32Array } }>());
+  /** Synthesised guide per part id, with what it was rendered from, so editing one part does not re-render the others. */
+  const guideCache = useRef(new Map<string, { key: string; audio: unknown; track: GuideTrack }>());
+  /** The source stem's loudness while the singer sings, per part written from a voice: the guide's level. */
+  const targetRmsRef = useRef(new Map<string, number>());
   const partSeq = useRef(0);
 
   if (!engineRef.current && typeof window !== "undefined") engineRef.current = new PracticeEngine();
@@ -240,7 +280,7 @@ export default function Studio() {
       if (cached) {
         setStems(cached.stems as StemSet);
         setStemMode(cached.mode as StemMode);
-        setSource("other");
+        setSource(melodic(settingsRef.current.instrument) ? "vocals" : "other");
         setRestored(cached.mode === "ai" ? "Stems restored from this device — no need to split again." : "Instant split restored from this device.");
       }
       // Transcribed parts come back too, unless a saved chart just brought its own.
@@ -412,7 +452,8 @@ export default function Studio() {
       version: CHART_VERSION,
       title: file?.name.replace(/\.[^.]+$/, "") || "Untitled",
       settings,
-      parts,
+      // the singer's curve is device-only: heavy, and only meaningful next to the recording
+      parts: parts.map(({ contour: _contour, ...rest }) => rest),
       sections,
       loop,
       songKey: key ?? undefined,
@@ -513,24 +554,57 @@ export default function Studio() {
   /**
    * One synthesised line per part, so each can be heard on its own. At sounding pitch: the
    * "write it in" transposition only changes the notation, and the engine's transpose moves
-   * the guide together with the backing. Parts are immutable, so an unchanged part object
-   * reuses its earlier synthesis (and the engine then does not re-render it either).
+   * the guide together with the backing. Rendered off the page (guideClient); a part whose
+   * notes, instrument and curve are unchanged reuses its earlier render (and the engine then
+   * does not re-render it either).
    */
-  const guideTracks = useMemo(() => {
-    if (!audio) return [] as { id: string; left: Float32Array; right: Float32Array }[];
-    return parts.map((part) => {
-      const hit = guideCache.current.get(part);
-      if (hit && hit.audio === audio) return hit.track;
-      const [left, right] = synthesizeGuide(part.notes, {
+  const [rendered, setRendered] = useState<{ audio: unknown; tracks: GuideTrack[] }>({ audio: null, tracks: [] });
+  // renders made for another recording are never handed to the engine
+  const guideTracks = useMemo(
+    () => (audio && rendered.audio === audio ? rendered.tracks : ([] as GuideTrack[])),
+    [audio, rendered]
+  );
+  useEffect(() => {
+    if (!audio) return;
+    let superseded = false;
+    const cache = guideCache.current;
+    const live = new Set(parts.map((p) => p.id));
+    for (const id of [...cache.keys()]) if (!live.has(id)) cache.delete(id);
+    const length = audio.left.length;
+    const jobs = parts.map(async (part): Promise<GuideTrack> => {
+      const k = guideKey(part, length);
+      const hit = cache.get(part.id);
+      if (hit && hit.key === k && hit.audio === audio) return hit.track;
+      let targetRms = part.contour ? targetRmsRef.current.get(part.id) : undefined;
+      // a part brought back from this device: measure its source stem again, as when it was written
+      const stem = stems && part.source !== "mix" ? stems[part.source as keyof StemSet] : null;
+      if (part.contour && targetRms === undefined && stem && stem.left.length === length) {
+        targetRms = voicedRms(toMono(stem.left, stem.right), part.contour, DEMUCS_SAMPLE_RATE) ?? undefined;
+        if (targetRms) targetRmsRef.current.set(part.id, targetRms);
+      }
+      const [left, right] = await renderGuide(part.notes, {
         timbre: INSTRUMENTS[part.instrument].timbre,
         sampleRate: DEMUCS_SAMPLE_RATE,
-        lengthSamples: audio.left.length,
+        lengthSamples: length,
+        contour: part.contour ?? null,
+        bodyScale: (BODY_SCALE as Partial<Record<InstrumentId, number>>)[part.instrument] ?? 1,
+        ...(targetRms ? { targetRms } : {}),
       });
       const track = { id: `guide:${part.id}`, left, right };
-      guideCache.current.set(part, { audio, track });
+      // valid for its key whether or not this run is still current
+      cache.set(part.id, { key: k, audio, track });
       return track;
     });
-  }, [audio, parts]);
+    Promise.all(jobs).then(
+      (tracks) => { if (!superseded) setRendered({ audio, tracks }); },
+      (e) => {
+        if (superseded) return;
+        console.error("[riffscribe] guide render failed", e);
+        setError(e instanceof Error ? e.message : "could not play the part back");
+      }
+    );
+    return () => { superseded = true; };
+  }, [audio, parts, stems]);
 
   const trackList = useMemo<{ id: string; label: string; hint?: string }[]>(() => {
     const out: { id: string; label: string; hint?: string }[] = [];
@@ -542,11 +616,17 @@ export default function Studio() {
     } else if (audio) {
       out.push({ id: "original", ...STEM_LABEL.original });
     }
+    const seen = new Map<InstrumentId, number>();
     for (const part of parts) {
+      const nth = (seen.get(part.instrument) ?? 0) + 1;
+      seen.set(part.instrument, nth);
+      const line = part.source === "mix" ? "full mix" : STEM_LABEL[part.source]?.label.toLowerCase() ?? part.source;
       out.push({
         id: `guide:${part.id}`,
-        label: `${INSTRUMENTS[part.instrument].label}`,
-        hint: `written from ${part.source === "mix" ? "the full mix" : part.source}`,
+        label: `${INSTRUMENTS[part.instrument].label} · plays the ${line} line${nth > 1 ? ` (${nth})` : ""}`,
+        hint: part.contour
+          ? `follows the ${part.source === "vocals" ? "singer" : "recording"}'s pitch and loudness`
+          : "the transcription, played back",
       });
     }
     if (audio) out.push({ id: "click", ...STEM_LABEL.click });
@@ -737,7 +817,16 @@ export default function Studio() {
 
   /** Each job below answers whether it finished, so the assistant does not report success after a failure. */
   async function runInstant(): Promise<boolean> {
-    if (!audio) return false;
+    return !!(await splitInstant());
+  }
+
+  async function runDemucs(): Promise<boolean> {
+    return !!(await splitAi());
+  }
+
+  /** The instant split; resolves with the stems, or null when it failed or another song was loaded. */
+  async function splitInstant(): Promise<StemSet | null> {
+    if (!audio) return null;
     // Results are for this song as it is now: a song loaded meanwhile must not get them.
     const my = loadSeq.current;
     const trimmed = !!trimRef.current;
@@ -751,22 +840,23 @@ export default function Studio() {
       );
       // The stem cache is whole songs only: a trimmed clip's split would come back for the whole song.
       if (key && file && !trimmed) void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "instant");
-      if (my !== loadSeq.current) return false;
+      if (my !== loadSeq.current) return null;
       setStems(result);
       setStemMode("instant");
-      setSource("other");
+      setSource(melodic(settings.instrument) ? "vocals" : "other");
       setLog("Instant split done. For a cleaner result, run the AI split.");
-      return true;
+      return result;
     } catch (e) {
       if (my === loadSeq.current) setError(e instanceof Error ? e.message : "instant split failed");
-      return false;
+      return null;
     } finally {
       if (my === loadSeq.current) setBusy(null);
     }
   }
 
-  async function runDemucs(): Promise<boolean> {
-    if (!audio) return false;
+  /** The AI split; resolves with the stems, or null when it failed, was paused or another song was loaded. */
+  async function splitAi(): Promise<StemSet | null> {
+    if (!audio) return null;
     const my = loadSeq.current;
     const trimmed = !!trimRef.current;
     const current = () => my === loadSeq.current;
@@ -795,16 +885,16 @@ export default function Studio() {
         void requestPersistence();
         void putStems(key, file.name, result, DEMUCS_SAMPLE_RATE, "ai");
       }
-      if (!current()) return false;
+      if (!current()) return null;
       setStems(result);
       setStemMode("ai");
-      setSource("other");
+      setSource(melodic(settings.instrument) ? "vocals" : "other");
       setAiSplitCautionGb(null);
       setLog("Four stems ready. Mute what you don't want to hear.");
-      return true;
+      return result;
     } catch (e) {
-      if (!current()) return false;
-      if (e instanceof Error && e.message === SPLIT_PAUSED) return false;
+      if (!current()) return null;
+      if (e instanceof Error && e.message === SPLIT_PAUSED) return null;
       const detail = e instanceof Error && e.message ? e.message : "stem separation failed";
       const native = await isNativePlatform();
       setError(
@@ -812,7 +902,7 @@ export default function Studio() {
           ? `This phone could not finish the AI stem split. The desktop site is the reliable place for it. Instant vocal removal still works on this phone. (${detail})`
           : detail,
       );
-      return false;
+      return null;
     } finally {
       if (current()) {
         cancelSplitRef.current = null;
@@ -825,13 +915,18 @@ export default function Studio() {
    * AI split only. Instant vocal removal is never gated.
    * A phone that reports 4 GB or less gets a warning and can still continue.
    */
-  async function startAiSplit() {
+  async function startAiSplit(): Promise<void> {
+    await aiSplitChecked();
+  }
+
+  /** `startAiSplit`, resolving with the stems (null when the phone warning stopped it, or it failed). */
+  async function aiSplitChecked(): Promise<StemSet | null> {
     const mem = await nativeDeviceMemoryGb();
     if (mem != null && mem <= 4) {
       setAiSplitCautionGb(mem);
-      return;
+      return null;
     }
-    await runDemucs();
+    return splitAi();
   }
 
   function cancelJob() {
@@ -971,62 +1066,128 @@ export default function Studio() {
     const which = from ?? source;
     const src = sourceChannels(which);
     if (!src) return false;
-    const inst = INSTRUMENTS[settings.instrument];
+    return !!(await transcribeFrom(src, which, settings.instrument));
+  }
+
+  /**
+   * Write a part for `instrumentId` from one recording (a stem or the mix) and add it.
+   *
+   * Instruments that hold their notes get one note at a time (or whatever `monophonic` says).
+   * A single line is cleaned up (cleanMonoLine), the singer's pitch curve is tracked through it
+   * when there are model peaks, its loudness is read from the audio, and the whole line is moved
+   * by octaves onto the instrument (placeInRegister). Resolves with the new part, or null.
+   */
+  async function transcribeFrom(
+    channels: Channels,
+    sourceName: Source,
+    instrumentId: InstrumentId,
+    opts: { monophonic?: boolean } = {}
+  ): Promise<Part | null> {
+    const inst = INSTRUMENTS[instrumentId];
+    const my = loadSeq.current;
+    const current = () => my === loadSeq.current;
+    const mono = opts.monophonic ?? (melodic(instrumentId) || settings.monophonic);
+    const voice = sourceName === "vocals";
     setError(null);
     setBusy({ label: "Listening for notes…", value: 0 });
     const startedAt = performance.now();
-    const variant = `${which}:${settings.instrument}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}`;
-    try {
-      const store = workKey();
-      let found = store ? await getScore<NoteEvent[]>(store, variant) : null;
-      const fromCache = !!found;
-      if (!found) {
-        const buffer = channelsToAudioBuffer([src.left, src.right], DEMUCS_SAMPLE_RATE);
-        const mono22 = await toModelInput(buffer);
-        found = await transcribeAudio(mono22, {
+    const variant =
+      `${sourceName}:${instrumentId}:${settings.onsetThreshold}:${settings.frameThreshold}:${settings.minNoteLength}` +
+      `:v2:${voice ? "voice" : "inst"}`;
+    const detect: TranscribeFullOptions = voice
+      ? {
+          // a voice is detected over its own range, keeping short notes and weak ones
+          onsetThreshold: settings.onsetThreshold,
+          frameThreshold: settings.frameThreshold,
+          minNoteLength: Math.min(settings.minNoteLength, 7),
+          minMidi: 36,
+          maxMidi: 96,
+          melodiaTrick: false,
+          wantPeaks: true,
+        }
+      : {
           onsetThreshold: settings.onsetThreshold,
           frameThreshold: settings.frameThreshold,
           minNoteLength: settings.minNoteLength,
           minMidi: inst.range[0],
           maxMidi: inst.range[1],
-          onProgress: (p) => setBusy({ label: "Listening for notes…", value: p }),
+          wantPeaks: mono,
+        };
+    try {
+      const store = workKey();
+      let found = store ? await getScore<NoteEvent[]>(store, variant) : null;
+      let peaks = store && detect.wantPeaks ? await getScore<ContourPeaks>(store, `${variant}:peaks`) : null;
+      const fromCache = !!found && (!detect.wantPeaks || !!peaks);
+      if (!fromCache) {
+        const buffer = channelsToAudioBuffer([channels.left, channels.right], DEMUCS_SAMPLE_RATE);
+        const mono22 = await toModelInput(buffer);
+        const result = await transcribeAudioFull(mono22, {
+          ...detect,
+          onProgress: (p) => { if (current()) setBusy({ label: "Listening for notes…", value: p }); },
         });
-        if (store) void putScore(store, variant, found);
+        found = result.notes;
+        peaks = result.peaks;
+        if (store) {
+          void putScore(store, variant, found);
+          if (peaks) void putScore(store, `${variant}:peaks`, peaks);
+        }
       }
-      // A single line keeps one note at a time, chosen by loudness rather than
-      // height, with re-triggered held notes joined back up — done here so the
-      // sheet, the guide and the take marker all read the same notes.
-      const notes = settings.monophonic ? consolidateMonophonic(extractMelody(found)) : found;
+      if (!current() || !found) return null;
+
+      let notes: NoteEvent[] = found;
+      let contour: PitchContour | null = null;
+      let octaves: number | undefined;
+      let targetRms: number | null = null;
+      if (mono) {
+        // One note at a time, held notes held, each note's pitch read from its own bends.
+        // That beats re-reading it from the tracked curve on real singing (docs/eval-cello.md).
+        notes = cleanMonoLine(found);
+        const duration = channels.left.length / DEMUCS_SAMPLE_RATE;
+        contour = peaks && notes.length ? trackContour(peaks, notes, duration) : null;
+        if (contour) {
+          const down = toMono(channels.left, channels.right);
+          const level = loudnessCurve(down, DEMUCS_SAMPLE_RATE, contour.fps);
+          contour.level = level.slice(0, contour.midi.length);
+          targetRms = voicedRms(down, contour, DEMUCS_SAMPLE_RATE);
+        }
+        const placed = placeInRegister(notes, contour, instrumentId);
+        notes = placed.notes;
+        contour = placed.contour;
+        octaves = placed.octaves;
+      }
       const k = estimateKey(chromaFromNotes(notes));
-      addPart({
-        source: which,
-        instrument: settings.instrument,
+      const part = addPart({
+        source: sourceName,
+        instrument: instrumentId,
         notes,
         tonicPc: k.tonic,
         fifths: k.fifths,
         keyName: k.name,
         keyMode: k.mode,
+        ...(mono ? { monophonic: true, octaves } : {}),
+        ...(contour ? { contour } : {}),
       });
+      if (targetRms && targetRms > 0) targetRmsRef.current.set(part.id, targetRms);
       const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
       const how = fromCache
         ? "reused an earlier pass"
         : `took ${elapsed}s${lastTranscriptionRanIn() === "worker" ? "" : " (on the page — this browser would not run it in the background)"}`;
-      setLog(`${notes.length} notes • ${k.name} • ${settings.bpm} BPM • ${how}`);
-      return true;
+      const moved = octaves ? ` • moved ${Math.abs(octaves)} ${Math.abs(octaves) === 1 ? "octave" : "octaves"} ${octaves > 0 ? "up" : "down"}` : "";
+      setLog(`${notes.length} notes • ${k.name} • ${settings.bpm} BPM${moved} • ${how}`);
+      return part;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "transcription failed");
-      return false;
+      if (current()) setError(e instanceof Error ? e.message : "transcription failed");
+      return null;
     } finally {
-      setBusy(null);
+      if (current()) setBusy(null);
     }
   }
 
-  function addPart(p: Omit<Part, "id">) {
+  function addPart(p: Omit<Part, "id">): Part {
     resetEdits();
-    setParts((list) => [
-      ...list,
-      { ...p, id: `${p.instrument}-${p.source}-${list.length}-${partSeq.current++}` },
-    ]);
+    const part: Part = { ...p, id: `${p.instrument}-${p.source}-${parts.length}-${partSeq.current++}` };
+    setParts((list) => [...list, part]);
+    return part;
   }
 
   function removePart(id: string) {
@@ -1035,11 +1196,80 @@ export default function Studio() {
     setParts((list) => list.filter((p) => p.id !== id));
   }
 
-  /** Re-targeting a part also moves it by octaves into the new instrument's range, if it needs it. */
+  /**
+   * Re-targeting a part also moves it by octaves onto the new instrument, if it needs it. A
+   * single line moves as a whole into the instrument's singing register, its curve with it.
+   */
   function setPartInstrument(id: string, instrument: InstrumentId) {
     setParts((list) =>
-      list.map((p) => (p.id === id ? { ...p, instrument, notes: fitToRange(p.notes, INSTRUMENTS[instrument].range) } : p))
+      list.map((p) => {
+        if (p.id !== id) return p;
+        if (!p.monophonic) return { ...p, instrument, notes: fitToRange(p.notes, INSTRUMENTS[instrument].range) };
+        const placed = placeInRegister(p.notes, p.contour ?? null, instrument);
+        const { contour: _old, ...rest } = p;
+        return {
+          ...rest,
+          instrument,
+          notes: placed.notes,
+          ...(placed.contour ? { contour: placed.contour } : {}),
+          octaves: (p.octaves ?? 0) + placed.octaves,
+        };
+      })
     );
+  }
+
+  /** One note at a time for a part written with chords in it; undoable. */
+  function makeSingleLine(id: string) {
+    const part = parts.find((p) => p.id === id);
+    if (!part || part.monophonic) return;
+    rememberForUndo();
+    const notes = cleanMonoLine(part.notes);
+    setParts((list) => list.map((p) => (p.id === id ? { ...p, notes, monophonic: true } : p)));
+    setLog(`${INSTRUMENTS[part.instrument].label} now plays one note at a time (${notes.length} notes). Undo puts the chords back.`);
+  }
+
+  /**
+   * "Replace the voice": split the song (or use the split there is), write the vocal line for
+   * `instrumentId`, mute the singer and play the instrument in their place.
+   */
+  async function replaceVoice(instrumentId: InstrumentId, quality: "quick" | "clean") {
+    if (!audio || busy) return;
+    const wanted: StemMode = quality === "quick" ? "instant" : "ai";
+    const set = stems && (stemMode === wanted || stemMode === "ai")
+      ? stems
+      : quality === "quick" ? await splitInstant() : await aiSplitChecked();
+    if (!set) return;
+    const part = await transcribeFrom(set.vocals, "vocals", instrumentId, { monophonic: true });
+    if (!part) return;
+    const guide = `guide:${part.id}`;
+    setMix((m) => ({
+      ...m,
+      vocals: { gain: m.vocals?.gain ?? 1, muted: true },
+      [guide]: { gain: 0.85, muted: false },
+    }));
+    if (soloed) setSoloed(null);
+    setSource("vocals");
+    const label = INSTRUMENTS[instrumentId].label;
+    setLog(`${label} now plays the vocal line. Use "Hear the singer" to compare.`);
+  }
+
+  /** The newest part written from the vocal as a single line: the one "Hear the singer" swaps with. */
+  const voicePart = useMemo(
+    () => [...parts].reverse().find((p) => p.source === "vocals" && p.monophonic) ?? null,
+    [parts]
+  );
+  const singerAudible = !(mix.vocals?.muted ?? false);
+
+  /** Swap between hearing the singer and hearing the instrument that replaced them. */
+  function toggleSinger() {
+    if (!voicePart) return;
+    const guide = `guide:${voicePart.id}`;
+    const singer = !singerAudible;
+    setMix((m) => ({
+      ...m,
+      vocals: { gain: m.vocals?.gain ?? 1, muted: !singer },
+      [guide]: { gain: m[guide]?.gain ?? 0.85, muted: singer },
+    }));
   }
 
   /**
@@ -1214,6 +1444,10 @@ export default function Studio() {
   async function startRecording() {
     const engine = engineRef.current;
     if (!engine || !recorderRef.current) return;
+    if (countRef.current) return; // a count-in is already running
+    // Start the audio context inside the press: after the permission prompt and a count-in the
+    // gesture has expired and iOS Safari would leave it suspended.
+    engine.warm();
     try {
       await recorderRef.current.arm();
     } catch {
@@ -1221,6 +1455,23 @@ export default function Studio() {
       return;
     }
     setError(null);
+    // The same count-in as playback, so the take can come in on the beat.
+    if (countInBars > 0) {
+      const token = {};
+      countToken.current = token;
+      setCounting(true);
+      const c = countIn(settings.bpm, transport.rate, settings.timeSignature[0], countInBars);
+      countRef.current = c;
+      await c.done;
+      if (countToken.current !== token) {
+        // cancelled while counting: no take, and the microphone closes again
+        recorderRef.current.release();
+        return;
+      }
+      countToken.current = null;
+      countRef.current = null;
+      setCounting(false);
+    }
     try {
       await engine.play();
       recorderRef.current.start();
@@ -1359,6 +1610,18 @@ export default function Studio() {
       {/* 1 — load */}
       <LoadPanel {...{ busy, loadFile, file, wantedSong, audio, helperUp, linkUrl, setLinkUrl, loadFromLink, log }} />
 
+      {audio && (
+        <Recipes
+          busy={busy}
+          instrument={recipeInstrument}
+          setInstrument={setRecipeInstrument}
+          replaceVoice={replaceVoice}
+          replacedBy={voicePart ? INSTRUMENTS[voicePart.instrument].label : null}
+          singerAudible={singerAudible}
+          toggleSinger={toggleSinger}
+        />
+      )}
+
       {/*
         With a song loaded, saving sits under the notes it saves (after step 4).
         Without one — a chart opened on a device that lacks the recording — it
@@ -1392,6 +1655,7 @@ export default function Studio() {
             runTranscribe, busy, exportMidi, sheet, exportMusicXml, tex, exportTex, playAlong, setPlayAlong,
             setPartInstrument, arrangeForEnsemble, ensembleSize, removePart, setEnsembleSize, transport, timeline,
             setPickedBeat, pickedBeat, pickedNotes, nudgePicked, deletePicked, stepBeat, undoStack, undoEdit,
+            makeSingleLine,
           }} />
 
           <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />

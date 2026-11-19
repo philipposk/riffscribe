@@ -1,19 +1,19 @@
 {
   "stage": "guide-line",
   "metrics": {
-    "pitchMedianCents": 4.2,
-    "pitchP95Cents": 27.8,
-    "pitchVoicedFrames": 743,
-    "levelCorrelation": 0.91,
+    "pitchMedianCents": 3.4,
+    "pitchP95Cents": 10.9,
+    "pitchVoicedFrames": 747,
+    "levelCorrelation": 0.921,
     "levelErrorDb": 0.04,
     "slurGroups": 1,
     "onsetsInsideSlurs": 0,
     "reattacksFound": 8,
     "strokes": 8,
     "deterministic": 1,
-    "peak": 0.374,
+    "peak": 0.357,
     "centroidHzA2": 1663,
     "harmonicsWithin40dB": 24,
-    "renderMs4min": 781
+    "renderMs4min": 1087
   }
 }

@@ -49,6 +49,8 @@ export interface PartsPanelProps {
   stepBeat: (dir: 1 | -1) => void;
   undoStack: Part[][];
   undoEdit: () => void;
+  /** Reduce a part to one note at a time (undoable). */
+  makeSingleLine: (id: string) => void;
 }
 
 export default function PartsPanel({
@@ -56,6 +58,7 @@ export default function PartsPanel({
   runTranscribe, busy, exportMidi, sheet, exportMusicXml, tex, exportTex, playAlong, setPlayAlong,
   setPartInstrument, arrangeForEnsemble, ensembleSize, removePart, setEnsembleSize, transport, timeline,
   setPickedBeat, pickedBeat, pickedNotes, nudgePicked, deletePicked, stepBeat, undoStack, undoEdit,
+  makeSingleLine,
 }: PartsPanelProps) {
   return (
     <section className="panel mb-5 p-5">
@@ -166,7 +169,7 @@ export default function PartsPanel({
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={settings.monophonic}
               onChange={(e) => patch({ monophonic: e.target.checked })} />
-            <span className="text-white/70">Single melody line only</span>
+            <span className="text-white/70">New parts: single melody line</span>
           </label>
           <label>
             <span className="mb-1 block text-white/60">Bar start offset {settings.offsetSeconds.toFixed(2)}s</span>
@@ -233,6 +236,15 @@ export default function PartsPanel({
                 {part.source === "mix" ? "the full mix" : part.source}
               </span>
               <span className="ml-auto flex items-center gap-2">
+                {!part.monophonic && (
+                  <button
+                    className="btn py-1 text-xs"
+                    onClick={() => makeSingleLine(part.id)}
+                    title="Keep one note at a time: the melody, with held notes held"
+                  >
+                    Make single line
+                  </button>
+                )}
                 <button
                   className="btn py-1 text-xs"
                   onClick={() => arrangeForEnsemble(part.id, ensembleSize)}
