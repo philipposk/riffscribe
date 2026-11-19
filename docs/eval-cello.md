@@ -65,6 +65,31 @@ that was written.
 - `lateMs_vibN`: how late, on average, the matched notes start (milliseconds).
 - `offPitch_vibN`: notes whose pitch is not in the sung melody at all.
 
+Where a written note "starts" in the synthetic line: every note after the first is reached by an
+80 ms glide from the one before, and its written start is the **middle of that glide**, not its
+beginning. Until the midpoint the voice is still nearer the old pitch (it is the old note bending);
+from there on it is nearer the new one, which is where a listener hears the change and where any
+nearest-semitone transcription switches. It also matches how real singing is annotated: on
+vocadito, Basic Pitch's onsets land 6-8 ms after the human-marked ones, and on this fixture they
+land about 4 ms after the glide midpoint, but 40-60 ms after the glide's start. Until 2026-11 the
+truth used the glide's start, which made a correct transcription look 40-60 ms late and failed
+notes that were right (note F1 0.75 on a plain line). Changing it moved these baselines: `notes-raw`
+and `monoline` F1 and lateness (better: the same notes, measured against the right times),
+`contour` (better: the per-note tracking windows now split each glide at its midpoint), and
+`guide-line` `pitchP95Cents` (worse, 11.6 to 27.8 cents: the guide now gets notes that start 40 ms
+after the singer's loudness dip, the way transcribed notes really arrive, and its re-attack at
+each join is briefly off pitch: a guide issue, left for the guide work). `roundtrip-score` builds its own sung melody and
+still uses the glide's start.
+
+**`monoline`** (slow) runs the vocal path's note settings and then the single-line clean-up, the
+way the app runs it when it has the model's pitch peaks: clean once, follow the singer's curve
+through that line (`trackContour`), clean again with that curve so each note takes its pitch from
+it. Gated: fragmentation <= 1.15 and no off-melody note at 40 cents of vibrato, fragmentation
+<= 1.25 and at most one off-melody note at 80 cents, F1 >= 0.85 on a plain line. `_nocontour`
+keys are the clean-up from the notes' own pitch bends only, `_highest` the "highest" strategy.
+With real data it also scores vocadito: note F1, fragmentation, the share of notes sitting on an
+annotated note at a different pitch (`offPitch`), and lateness, raw and after each clean-up.
+
 **`musdb-split`** (slow, real data) and **`vocadito-notes`** (slow, real data) are described under
 "Real data" below.
 

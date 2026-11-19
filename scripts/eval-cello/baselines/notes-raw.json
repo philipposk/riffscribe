@@ -2,16 +2,16 @@
   "stage": "notes-raw",
   "metrics": {
     "fragmentation_vib1": 1,
-    "f1_vib1": 0.75,
-    "lateMs_vib1": 32,
+    "f1_vib1": 1,
+    "lateMs_vib1": 4,
     "offPitch_vib1": 0,
     "fragmentation_vib40": 2,
-    "f1_vib40": 0.5,
-    "lateMs_vib40": 33.9,
+    "f1_vib40": 0.667,
+    "lateMs_vib40": 5.4,
     "offPitch_vib40": 0,
     "fragmentation_vib80": 3.75,
-    "f1_vib80": 0.263,
-    "lateMs_vib80": 21.5,
+    "f1_vib80": 0.421,
+    "lateMs_vib80": 1.1,
     "offPitch_vib80": 12
   }
 }

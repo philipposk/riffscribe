@@ -15,7 +15,8 @@ const midiToHz = (m) => 440 * Math.pow(2, (m - 69) / 12);
  * A voice-like line: harmonics shaped by three formant bumps, a glide between notes, vibrato
  * that fades in, a slow loudness swell.
  *
- * Returns the audio, the notes as written, the true pitch per 10 ms (fractional MIDI, 0 where
+ * Returns the audio, the notes as written (each starting at the middle of the glide into it), the
+ * true pitch per 10 ms (fractional MIDI, 0 where
  * nothing sounds) and the true loudness per 10 ms.
  *
  * `seed` is accepted so every fixture takes the same options; the voice itself has no noise.
@@ -74,10 +75,16 @@ export function sungLine({ sr, vibCents, vibHz = 5.5, glide = 0.08, transpose = 
     }
     audio[i] = s * levelAt(t, k);
   }
-  const truthNotes = starts.map((s, k) => ({
+  // A note after the first is reached by a glide from the previous one. Its written start is the
+  // middle of that glide: the moment the voice is nearer the new pitch than the old one, which is
+  // where a listener (and the vocadito annotators, whose onsets Basic Pitch lands within ~8 ms of)
+  // hears the change. The glide's own start is still the old note bending. Each note ends where
+  // the next one starts, so the line stays gapless.
+  const onsets = starts.map((s, k) => (k > 0 ? s + glide / 2 : s));
+  const truthNotes = onsets.map((s, k) => ({
     pitchMidi: MELODY_MIDI[k] + transpose,
     startTimeSeconds: s,
-    durationSeconds: MELODY_SECONDS[k],
+    durationSeconds: (k + 1 < onsets.length ? onsets[k + 1] : end) - s,
     amplitude: 0.8,
   }));
 

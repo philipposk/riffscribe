@@ -114,7 +114,57 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
   check("empty input gives empty output", cleanMonoLine([]).length === 0);
 }
 
-// 8. register placement
+// 8. re-pitching from the line's continuous pitch, and what it lets the clean-up join or drop
+/** A 100 fps contour from a function of time (0 = unvoiced) over [0, seconds). */
+const curve = (seconds, fn) => ({ fps: 100, midi: Array.from({ length: Math.round(seconds * 100) }, (_, j) => Math.round(fn(j / 100) * 100) / 100), level: [] });
+{
+  // a note labelled a semitone sharp: the singer sits at 57.1 throughout
+  const flat57 = curve(1.2, (t) => (t < 1.0 ? 57.1 : 0));
+  const out = cleanMonoLine([note(0, 1.0, 58)], { contour: flat57 });
+  check("re-pitch: a 58 sung at 57.1 becomes 57", out.length === 1 && out[0].pitchMidi === 57, show(out));
+  const far = cleanMonoLine([note(0, 1.0, 60)], { contour: flat57 });
+  check("  never moved more than a semitone (60 over a 57 curve stays 60)", far[0]?.pitchMidi === 60, show(far));
+  const deaf = cleanMonoLine([note(0, 1.0, 58)], { contour: curve(1.2, () => 0) });
+  check("  an unvoiced contour leaves the model's pitch", deaf[0]?.pitchMidi === 58, show(deaf));
+  // pitch bends, when there is no contour: one bin = a third of a semitone, one bin sharp of true
+  const bent = cleanMonoLine([note(0, 0.5, 58, 0.8, { pitchBends: new Array(43).fill(-2) })]);
+  check("re-pitch from bends: 58 bent two bins down (minus the one-bin bias) becomes 57", bent[0]?.pitchMidi === 57, show(bent));
+  const level = cleanMonoLine([note(0, 0.5, 58, 0.8, { pitchBends: new Array(43).fill(1) })]);
+  check("  bends of +1 bin (the bias alone) keep 58", level[0]?.pitchMidi === 58, show(level));
+  const a = [note(0, 0.5, 58, 0.8, { pitchBends: new Array(43).fill(-2) }), note(0.6, 0.4, 60)];
+  check("  deterministic", JSON.stringify(cleanMonoLine(a, { contour: flat57 })) === JSON.stringify(cleanMonoLine(a, { contour: flat57 })));
+}
+{
+  // a held 57 that the model split, the second piece labelled 58, with a 0.07 s re-onset gap
+  const held = curve(1.2, (t) => (t < 0.97 ? 57 + 0.3 * Math.sin(2 * Math.PI * 5.5 * t) : 0));
+  const out = cleanMonoLine([note(0, 0.5, 57), note(0.57, 0.4, 58)], { contour: held });
+  check("merge: a mislabelled second piece of a held note joins it", out.length === 1 && out[0].pitchMidi === 57 && near(out[0].durationSeconds, 0.97), show(out));
+  const plain = cleanMonoLine([note(0, 0.5, 60), note(0.57, 0.5, 60)]);
+  check("  same pitch 0.07 s apart merges (vibrato re-onset)", plain.length === 1, show(plain));
+}
+{
+  // the crest of an 80-cent vibrato on a held 62, caught as a 0.12 s note at 63 before the next note
+  const vib = curve(2.0, (t) => (t < 1.12 ? 62 + 0.8 * Math.sin(2 * Math.PI * 5.5 * t) : t < 1.6 ? 60 : 0));
+  const notes = [note(0, 1.0, 62), note(1.0, 0.12, 63), note(1.12, 0.48, 60)];
+  const out = cleanMonoLine(notes, { contour: curve(2.0, (t) => (t >= 1.0 && t < 1.12 ? 62.6 : vib.midi[Math.round(t * 100)] || 0)) });
+  check("vibrato edge: a crest caught as its own note joins the held note", out.length === 2 && out[0].pitchMidi === 62 && near(out[0].durationSeconds, 1.12), show(out));
+  const steady = curve(2.0, (t) => (t < 1.0 ? 62 : t < 1.12 ? 63 : t < 1.6 ? 60 : 0));
+  const kept = cleanMonoLine(notes, { contour: steady });
+  check("  a really sung 0.12 s note after a held note without vibrato stays", kept.length === 3 && kept[1].pitchMidi === 63, show(kept));
+}
+{
+  // a 0.12 s note at 58 while the voice slides 57 -> 59
+  const slide = curve(1.3, (t) => (t < 0.5 ? 57 : t < 0.62 ? 57 + (2 * (t - 0.5)) / 0.12 : t < 1.12 ? 59 : 0));
+  const notes = [note(0, 0.5, 57), note(0.5, 0.12, 58), note(0.62, 0.5, 59)];
+  const out = cleanMonoLine(notes, { contour: slide });
+  check("glide: the passing note of a slide is dropped", out.length === 2 && out[0].pitchMidi === 57 && out[1].pitchMidi === 59, show(out));
+  check("  and leaves no hole", out.length === 2 && near(out[0].startTimeSeconds + out[0].durationSeconds, 0.62), show(out));
+  const sung = curve(1.3, (t) => (t < 0.5 ? 57 : t < 0.62 ? 58 : t < 1.12 ? 59 : 0));
+  const run = cleanMonoLine(notes, { contour: sung });
+  check("  a held 0.12 s passing note (a fast run) stays", run.length === 3 && run[1].pitchMidi === 58, show(run));
+}
+
+// 9. register placement
 const [cLo, cHi] = INSTRUMENTS.cello.range;
 const line = (pitches, dur = 0.5) => pitches.map((p, k) => note(k * dur, dur, p));
 const contourFor = (notes) => {
