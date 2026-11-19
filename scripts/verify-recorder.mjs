@@ -17,7 +17,7 @@ registerHooks({
 const mod = await import("../src/lib/audio/recorder.ts").catch(() => null);
 if (!mod) {
   console.log("run with: node --experimental-strip-types scripts/verify-recorder.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { foldLoopTake, placeTake } = mod;
 

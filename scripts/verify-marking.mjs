@@ -7,7 +7,7 @@
 const src = await import("../src/lib/transcribe/compare.ts").catch(() => null);
 if (!src) {
   console.log("run with: node --experimental-strip-types scripts/verify-marking.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { markTake, summarise, barsToRange, barsToLoop, chartInWindow, takeSpan } = src;
 

@@ -12,7 +12,7 @@ const st = await import("../src/lib/studioState.ts").catch(() => null);
 const cs = await import("../src/lib/store/chartSave.ts").catch(() => null);
 if (!st || !cs) {
   console.log("run with: node --experimental-strip-types scripts/verify-studio-state.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 let n = 0;
 const ok = (name, fn) => Promise.resolve(fn()).then(() => { n++; console.log("ok -", name); });

@@ -84,12 +84,18 @@ export function syncAuthCookie(): () => void {
   return () => data.subscription.unsubscribe();
 }
 
+/** A failed account call: the server's message, plus its status and parsed body. */
+export type AccountError = Error & { status: number; body: Record<string, unknown> };
+
 async function authed<T>(path: string, method: string): Promise<T> {
   const s = supabase();
   const token = (await s?.auth.getSession())?.data.session?.access_token;
   const res = await fetch(path, { method, headers: token ? { authorization: `Bearer ${token}` } : {} });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(body.error || "that did not work"), { status: res.status });
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    const message = typeof body.error === "string" && body.error ? body.error : "that did not work";
+    throw Object.assign(new Error(message), { status: res.status, body }) as AccountError;
+  }
   return body as T;
 }
 
@@ -98,8 +104,12 @@ export async function startCheckout(): Promise<void> {
     const { url } = await authed<{ url: string }>("/api/checkout", "POST");
     location.href = url;
   } catch (e) {
-    // 409: already on Pro (maybe not shown yet) — refresh so the page catches up.
-    if ((e as { status?: number }).status === 409) accountChanged();
+    const err = e as Partial<AccountError>;
+    // 409: already on Pro (maybe not shown yet). Refresh, and go to manage it.
+    if (err.status === 409) {
+      accountChanged();
+      if (err.body?.portal === true) return openBillingPortal();
+    }
     throw e;
   }
 }
@@ -107,6 +117,12 @@ export async function startCheckout(): Promise<void> {
 export async function openBillingPortal(): Promise<void> {
   const { url } = await authed<{ url: string }>("/api/portal", "POST");
   location.href = url;
+}
+
+/** 14-day withdrawal: full refund and Pro ends now. A 404 means self-serve is off. */
+export async function withdraw(): Promise<void> {
+  await authed("/api/withdraw", "POST");
+  accountChanged();
 }
 
 export async function deleteAccount(): Promise<void> {

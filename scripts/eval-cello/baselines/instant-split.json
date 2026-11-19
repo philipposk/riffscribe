@@ -1,0 +1,15 @@
+{
+  "stage": "instant-split",
+  "metrics": {
+    "vocalSdr_dry": 7.37,
+    "backingSdr_dry": 7.97,
+    "vocalLeakDb_dry": -22.88,
+    "vocalSdr_wet12": 6.4,
+    "backingSdr_wet12": 6.53,
+    "vocalLeakDb_wet12": -15.16,
+    "vocalSdr_wet6": 4.65,
+    "backingSdr_wet6": 3.98,
+    "vocalLeakDb_wet6": -8.87,
+    "centreOfBackingDb": -8.67
+  }
+}

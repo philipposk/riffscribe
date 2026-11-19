@@ -15,13 +15,29 @@ const isolationHeaders = [
   { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
 ];
 
-// Baseline hardening. No full CSP on purpose: onnxruntime (WASM, workers), the model
-// download, PostHog, Google sign-in, Supabase and Stripe would each need allowlisting.
+// Report-only CSP: it lists what the app loads today and only reports violations, so it
+// cannot block the Hugging Face model download or the WASM/worker pages. Tighten and
+// enforce it once the report stays quiet. `frame-ancestors` is enforced separately above.
+const cspReportOnly = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://accounts.google.com",
+  "worker-src 'self' blob:",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "media-src 'self' blob:",
+  "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://eu.i.posthog.com https://huggingface.co https://*.huggingface.co https://*.hf.co https://accounts.google.com http://127.0.0.1:7749",
+  "frame-src https://accounts.google.com",
+].join("; ");
+
+// Baseline hardening. The full CSP is report-only for now (see cspReportOnly): onnxruntime
+// (WASM, workers), the model download, PostHog, Google sign-in and Supabase each need allowlisting.
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Permissions-Policy", value: "microphone=(self), camera=()" },
+  { key: "Content-Security-Policy-Report-Only", value: cspReportOnly },
 ];
 
 const nextConfig: NextConfig = {

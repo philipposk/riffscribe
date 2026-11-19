@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 const mod = await import("../src/lib/assistantRequest.ts").catch(() => null);
 if (!mod) {
   console.log("run with: node --experimental-strip-types scripts/verify-assistant-route.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { buildCompletion, LIMITS, QUOTA_USED_UP_TEXT, usagePeriod } = mod;
 

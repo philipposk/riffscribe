@@ -64,7 +64,7 @@ globalThis.AudioContext = class {
 const mod = await import("../src/lib/audio/engine.ts").catch((e) => { console.log(e); return null; });
 if (!mod) {
   console.log("run with: node --experimental-strip-types scripts/verify-engine.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { PracticeEngine } = mod;
 

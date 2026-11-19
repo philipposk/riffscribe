@@ -11,7 +11,7 @@ TOP.forEach((m, i) => {
 const src = await import("../src/lib/transcribe/voices.ts").catch(() => null);
 if (!src) {
   console.log("run with: node --experimental-strip-types scripts/verify-voices.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { splitVoices, spreadSeats, fitToRange } = src;
 const voices = splitVoices(notes, 4).filter((v) => v.notes.length);
@@ -23,3 +23,25 @@ const quartet = ["violin", "violin", "viola", "cello"];
 console.log("seats for", voices.length, "voices:", spreadSeats(quartet, voices.length));
 console.log("cello range fit of low line:",
   fitToRange(voices[voices.length - 1].notes, [36, 84]).map((n) => n.pitchMidi).slice(0, 4));
+
+// Assertions: exit 1 on any failure.
+let failed = 0;
+function check(what, ok, detail = "") {
+  if (!ok) failed++;
+  console.log(`${ok ? "ok  " : "FAIL"}  ${what}${detail ? `: ${detail}` : ""}`);
+}
+const pitches = (v) => v.notes.map((n) => n.pitchMidi).join(",");
+check("exactly two voices are found", voices.length === 2, String(voices.length));
+check("voice 0 is the top line", voices[0] && pitches(voices[0]) === TOP.join(","), voices[0] && pitches(voices[0]));
+check("voice 1 is the low line", voices[1] && pitches(voices[1]) === LOW.join(","), voices[1] && pitches(voices[1]));
+check(
+  "two voices sit on violin and cello",
+  JSON.stringify(spreadSeats(quartet, 2)) === JSON.stringify(["violin", "cello"]),
+  JSON.stringify(spreadSeats(quartet, 2)),
+);
+const fitted = voices.length ? fitToRange(voices[voices.length - 1].notes, [36, 84]) : [];
+check(
+  "cello fit keeps every pitch inside [36,84]",
+  fitted.length > 0 && fitted.every((n) => n.pitchMidi >= 36 && n.pitchMidi <= 84),
+);
+process.exit(failed ? 1 : 0);

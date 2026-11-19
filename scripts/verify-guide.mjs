@@ -9,7 +9,7 @@ const guide = await import("../src/lib/audio/guide.ts").catch(() => null);
 const tuner = await import("../src/lib/audio/tuner.ts").catch(() => null);
 if (!guide || !tuner) {
   console.log("run with: node --experimental-strip-types scripts/verify-guide.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { synthesizeGuide } = guide;
 const { detectPitch } = tuner;

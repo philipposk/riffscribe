@@ -1,7 +1,11 @@
 /**
- * The Stripe webhook's and checkout's decisions, kept free of Next and of env
- * so scripts/verify-billing.mjs can drive them with stand-ins. The routes pass
- * in the real Supabase service client and Stripe.
+ * Checkout's and delete-my-data's billing decisions, kept free of Next and of
+ * env so scripts/verify-billing.mjs and verify-account-data.mjs can drive them
+ * with stand-ins. The routes pass in the real Supabase clients and Stripe.
+ * The webhook lives in billing/webhookLogic.ts.
+ *
+ * This file has no relative imports on purpose: the verify scripts load it
+ * directly with node's type stripping, which does not resolve bare paths.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type Stripe from "stripe";
@@ -13,123 +17,13 @@ export const ENDED_STATUSES = ["canceled", "incomplete_expired"];
 
 export type Reply = { status: number; body: Record<string, unknown> };
 
-export interface WebhookDeps {
-  db: SupabaseClient;
-  app: string;
-  retrieveSubscription: (id: string) => Promise<Stripe.Subscription>;
-  log?: (message: string) => void;
-}
-
-export async function handleWebhookEvent(event: Stripe.Event, deps: WebhookDeps): Promise<Reply> {
-  const log = deps.log ?? console.error;
-  const relevant =
-    event.type === "checkout.session.completed" || event.type.startsWith("customer.subscription.");
-  // The Stripe account is shared: other apps' events are not ours to record.
-  if (!relevant || !taggedFor(event, deps.app)) return { status: 200, body: { received: true } };
-
-  // Stripe re-delivers; the first insert wins and repeats are no-ops. Any other
-  // failure (table missing, wrong key) must not pass for a repeat.
-  const seen = await deps.db.from("riffscribe_webhook_events").insert({ id: event.id, created: event.created });
-  if (seen.error) {
-    if (seen.error.code === "23505") return { status: 200, body: { received: true, duplicate: true } };
-    log(`stripe webhook ${event.id}: recording the event failed: ${seen.error.message}`);
-    return { status: 500, body: { error: seen.error.message } };
-  }
-
-  try {
-    const sub = await currentSubscription(event, deps);
-    if (sub) await upsertSubscription(sub, deps);
-  } catch (e) {
-    log(`stripe webhook ${event.id}: ${(e as Error).message}`);
-    // Let Stripe retry: forget the event so the retry is not treated as a duplicate.
-    await deps.db.from("riffscribe_webhook_events").delete().eq("id", event.id);
-    return { status: 500, body: { error: (e as Error).message } };
-  }
-  return { status: 200, body: { received: true } };
-}
-
-/** Whether the event's own payload names this app (currentSubscription checks it again). */
-function taggedFor(event: Stripe.Event, app: string): boolean {
-  const object = event.data.object as { metadata?: Stripe.Metadata | null };
-  return object.metadata?.app === app;
-}
-
-/**
- * The subscription as Stripe has it now. Events arrive out of order and
- * retried ones carry an old snapshot, so their payload is only used to decide
- * whether the event is ours.
- */
-async function currentSubscription(event: Stripe.Event, deps: WebhookDeps): Promise<Stripe.Subscription | null> {
-  if (event.type === "checkout.session.completed") {
-    const s = event.data.object as Stripe.Checkout.Session;
-    if (!s.subscription || s.metadata?.app !== deps.app) return null;
-    const sub = await deps.retrieveSubscription(typeof s.subscription === "string" ? s.subscription : s.subscription.id);
-    sub.metadata = { ...sub.metadata, ...s.metadata };
-    return sub;
-  }
-  const snapshot = event.data.object as Stripe.Subscription;
-  if (snapshot.metadata?.app !== deps.app) return null;
-  const sub = await deps.retrieveSubscription(snapshot.id);
-  sub.metadata = { ...snapshot.metadata, ...sub.metadata };
-  return sub;
-}
-
-async function upsertSubscription(sub: Stripe.Subscription, deps: WebhookDeps) {
-  const userId = sub.metadata?.supabase_user_id;
-  if (!userId || sub.metadata?.app !== deps.app || sub.metadata?.plan !== "pro") return;
-  const item = sub.items?.data?.[0] as (Stripe.SubscriptionItem & { current_period_end?: number }) | undefined;
-  const periodEnd = item?.current_period_end;
-
-  const { data: existing, error: readError } = await deps.db
-    .from("subscriptions")
-    .select("stripe_subscription_id, status")
-    .eq("user_id", userId)
-    .eq("app", deps.app)
-    .maybeSingle();
-  if (readError) throw readError;
-
-  // One row per person. A second subscription (two tabs, a double click) must
-  // not overwrite the one that is billing, or cancelling the stray one would
-  // drop them to Free while the other keeps charging.
-  const stored = existing as { stripe_subscription_id?: string | null; status?: string | null } | null;
-  // Nothing stored and nothing billing: the person deleted their data (that
-  // cancels the sub, whose cancellation event lands here a moment later), or
-  // the sub ended before we heard of it. Either way there is nothing to record.
-  if (!stored && ENDED_STATUSES.includes(sub.status)) return;
-  if (stored?.stripe_subscription_id && stored.stripe_subscription_id !== sub.id && BILLING_STATUSES.includes(stored.status ?? "")) {
-    const other = await deps.retrieveSubscription(stored.stripe_subscription_id);
-    if (BILLING_STATUSES.includes(other.status)) {
-      (deps.log ?? console.error)(
-        `stripe webhook: user ${userId} has a second subscription ${sub.id} (${sub.status}) besides ${other.id}; left for manual cleanup`
-      );
-      return;
-    }
-  }
-
-  const row = {
-    user_id: userId,
-    app: deps.app,
-    plan: "pro",
-    status: sub.status,
-    stripe_customer_id: typeof sub.customer === "string" ? sub.customer : sub.customer?.id,
-    stripe_subscription_id: sub.id,
-    current_period_end: periodEnd ? new Date(periodEnd * 1000).toISOString() : null,
-    cancel_at_period_end: Boolean(sub.cancel_at_period_end || sub.cancel_at),
-    updated_at: new Date().toISOString(),
-  };
-  let { error } = await deps.db.from("subscriptions").upsert(row, { onConflict: "user_id,app" });
-  // The column comes with supabase/migrations/0003_review_fixes.sql; write without it until then.
-  if (error && /cancel_at_period_end/.test(error.message ?? "")) {
-    const { cancel_at_period_end: _unused, ...withoutCancel } = row;
-    ({ error } = await deps.db.from("subscriptions").upsert(withoutCancel, { onConflict: "user_id,app" }));
-  }
-  if (error) throw error;
-}
-
 export interface CheckoutDeps {
   db: SupabaseClient;
   app: string;
+  /** This deployment runs on a live key: customers are remembered per mode. */
+  live: boolean;
   stripe: Pick<Stripe, "customers" | "subscriptions">;
+  log?: (message: string) => void;
 }
 
 /**
@@ -137,11 +31,18 @@ export interface CheckoutDeps {
  * has Pro billing — stored by the webhook or, if it has not landed yet, in
  * Stripe itself. Reusing one customer keeps every subscription where the
  * billing portal can reach it.
+ *
+ * Candidates, in order: `riffscribe_customers` for this mode, the customer on
+ * the shared subscriptions row, a customer found by email that carries this
+ * user's id, and finally a new one. The pick is remembered in
+ * `riffscribe_customers`; before migration 0005 that table is missing and is
+ * simply skipped.
  */
 export async function checkoutCustomer(
   user: { id: string; email?: string },
   deps: CheckoutDeps
 ): Promise<{ blocked: true; customer?: undefined } | { blocked?: undefined; customer: string }> {
+  const log = deps.log ?? console.error;
   const { data, error } = await deps.db
     .from("subscriptions")
     .select("status, stripe_customer_id")
@@ -152,17 +53,36 @@ export async function checkoutCustomer(
   const row = data as { status?: string | null; stripe_customer_id?: string | null } | null;
   if (BILLING_STATUSES.includes(row?.status ?? "")) return { blocked: true };
 
+  const mapped = await deps.db
+    .from("riffscribe_customers")
+    .select("stripe_customer_id")
+    .eq("user_id", user.id)
+    .eq("livemode", deps.live)
+    .maybeSingle();
+  const known = mapped.error ? null : (mapped.data as { stripe_customer_id?: string | null } | null)?.stripe_customer_id;
+
   const billingPro = async (customer: string) => {
     const subs = await deps.stripe.subscriptions.list({ customer, status: "all", limit: 100 });
     return subs.data.some((s) => s.metadata?.app === deps.app && BILLING_STATUSES.includes(s.status));
   };
+  const remember = async (customer: string) => {
+    if (customer === known) return;
+    const { error: e } = await deps.db
+      .from("riffscribe_customers")
+      .upsert({ user_id: user.id, livemode: deps.live, stripe_customer_id: customer }, { onConflict: "user_id,livemode" });
+    if (e) log(`checkout: could not remember customer ${customer}: ${e.message}`);
+  };
 
-  if (row?.stripe_customer_id) {
+  for (const candidate of [known, row?.stripe_customer_id]) {
+    if (!candidate) continue;
     try {
-      if (await billingPro(row.stripe_customer_id)) return { blocked: true };
-      return { customer: row.stripe_customer_id };
+      const c = await deps.stripe.customers.retrieve(candidate);
+      if ((c as { deleted?: boolean }).deleted) continue;
+      if (await billingPro(candidate)) return { blocked: true };
+      await remember(candidate);
+      return { customer: candidate };
     } catch (e) {
-      // A customer from Stripe's test mode is unknown to the live key: start afresh.
+      // A customer from Stripe's test mode is unknown to the live key: try the next one.
       if ((e as { code?: string }).code !== "resource_missing") throw e;
     }
   }
@@ -172,14 +92,17 @@ export async function checkoutCustomer(
     const mine = found.data.find((c) => c.metadata?.supabase_user_id === user.id);
     if (mine) {
       if (await billingPro(mine.id)) return { blocked: true };
+      await remember(mine.id);
       return { customer: mine.id };
     }
   }
 
   const created = await deps.stripe.customers.create(
     { email: user.email, metadata: { supabase_user_id: user.id, app: deps.app } },
-    { idempotencyKey: `${deps.app}-customer-${user.id}` }
+    // A double click makes one customer, per mode.
+    { idempotencyKey: `${deps.app}-customer-${user.id}-${deps.live ? "live" : "test"}` }
   );
+  await remember(created.id);
   return { customer: created.id };
 }
 

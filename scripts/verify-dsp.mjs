@@ -21,7 +21,7 @@ const analyze = await import("../src/lib/audio/analyze.ts").catch(() => null);
 const fftMod = await import("../src/lib/audio/fft.ts").catch(() => null);
 if (!karaoke || !analyze || !fftMod) {
   console.log("run with: node --experimental-strip-types scripts/verify-dsp.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { splitCenter, isEffectivelyMono } = karaoke;
 const { onsetEnvelope } = analyze;

@@ -7,36 +7,40 @@
  * Every step runs locally in the browser — no upload, no account, no queue.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Bookmark, Check, ChevronDown, ChevronUp, Download, FileMusic, Link as LinkIcon, Loader2, Mic,
-  Music2, Pause, Play, Printer, Repeat, RotateCcw, Scissors, Square, Target,
-  Trash2, Undo2,
-  Upload, Users, Wand2,
-} from "lucide-react";
+import { Music2 } from "lucide-react";
 
 import { useSearchParams } from "next/navigation";
 import type { AssistantActions } from "./Assistant";
 import { lendStudio } from "@/lib/assistantBridge";
-import Mixer, { type MixTrack } from "./Mixer";
+import type { MixTrack } from "./Mixer";
 import SaveBar from "./SaveBar";
 import Tuner from "./Tuner";
 import { HANDOFF_ID_KEY, HANDOFF_KEY } from "./SharedChart";
 import AccountMenu from "./AccountMenu";
 import { useAccount } from "@/lib/store/account";
 import { findSong, lastSong, rememberSong } from "@/lib/store/lastSong";
-import ScoreView from "./ScoreView";
-import Transport from "./Transport";
-import Waveform from "./Waveform";
+import { buildAssistantActions } from "./studio/assistantActions";
+import {
+  ENSEMBLES, STEM_LABEL, barsLabel, type Busy, type Source, type StemMode,
+} from "./studio/constants";
+import * as exp from "./studio/exports";
+import LoadPanel from "./studio/LoadPanel";
+import PartsPanel from "./studio/PartsPanel";
+import PlayerBar from "./studio/PlayerBar";
+import PracticePanel from "./studio/PracticePanel";
+import RecordPanel from "./studio/RecordPanel";
+import SplitPanel from "./studio/SplitPanel";
+import StatusBanners from "./studio/StatusBanners";
 
 import { fileToAudioBuffer, peaks as peaksOf, toMono, toStereo } from "@/lib/audio/decode";
 import {
-  estimateKey, estimateTempo, chromaFromNotes, noteName, PITCH_NAMES,
+  estimateKey, estimateTempo, chromaFromNotes, PITCH_NAMES,
 } from "@/lib/audio/analyze";
 import { PracticeEngine, makeClickTrack, type EngineTrack } from "@/lib/audio/engine";
-import { countIn, countInSeconds } from "@/lib/audio/countin";
+import { countIn } from "@/lib/audio/countin";
 import { MicRecorder, estimateLatency, foldLoopTake, placeTake, stretchOffline } from "@/lib/audio/recorder";
 import {
-  DEMUCS_SAMPLE_RATE, SPLIT_PAUSED, mixStems, partialKey, separateInstantAsync, separateResumable, type StemSet,
+  DEMUCS_SAMPLE_RATE, SPLIT_PAUSED, partialKey, separateInstantAsync, separateResumable, type StemSet,
 } from "@/lib/audio/stems";
 import { synthesizeGuide } from "@/lib/audio/guide";
 import {
@@ -44,18 +48,13 @@ import {
   songKey, unpackTrack,
 } from "@/lib/store/cache";
 import { clearBlocks, doneBlocks, getBlock, putBlock } from "@/lib/store/partialSplit";
-import { encodeMp3 } from "@/lib/audio/mp3";
-import { downloadBlob, encodeWav } from "@/lib/audio/wav";
 import {
   channelsToAudioBuffer, lastTranscriptionRanIn, toModelInput, transcribeAudio,
 } from "@/lib/transcribe/basicPitch";
-import { partsToMidi } from "@/lib/transcribe/midi";
-import { sheetsToMusicXml } from "@/lib/transcribe/musicxml";
 import { slotTimeline, type Sheet } from "@/lib/transcribe/quantize";
 import { barsToLoop, barsToRange, chartInWindow, markTake, summarise, takeSpan, type TakeReport } from "@/lib/transcribe/compare";
 import { consolidateMonophonic } from "@/lib/transcribe/cleanup";
 import { engraveParts, partsToTex } from "@/lib/transcribe/engrave";
-import { keyChoices, keyName, shortestShift } from "@/lib/transcribe/spelling";
 import { isNativePlatform, nativeDeviceMemoryGb } from "@/lib/native";
 import {
   keepChartLink, liveSolo, readSavedSettings, settingsOnLoad, trainerStep,
@@ -66,39 +65,6 @@ import {
   DEFAULT_SETTINGS, INSTRUMENTS, STEM_NAMES, type InstrumentId, type NoteEvent, type Part,
   type TranscriptionSettings,
 } from "@/lib/types";
-
-type Busy = { label: string; value?: number } | null;
-type StemMode = "none" | "instant" | "ai";
-type Source = "mix" | "vocals" | "drums" | "bass" | "other";
-
-const STEM_LABEL: Record<string, { label: string; hint: string }> = {
-  vocals: { label: "Vocals", hint: "lead + backing voices" },
-  drums: { label: "Drums", hint: "kit and percussion" },
-  bass: { label: "Bass", hint: "bass guitar / synth bass" },
-  other: { label: "Everything else", hint: "guitars, keys, strings" },
-  original: { label: "Song", hint: "the original mix" },
-  click: { label: "Click", hint: "metronome, follows the speed" },
-  overdub: { label: "Your take", hint: "what you recorded" },
-  guide: { label: "Your part", hint: "the transcription, played back" },
-};
-
-/** Which instruments a voice split is handed to, top line first. */
-const ENSEMBLES: Record<number, InstrumentId[]> = {
-  2: ["violin", "cello"],
-  3: ["violin", "viola", "cello"],
-  4: ["violin", "violin", "viola", "cello"],
-  5: ["violin", "violin", "viola", "cello", "double-bass"],
-};
-
-/** "bar 4" or "bars 3–5", for a run of bar numbers in order. */
-const barsLabel = (bars: number[]) =>
-  bars.length === 1 ? `bar ${bars[0]}` : `bars ${bars[0]}–${bars[bars.length - 1]}`;
-
-/** Picking an instrument also picks its usual single-line setting, which can still be changed. */
-const instrumentPatch = (id: InstrumentId): Partial<TranscriptionSettings> => ({
-  instrument: id,
-  monophonic: playsSingleLine(INSTRUMENTS[id]),
-});
 
 export default function Studio() {
   const [file, setFile] = useState<File | null>(null);
@@ -1316,128 +1282,30 @@ export default function Studio() {
   const baseName = (file?.name.replace(/\.[^.]+$/, "") || "riffscribe").slice(0, 60);
 
   function exportMidi() {
-    if (!parts.length) return;
-    const bytes = partsToMidi(
-      parts.map((p) => ({
-        notes: p.notes,
-        name: INSTRUMENTS[p.instrument].label,
-        program: INSTRUMENTS[p.instrument].gm,
-      })),
-      { bpm: settings.bpm, name: baseName }
-    );
-    downloadBlob(new Blob([bytes as unknown as BlobPart], { type: "audio/midi" }), `${baseName}.mid`);
+    exp.exportMidi(parts, settings.bpm, baseName);
   }
 
   function exportMusicXml() {
-    if (!partSheets.length) return;
-    const xml = sheetsToMusicXml(
-      partSheets.map(({ sheet: sh, instrument, fifths, clef }) => ({
-        sheet: sh,
-        options: {
-          instrument,
-          fifths,
-          clef,
-          capo: settings.capo,
-          partName: instrument.label,
-        },
-      })),
-      { title: baseName }
-    );
-    downloadBlob(new Blob([xml], { type: "application/vnd.recordare.musicxml+xml" }), `${baseName}.musicxml`);
+    exp.exportMusicXml(partSheets, settings.capo, baseName);
   }
 
   function exportTex() {
-    if (!tex) return;
-    downloadBlob(new Blob([tex], { type: "text/plain" }), `${baseName}.alphatex`);
+    exp.exportTex(tex, baseName);
   }
 
-  /** Every track that currently exists, keyed the same way as the mixer. */
-  function allParts(): Record<string, { left: Float32Array; right: Float32Array }> {
-    const mixParts: Record<string, { left: Float32Array; right: Float32Array }> = stems
-      ? { ...stems }
-      : audio
-        ? { original: audio }
-        : {};
-    if (overdub) mixParts.overdub = overdub;
-    for (const g of guideTracks) mixParts[g.id] = { left: g.left, right: g.right };
-    if (clickTrack) mixParts.click = clickTrack;
-    return mixParts;
-  }
+  /** What the audio exports read, as it stands in this render. */
+  const audioExport = (): exp.AudioExport => ({
+    audio, stems, stemMode, overdub, guideTracks, clickTrack, trackList, mix, activeSolo,
+    loop, loopOnlyExport, transport, exportFormat, baseName, setBusy, setError,
+  });
 
-  /** Whole song, or just the looped section when the user asked for that. */
-  function exportWindow() {
-    const total = audio ? audio.left.length : 0;
-    if (!loopOnlyExport || !loop) return { from: 0, to: total, suffix: "" };
-    const from = Math.max(0, Math.floor(loop[0] * DEMUCS_SAMPLE_RATE));
-    const to = Math.min(total, Math.floor(loop[1] * DEMUCS_SAMPLE_RATE));
-    return { from, to, suffix: `-${Math.round(loop[0])}s-${Math.round(loop[1])}s` };
-  }
-
-  /** Slice the loop if asked, then bake the current practice speed and key. */
-  async function prepareExport(channels: { left: Float32Array; right: Float32Array }) {
-    const { from, to } = exportWindow();
-    const left = from || to < channels.left.length ? channels.left.slice(from, to) : channels.left;
-    const right = from || to < channels.right.length ? channels.right.slice(from, to) : channels.right;
-    const { rate, semitones } = transport;
-    if (Math.abs(rate - 1) < 1e-4 && semitones === 0) return { left, right };
-    const [l, r] = await stretchOffline([left, right], DEMUCS_SAMPLE_RATE, rate, semitones);
-    return { left: l, right: r };
-  }
-
-  async function downloadChannels(channels: { left: Float32Array; right: Float32Array }, name: string) {
-    const { suffix } = exportWindow();
-    const needsBake = Math.abs(transport.rate - 1) >= 1e-4 || transport.semitones !== 0;
-    if (needsBake) setBusy({ label: "Rendering export at your practice speed and key…" });
-    try {
-      const baked = await prepareExport(channels);
-      const blob =
-        exportFormat === "mp3"
-          ? encodeMp3([baked.left, baked.right], DEMUCS_SAMPLE_RATE)
-          : encodeWav([baked.left, baked.right], DEMUCS_SAMPLE_RATE);
-      downloadBlob(blob, `${baseName}-${name}${suffix}.${exportFormat}`);
-    } finally {
-      if (needsBake) setBusy(null);
-    }
-  }
-
-  async function exportAudio(kind: "backing" | "mix") {
-    if (!audio) return;
-    const length = audio.left.length;
-
-    if (kind === "backing" && stems) {
-      // everything except the vocals, at full level, whatever the faders say
-      const keys = stemMode === "instant" ? ["other"] : ["drums", "bass", "other"];
-      setError(null);
-      await downloadChannels(mixStems(stems, keys, { length }), "backing");
-      return;
-    }
-
-    const parts = allParts();
-    const gains: Record<string, number> = {};
-    const audible = trackList
-      .map((t) => t.id)
-      .filter((id) => {
-        if (!parts[id]) return false;
-        const m = mix[id] ?? { gain: 1, muted: false };
-        if (m.muted || (activeSolo !== null && activeSolo !== id)) return false;
-        gains[id] = m.gain;
-        return true;
-      });
-
-    if (!audible.length) {
-      setError("Everything is muted or soloed out — nothing to export.");
-      return;
-    }
-    setError(null);
-    await downloadChannels(mixStems(parts, audible, { length, gains }), "mix");
+  function exportAudio(kind: "backing" | "mix") {
+    return exp.exportAudio(audioExport(), kind);
   }
 
   /** One track on its own — the stem, your part, your take, the click. */
-  async function exportTrack(id: string) {
-    const part = allParts()[id];
-    if (!part) return;
-    setError(null);
-    await downloadChannels(part, id);
+  function exportTrack(id: string) {
+    return exp.exportTrack(audioExport(), id);
   }
 
   /* -------------------------------------------------------------------- UI */
@@ -1454,193 +1322,14 @@ export default function Studio() {
 
   /* --------------------------------------------------- the page assistant */
 
-  const fmtTime = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
-
   // Rebuilt every render so the capabilities always act on current state; the
   // assistant component keeps a ref to the latest copy.
-  const assistantActions: AssistantActions = {
-    describe: () => {
-      if (!audio) {
-        return "No song is loaded yet — drop a file into step 1 first." +
-          (signedIn ? " Or open one of [your saved songs](/songs)." : "");
-      }
-      const lines: string[] = [
-        `${file?.name ?? "A song"}, ${fmtTime(transport.duration)} long, at ${settings.bpm} BPM.`,
-        stems
-          ? stemMode === "ai"
-            ? "It has been split into four stems."
-            : "The centre channel has been pulled out."
-          : "It has not been split into stems.",
-        parts.length
-          ? `${parts.length} part${parts.length > 1 ? "s are" : " is"} written out: ${parts
-              .map((p) => `${INSTRUMENTS[p.instrument].label} (${p.notes.length} notes, ${p.keyName})`)
-              .join(", ")}.`
-          : "Nothing has been transcribed yet.",
-        `Playing at ${Math.round(transport.rate * 100)}%${transport.semitones ? `, transposed ${transport.semitones > 0 ? "+" : ""}${transport.semitones}` : ""}.`,
-        loop ? `Looping ${fmtTime(loop[0])} to ${fmtTime(loop[1])}.` : "No loop is set.",
-      ];
-      return lines.join(" ");
-    },
-
-    setInstrument: (id) => {
-      if (!(id in INSTRUMENTS)) return `I do not know an instrument called "${id}".`;
-      patch(instrumentPatch(id as InstrumentId));
-      return `The part is now written for ${INSTRUMENTS[id as InstrumentId].label}.`;
-    },
-
-    splitStems: async (mode) => {
-      if (!audio) return "Load a song first.";
-      if (busy) return "Something else is already running.";
-      if (mode === "instant") {
-        return (await runInstant())
-          ? "Instant split done — vocal and backing are separate rows in the mixer."
-          : "The instant split did not work — the reason is shown on the page.";
-      }
-      const mem = await nativeDeviceMemoryGb();
-      if (mem != null && mem <= 4) {
-        setAiSplitCautionGb(mem);
-        return `This phone reports about ${mem} GB of memory. AI stem split may fail here — the warning on the page can continue anyway. Instant vocal removal still works. The desktop site is the reliable place for the AI split.`;
-      }
-      return (await runDemucs())
-        ? "The AI split finished — vocals, drums, bass and everything else are separate rows now."
-        : "The AI split did not finish — it was paused or failed; the page says which. Finished parts are kept.";
-    },
-
-    transcribe: async (src) => {
-      if (!audio) return "Load a song first.";
-      if (busy) return "Something else is already running.";
-      let from: Source | undefined;
-      if (src) {
-        const wanted = src.toLowerCase().trim();
-        const have: string[] = !stems ? [] : stemMode === "ai" ? [...STEM_NAMES] : ["vocals", "other"];
-        if (wanted !== "mix" && !have.includes(wanted)) {
-          return stems
-            ? `There is no "${src}" source here. Available: mix${have.length ? `, ${have.join(", ")}` : ""}.`
-            : `There is no "${src}" source yet — split the song into stems first, or transcribe the full mix.`;
-        }
-        from = wanted as Source;
-        setSource(from);
-      }
-      return (await runTranscribe(from))
-        ? `Written out for ${INSTRUMENTS[settings.instrument].label}.`
-        : "That did not work — the reason is shown on the page.";
-    },
-
-    setTempo: (bpm) => { patch({ bpm: Math.max(30, Math.min(300, bpm)) }); return `Tempo set to ${Math.round(bpm)} BPM.`; },
-    setGrid: (d) => { patch({ quantizeDivision: d as 4 | 8 | 16 | 32 }); return `Notes now snap to a 1/${d} grid.`; },
-    setCapo: (fret) => { patch({ capo: Math.max(0, Math.min(9, Math.round(fret))) }); return `Capo at fret ${Math.round(fret)}.`; },
-    setWrittenTranspose: (st) => { patch({ transposeSemitones: Math.max(-12, Math.min(12, Math.round(st))) }); return `Written part transposed by ${Math.round(st)} semitones.`; },
-
-    play: async () => { await engineRef.current?.play(); return "Playing."; },
-    pause: async () => { await engineRef.current?.pause(); return "Paused."; },
-    seek: async (sec) => { await engineRef.current?.seek(sec); return `Jumped to ${fmtTime(sec)}.`; },
-
-    setSpeed: async (percent) => {
-      const rate = Math.max(0.25, Math.min(1.5, percent / 100));
-      await engineRef.current?.setRate(rate);
-      return `Speed set to ${Math.round(rate * 100)}% — the key is unchanged.`;
-    },
-    setKeyShift: async (st) => {
-      await engineRef.current?.setSemitones(st);
-      return `Everything shifted by ${Math.round(st)} semitones — the tempo is unchanged.`;
-    },
-
-    setLoop: async (from, to) => {
-      const a = Math.max(0, Math.min(from, to));
-      const b = Math.min(transport.duration, Math.max(from, to));
-      setLoop([a, b]);
-      return `Looping ${fmtTime(a)} to ${fmtTime(b)}.`;
-    },
-    clearLoop: async () => { setLoop(null); return "Loop cleared."; },
-
-    setTrack: (track, change) => {
-      const id = trackList.find((t) => t.id === track || t.label.toLowerCase().includes(track.toLowerCase()))?.id;
-      if (!id) return `There is no track called "${track}". The mixer has: ${trackList.map((t) => t.id).join(", ")}.`;
-      const done: string[] = [];
-      if (change.solo != null) { setSoloed(change.solo ? id : null); done.push(change.solo ? "soloed" : "un-soloed"); }
-      if (change.muted != null || change.level != null) {
-        setMix((m) => ({
-          ...m,
-          [id]: {
-            gain: change.level != null ? Math.max(0, Math.min(1.5, change.level / 100)) : (m[id]?.gain ?? 1),
-            muted: change.muted != null ? change.muted : (m[id]?.muted ?? false),
-          },
-        }));
-        if (change.muted != null) done.push(change.muted ? "muted" : "un-muted");
-        if (change.level != null) done.push(`set to ${Math.round(change.level)}`);
-      }
-      return `${trackList.find((t) => t.id === id)!.label} ${done.join(" and ") || "unchanged"}.`;
-    },
-
-    exportFile: (what) => {
-      const w = what.toLowerCase();
-      if (w.includes("mp3")) setExportFormat("mp3");
-      else if (w.includes("wav")) setExportFormat("wav");
-      if (w.includes("midi")) { exportMidi(); return "MIDI downloaded."; }
-      if (w.includes("xml")) { exportMusicXml(); return "MusicXML downloaded."; }
-      if (w.includes("tex")) { exportTex(); return "alphaTex downloaded."; }
-      if (w.includes("pdf") || w.includes("print")) { window.print(); return "Opened the print dialog."; }
-      if (w.includes("backing")) { void exportAudio("backing"); return "Backing track download started — at your current speed and key."; }
-      if (w.includes("mix")) { void exportAudio("mix"); return "Mix download started — at your current speed and key."; }
-      const track = trackList.find((t) => w.includes(t.id) || w.includes(t.label.toLowerCase()));
-      if (track) { void exportTrack(track.id); return `${track.label} download started.`; }
-      return `I can export midi, musicxml, alphatex, pdf, wav or mp3 (backing track, current mix, or one of: ${trackList.map((t) => t.id).join(", ")}). Audio exports match your practice speed and key.`;
-    },
-
-    checkTake: async () => {
-      if (!overdub) return "There is no take to mark yet — record one first.";
-      if (!parts.length) return "Nothing to mark it against — transcribe the part first.";
-      const r = await checkTake();
-      if (typeof r === "string") return r;
-      if (!r) return "That take could not be marked.";
-      return summarise(r) + (r.worstBars.length ? ` Weakest: ${r.worstBars.map((b) => `bar ${b.bar}`).join(", ")}.` : "");
-    },
-    loopWeakest: () => {
-      if (!report) return "Mark a take first and I will know which bars need the work.";
-      if (!report.worstBars.length) return "No bar stands out as weak — take the speed up instead.";
-      loopWorstBars();
-      return `Looping ${barsLabel(barsToLoop(report.worstBars))}.`;
-    },
-    arrange: (size) => {
-      const target = parts.find((p) => p.source === "other") ?? parts[parts.length - 1];
-      if (!target) return "Transcribe a part first — there is nothing to split.";
-      setEnsembleSize(size);
-      arrangeForEnsemble(target.id, size);
-      return `Splitting ${INSTRUMENTS[target.instrument].label} into ${size} voices.`;
-    },
-
-    setPlayAlong: (on) => { setPlayAlong(on); return on ? "The score will follow the music." : "The score will stay put."; },
-
-    pageState: () => ({
-      songLoaded: !!audio,
-      fileName: file?.name ?? null,
-      durationSeconds: Math.round(transport.duration),
-      stems: stems ? (stemMode === "ai" ? ["vocals", "drums", "bass", "other"] : ["vocals", "other"]) : [],
-      transcribed: parts.length > 0,
-      parts: parts.map((p) => ({
-        id: p.id,
-        instrument: p.instrument,
-        source: p.source,
-        noteCount: p.notes.length,
-        key: p.keyName,
-      })),
-      nextInstrument: settings.instrument,
-      bpm: settings.bpm,
-      playing: transport.playing,
-      positionSeconds: Math.round(transport.time),
-      speedPercent: Math.round(transport.rate * 100),
-      transposeSemitones: transport.semitones,
-      loop: loop ? { from: Math.round(loop[0]), to: Math.round(loop[1]) } : null,
-      mixerTracks: trackList.map((t) => ({
-        id: t.id,
-        label: t.label,
-        level: Math.round((mix[t.id]?.gain ?? 1) * 100),
-        muted: mix[t.id]?.muted ?? false,
-        soloed: activeSolo === t.id,
-      })),
-      busy: busy?.label ?? null,
-    }),
-  };
+  const assistantActions: AssistantActions = buildAssistantActions({
+    audio, file, signedIn, transport, settings, stems, stemMode, parts, loop, busy, trackList, mix, activeSolo,
+    overdub, report, engineRef, patch, runInstant, runDemucs, runTranscribe, checkTake, loopWorstBars,
+    arrangeForEnsemble, setAiSplitCautionGb, setSource, setLoop, setSoloed, setMix, setExportFormat,
+    setEnsembleSize, setPlayAlong, exportMidi, exportMusicXml, exportTex, exportAudio, exportTrack,
+  });
 
   // The assistant is mounted above the pages; it borrows these while the studio is open.
   const actionsRef = useRef(assistantActions);
@@ -1665,92 +1354,10 @@ export default function Studio() {
         </div>
       </header>
 
-      {error && (
-        <p
-          role="alert"
-          className="no-print sticky top-2 z-30 mb-5 flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-950/90 px-4 py-3 text-sm text-red-200 backdrop-blur"
-        >
-          <span className="min-w-0 flex-1">{error}</span>
-          <button className="btn shrink-0 py-0.5 text-xs" onClick={() => setError(null)} aria-label="Dismiss this message">
-            Dismiss
-          </button>
-        </p>
-      )}
-      {busy && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="no-print sticky top-2 z-30 mb-5 rounded-xl border border-[var(--color-accent)]/40 bg-[#1a1608]/95 px-4 py-3 text-sm shadow-lg backdrop-blur">
-          <p className="flex items-center gap-2 text-[var(--color-accent)]">
-            <Loader2 className="animate-spin" size={16} /> {busy.label}
-            {cancelSplitRef.current && (
-              <button className="btn ml-auto py-1 text-xs" onClick={cancelJob}>
-                Cancel
-              </button>
-            )}
-          </p>
-          {busy.value != null && (
-            <div className="mt-2 h-1.5 w-full overflow-hidden rounded bg-white/10">
-              <div className="h-full bg-[var(--color-accent)] transition-[width]" style={{ width: `${Math.round(busy.value * 100)}%` }} />
-            </div>
-          )}
-        </div>
-      )}
+      <StatusBanners {...{ error, setError, busy, cancelSplitRef, cancelJob }} />
 
       {/* 1 — load */}
-      <section className="panel no-print mb-5 p-5">
-        <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-          <span className="step-badge">1</span> Load a song
-        </h2>
-        <label
-          className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-line)] px-4 py-8 text-center hover:border-white/30 focus-within:border-[var(--color-accent)] focus-within:outline focus-within:outline-2 focus-within:outline-[var(--color-accent)]"
-          aria-disabled={!!busy || undefined}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            // A split or transcription still running would land on the new song.
-            const f = e.dataTransfer.files?.[0];
-            if (f && !busy) void loadFile(f);
-          }}
-        >
-          <Upload size={20} className="text-white/50" />
-          <span className="text-sm">
-            {file ? <b>{file.name}</b> : "Drop an mp3, wav, m4a, flac or ogg here — or click to pick one"}
-          </span>
-          <span className="text-xs text-white/40">Nothing is uploaded. The file never leaves your browser.</span>
-          <input
-            type="file" accept=".mp3,.wav,.m4a,.flac,.ogg,.aac,audio/*" className="sr-only"
-            disabled={!!busy}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f && !busy) void loadFile(f); }}
-          />
-        </label>
-        {wantedSong && !audio && (
-          <p className="mt-4 rounded-lg border border-[var(--color-accent)]/40 bg-[#1a1608] px-4 py-3 text-sm">
-            Your notes are open. Drop <b>{wantedSong}</b> above to hear it with its stems — the recording
-            isn&rsquo;t on this device, and it never leaves the one it was made on.
-          </p>
-        )}
-        {helperUp && (
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              className="min-w-0 flex-1"
-              placeholder="…or paste a link (YouTube, SoundCloud, a direct mp3)"
-              value={linkUrl}
-              onChange={(e) => setLinkUrl(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && linkUrl.trim()) void loadFromLink(linkUrl.trim()); }}
-            />
-            <button
-              className="btn"
-              disabled={!linkUrl.trim() || !!busy}
-              onClick={() => void loadFromLink(linkUrl.trim())}
-            >
-              <LinkIcon size={15} /> Fetch
-            </button>
-          </div>
-        )}
-        {log && <p className="mt-3 text-xs text-white/45">{log}</p>}
-      </section>
+      <LoadPanel {...{ busy, loadFile, file, wantedSong, audio, helperUp, linkUrl, setLinkUrl, loadFromLink, log }} />
 
       {/*
         With a song loaded, saving sits under the notes it saves (after step 4).
@@ -1767,606 +1374,34 @@ export default function Studio() {
       {audio && (
         <>
           {/* 2 — stems */}
-          <section className="panel no-print mb-5 p-5">
-            <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-              <span className="step-badge">2</span> Split it up / remove the vocals
-            </h2>
-            <div className="mb-4 flex flex-wrap gap-2">
-              <button className="btn" onClick={runInstant} disabled={!!busy}>
-                {busy?.label.startsWith("Pulling") ? <Loader2 className="animate-spin" size={15} /> : <Scissors size={15} />}
-                Instant vocal removal
-              </button>
-              <button className="btn btn-primary" onClick={() => void startAiSplit()} disabled={!!busy}>
-                {busy && /model|Separating/i.test(busy.label) ? <Loader2 className="animate-spin" size={15} /> : <Wand2 size={15} />}
-                {busy && /model|Separating/i.test(busy.label) ? "Separating…" : "AI split into 4 stems"}
-              </button>
-            </div>
-            {aiSplitCautionGb != null && (
-              <div className="mb-4 rounded-md border border-amber-400/40 bg-amber-950/40 px-3 py-2 text-xs text-amber-100">
-                <p>
-                  This phone reports about {aiSplitCautionGb} GB of memory. AI stem split may fail here.
-                  The desktop site is the reliable place for it. Instant vocal removal is unaffected.
-                </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="btn py-1 text-xs"
-                    disabled={!!busy}
-                    onClick={() => { setAiSplitCautionGb(null); void runDemucs(); }}
-                  >
-                    Continue anyway
-                  </button>
-                  <button type="button" className="btn py-1 text-xs" onClick={() => setAiSplitCautionGb(null)}>
-                    Not now
-                  </button>
-                </div>
-              </div>
-            )}
-            {restored && (
-              <p className="mb-4 flex items-center gap-2 rounded-md border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/10 px-3 py-2 text-xs text-white/70">
-                <Check size={14} className="shrink-0 text-[var(--color-accent)]" />
-                {restored}
-                <button
-                  className="ml-auto shrink-0 underline decoration-white/30 underline-offset-2 hover:text-white"
-                  onClick={forgetSong}
-                >
-                  Split it again
-                </button>
-              </p>
-            )}
-            <p className="mb-4 text-xs text-white/45">
-              Instant is phase-based: no download, about a second, decent on most pop mixes.
-              The AI split runs Demucs on your machine — first run pulls a ~180 MB model, then it is cached.
-              Stems are kept on this device afterwards, so a song is only ever separated once.
-            </p>
-            <Mixer
-              tracks={mixTracks}
-              soloed={activeSolo}
-              onSolo={setSoloed}
-              onDownload={exportTrack}
-              onChange={(id, p) => setMix((m) => ({ ...m, [id]: { ...(m[id] ?? { gain: 1, muted: false }), ...p } }))}
-            />
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button className="btn" onClick={() => void exportAudio("backing")} disabled={!stems || !!busy}>
-                <Download size={15} /> Backing track .{exportFormat}
-              </button>
-              <button className="btn" onClick={() => void exportAudio("mix")} disabled={!!busy}>
-                <Download size={15} /> Current mix .{exportFormat}
-              </button>
-              <span className="flex rounded-md border border-white/10 p-0.5 text-xs">
-                {(["wav", "mp3"] as const).map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    className={`rounded px-2 py-1 uppercase ${exportFormat === f ? "bg-white/15 text-white" : "text-white/45 hover:text-white/70"}`}
-                    onClick={() => setExportFormat(f)}
-                  >
-                    {f}
-                  </button>
-                ))}
-              </span>
-              <label className={`flex items-center gap-2 text-xs ${loop ? "text-white/60" : "text-white/25"}`}>
-                <input
-                  type="checkbox" checked={loopOnlyExport} disabled={!loop}
-                  onChange={(e) => setLoopOnlyExport(e.target.checked)}
-                />
-                Only the looped section
-              </label>
-            </div>
-            <p className="mt-2 text-xs text-white/35">
-              The arrow on each row downloads that track on its own. Audio exports use your current
-              practice speed and key, and your mix and take are kept on this device when you come back.
-            </p>
-          </section>
+          <SplitPanel {...{
+            busy, runInstant, startAiSplit, aiSplitCautionGb, setAiSplitCautionGb, runDemucs, restored, forgetSong,
+            mixTracks, activeSolo, setSoloed, exportTrack, setMix, exportAudio, stems, exportFormat, setExportFormat,
+            loop, loopOnlyExport, setLoopOnlyExport,
+          }} />
 
           {/* 3 — practise */}
-          <section className="panel no-print mb-5 p-5">
-            <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-              <span className="step-badge">3</span> Slow it down
-            </h2>
-            <Waveform
-              peaks={wavePeaks}
-              duration={transport.duration}
-              time={transport.time}
-              loop={loop}
-              onSeek={(t) => void engineRef.current?.seek(t)}
-              onLoop={setLoop}
-            />
-            <div className="mb-4 mt-2 flex flex-wrap items-center gap-3">
-              <p className="text-xs text-white/40">Drag across the waveform to loop a section.</p>
-              <button className="btn text-xs" onClick={trimToLoop} disabled={!loop || !!busy}>
-                Trim song to loop
-              </button>
-              <button className="btn text-xs" onClick={nameLoop} disabled={!loop}>
-                <Bookmark size={13} /> Name this section
-              </button>
-            </div>
-
-            {sections.length > 0 && (
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <span className="text-xs text-white/40">Sections:</span>
-                {sections.map((s, i) => (
-                  <span key={`${s.from}-${s.to}-${i}`} className="flex items-center overflow-hidden rounded bg-white/5">
-                    {editingSection === i ? (
-                      <input
-                        autoFocus
-                        className="w-28 bg-transparent px-2 py-1 text-xs text-white outline-none"
-                        defaultValue={s.name}
-                        onBlur={(e) => {
-                          const name = e.target.value.trim() || s.name;
-                          setSections((l) => l.map((x, j) => (j === i ? { ...x, name } : x)));
-                          setEditingSection(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") e.currentTarget.blur();
-                          if (e.key === "Escape") setEditingSection(null);
-                        }}
-                      />
-                    ) : (
-                      <button
-                        className="px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white"
-                        onClick={() => { setLoop([s.from, s.to]); void engineRef.current?.seek(s.from); }}
-                        onDoubleClick={() => setEditingSection(i)}
-                        title={`${fmtTime(s.from)}–${fmtTime(s.to)} — double-click to rename`}
-                      >
-                        {s.name}
-                      </button>
-                    )}
-                    <button
-                      className="px-1.5 py-1 text-xs text-white/25 hover:text-white/70"
-                      onClick={() => setSections((l) => l.filter((_, j) => j !== i))}
-                      aria-label={`Remove ${s.name}`}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-
-            <div className="mb-4 flex flex-wrap items-center gap-4 rounded-md border border-white/10 bg-white/[0.02] px-3 py-2">
-              <label className="flex items-center gap-2 text-xs text-white/60">
-                Count-in
-                <select
-                  className="bg-transparent text-xs"
-                  value={countInBars}
-                  onChange={(e) => setCountInBars(Number(e.target.value))}
-                >
-                  <option value={0}>off</option>
-                  <option value={1}>1 bar</option>
-                  <option value={2}>2 bars</option>
-                </select>
-              </label>
-
-              <label className="flex items-center gap-2 text-xs text-white/60">
-                <input
-                  type="checkbox"
-                  checked={!!trainer}
-                  disabled={!loop}
-                  onChange={(e) => { setTrainer(e.target.checked ? { step: 0.05, target: 1 } : null); setPasses(0); }}
-                />
-                Speed trainer
-                {trainer && (
-                  <>
-                    <span className="text-white/35">+5% a pass, up to</span>
-                    <select
-                      className="bg-transparent text-xs"
-                      value={trainer.target}
-                      onChange={(e) => setTrainer({ ...trainer, target: Number(e.target.value) })}
-                    >
-                      <option value={0.75}>75%</option>
-                      <option value={0.9}>90%</option>
-                      <option value={1}>100%</option>
-                      <option value={1.1}>110%</option>
-                    </select>
-                  </>
-                )}
-              </label>
-
-              {loop && <span className="text-xs text-white/35">{passes} {passes === 1 ? "pass" : "passes"}</span>}
-              {!loop && <span className="text-xs text-white/25">The trainer needs a loop.</span>}
-            </div>
-            <Transport
-              playing={transport.playing}
-              time={transport.time}
-              duration={transport.duration}
-              rate={transport.rate}
-              semitones={transport.semitones}
-              rendering={transport.rendering}
-              loop={loop}
-              counting={counting}
-              onToggle={() => void startPlaying()}
-              onSeek={(t) => void engineRef.current?.seek(t)}
-              onRate={(r) => void engineRef.current?.setRate(r)}
-              onSemitones={(s) => void engineRef.current?.setSemitones(s)}
-              onClearLoop={() => setLoop(null)}
-            />
-          </section>
+          <PracticePanel {...{
+            wavePeaks, transport, loop, engineRef, setLoop, trimToLoop, busy, nameLoop, sections, editingSection,
+            setSections, setEditingSection, countInBars, setCountInBars, trainer, setTrainer, setPasses, passes,
+            counting, startPlaying,
+          }} />
 
           {/* 4 — transcribe */}
-          <section className="panel mb-5 p-5">
-            <h2 className="no-print mb-3 flex items-center gap-2 text-lg font-medium">
-              <span className="step-badge">4</span> Notes &amp; tab
-            </h2>
-
-            <div className="no-print mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <label className="text-sm">
-                <span className="mb-1 block text-white/60">Transcribe which part</span>
-                <select className="w-full" value={source} onChange={(e) => setSource(e.target.value as Source)}>
-                  <option value="mix">Full mix</option>
-                  {stems && stemMode === "ai" && STEM_NAMES.map((n) => (
-                    <option key={n} value={n}>{STEM_LABEL[n].label}</option>
-                  ))}
-                  {stems && stemMode === "instant" && (
-                    <>
-                      <option value="vocals">Centre / vocal</option>
-                      <option value="other">Backing track</option>
-                    </>
-                  )}
-                </select>
-              </label>
-              <label className="text-sm">
-                <span className="mb-1 block text-white/60">Write the next part for</span>
-                <select
-                  className="w-full" value={settings.instrument}
-                  onChange={(e) => patch(instrumentPatch(e.target.value as InstrumentId))}
-                >
-                  {Object.values(INSTRUMENTS).map((i) => (
-                    <option key={i.id} value={i.id}>{i.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-sm">
-                <span className="mb-1 block text-white/60">Tempo (BPM)</span>
-                <input
-                  type="number" min={30} max={300} step={0.1} className="w-full" value={settings.bpm}
-                  onChange={(e) => patch({ bpm: Number(e.target.value) || 120 })}
-                />
-              </label>
-              <label className="text-sm">
-                <span className="mb-1 block text-white/60">Snap notes to</span>
-                <select
-                  className="w-full" value={settings.quantizeDivision}
-                  onChange={(e) => patch({ quantizeDivision: Number(e.target.value) as 4 | 8 | 16 | 32 })}
-                >
-                  <option value={4}>Quarter notes</option>
-                  <option value={8}>Eighths</option>
-                  <option value={16}>Sixteenths</option>
-                  <option value={32}>Thirty-seconds</option>
-                </select>
-              </label>
-            </div>
-
-            <details className="no-print mb-4 text-sm">
-              <summary className="cursor-pointer text-white/60">Fine tuning</summary>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <label>
-                  <span className="mb-1 block text-white/60">Note sensitivity {settings.onsetThreshold.toFixed(2)}</span>
-                  <input type="range" min={0.1} max={0.9} step={0.05} value={settings.onsetThreshold}
-                    onChange={(e) => patch({ onsetThreshold: Number(e.target.value) })} className="w-full" />
-                  <span className="text-xs text-white/35">Lower finds more notes (and more mistakes).</span>
-                </label>
-                <label>
-                  <span className="mb-1 block text-white/60">Sustain {settings.frameThreshold.toFixed(2)}</span>
-                  <input type="range" min={0.1} max={0.9} step={0.05} value={settings.frameThreshold}
-                    onChange={(e) => patch({ frameThreshold: Number(e.target.value) })} className="w-full" />
-                </label>
-                <label>
-                  <span className="mb-1 block text-white/60">Capo {settings.capo}</span>
-                  <input type="range" min={0} max={9} step={1} value={settings.capo}
-                    onChange={(e) => patch({ capo: Number(e.target.value) })} className="w-full" />
-                </label>
-                {/*
-                  Pick a key, not a number of semitones. A player asks for "put
-                  it in G", not "move it up seven" — and the key signature moves
-                  with the notes, which it did not used to.
-                */}
-                <label>
-                  <span className="mb-1 block text-white/60">
-                    Write it in
-                    {settings.transposeSemitones !== 0 && (
-                      <span className="ml-1 text-white/35">
-                        ({settings.transposeSemitones > 0 ? "+" : ""}{settings.transposeSemitones} st)
-                      </span>
-                    )}
-                  </span>
-                  <select
-                    className="w-full"
-                    value={writtenTonic ?? ""}
-                    disabled={!parts.length}
-                    onChange={(e) => {
-                      const to = Number(e.target.value);
-                      patch({ transposeSemitones: shortestShift(soundingTonic, to) });
-                    }}
-                  >
-                    {!parts.length && <option value="">transcribe a part first</option>}
-                    {parts.length > 0 &&
-                      keyChoices(parts[0].keyMode).map((k) => (
-                        <option key={k.tonicPc} value={k.tonicPc}>
-                          {k.label}
-                          {k.tonicPc === soundingTonic ? " — as played" : ""}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={settings.monophonic}
-                    onChange={(e) => patch({ monophonic: e.target.checked })} />
-                  <span className="text-white/70">Single melody line only</span>
-                </label>
-                <label>
-                  <span className="mb-1 block text-white/60">Bar start offset {settings.offsetSeconds.toFixed(2)}s</span>
-                  <input type="range" min={0} max={4} step={0.01} value={settings.offsetSeconds}
-                    onChange={(e) => patch({ offsetSeconds: Number(e.target.value) })} className="w-full" />
-                </label>
-                <label>
-                  <span className="mb-1 block text-white/60">Score zoom {Math.round(zoom * 100)}%</span>
-                  <input type="range" min={0.6} max={1.8} step={0.05} value={zoom}
-                    onChange={(e) => setZoom(Number(e.target.value))} className="w-full" />
-                </label>
-              </div>
-            </details>
-
-            <div className="no-print mb-4 flex flex-wrap gap-2">
-              <button className="btn btn-primary" onClick={() => void runTranscribe()} disabled={!!busy}>
-                {busy?.label.startsWith("Listening") ? <Loader2 className="animate-spin" size={15} /> : <FileMusic size={15} />}
-                {busy?.label.startsWith("Listening")
-                  ? `Transcribing… ${Math.round((busy.value ?? 0) * 100)}%`
-                  : "Transcribe"}
-              </button>
-              <button className="btn" onClick={exportMidi} disabled={!parts.length}>
-                <Download size={15} /> MIDI
-              </button>
-              <button className="btn" onClick={exportMusicXml} disabled={!sheet}>
-                <Download size={15} /> MusicXML
-              </button>
-              <button className="btn" onClick={exportTex} disabled={!tex}>
-                <Download size={15} /> alphaTex
-              </button>
-              <button className="btn" onClick={() => window.print()} disabled={!tex}>
-                <Printer size={15} /> Print / PDF
-              </button>
-              <label className="flex items-center gap-2 text-xs text-white/60">
-                <input type="checkbox" checked={playAlong} onChange={(e) => setPlayAlong(e.target.checked)} />
-                Follow the music
-              </label>
-            </div>
-            {tex && playAlong && (
-              <p className="no-print mb-3 text-xs text-white/40">
-                The score scrolls itself and highlights the beat being played, so you can leave your
-                hands on the instrument. Set a loop on the waveform above to drill one phrase.
-              </p>
-            )}
-
-            {parts.length > 0 && (
-              <div className="no-print mb-4 grid gap-2">
-                {parts.map((part) => (
-                  <div
-                    key={part.id}
-                    className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-line)] px-3 py-2"
-                  >
-                    <select
-                      className="text-sm"
-                      value={part.instrument}
-                      onChange={(e) => setPartInstrument(part.id, e.target.value as InstrumentId)}
-                    >
-                      {Object.values(INSTRUMENTS).map((i) => (
-                        <option key={i.id} value={i.id}>{i.label}</option>
-                      ))}
-                    </select>
-                    <span className="text-xs text-white/45">
-                      {part.notes.length} notes · {part.keyName} · from{" "}
-                      {part.source === "mix" ? "the full mix" : part.source}
-                    </span>
-                    <span className="ml-auto flex items-center gap-2">
-                      <button
-                        className="btn py-1 text-xs"
-                        onClick={() => arrangeForEnsemble(part.id, ensembleSize)}
-                        title="Split this line into separate voices, one per instrument"
-                      >
-                        <Users size={14} /> Split into {ensembleSize} voices
-                      </button>
-                      <button className="btn py-1 text-xs" onClick={() => removePart(part.id)}>
-                        Remove
-                      </button>
-                    </span>
-                  </div>
-                ))}
-                <label className="flex items-center gap-2 text-xs text-white/45">
-                  Ensemble size
-                  <select
-                    className="text-xs"
-                    value={ensembleSize}
-                    onChange={(e) => setEnsembleSize(Number(e.target.value))}
-                  >
-                    <option value={2}>Duo — violin, cello</option>
-                    <option value={3}>Trio — violin, viola, cello</option>
-                    <option value={4}>Quartet — 2 violins, viola, cello</option>
-                    <option value={5}>Quintet — + double bass</option>
-                  </select>
-                  <span>
-                    Splitting arranges one line across instruments; it does not recover the original
-                    players from the recording.
-                  </span>
-                </label>
-              </div>
-            )}
-
-            {tex ? (
-              <>
-                <ScoreView
-                  tex={tex}
-                  zoom={zoom}
-                  playAlong={playAlong}
-                  timeSeconds={transport.time}
-                  timeline={timeline}
-                  onPickBeat={setPickedBeat}
-                  selectedBeat={pickedBeat}
-                />
-                <div className="no-print mt-3 flex flex-wrap items-center gap-2 text-sm">
-                  {pickedNotes.length > 0 ? (
-                    <>
-                      <span className="text-white/60">
-                        {/* Tenths matter here: two notes a beat apart both read
-                            as the same mm:ss, which is confusing when you are
-                            picking one of them to correct. */}
-                        {pickedNotes.length === 1
-                          ? `${noteName(pickedNotes[0].pitchMidi)} at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`
-                          : `${pickedNotes.length} notes at ${pickedNotes[0].startTimeSeconds.toFixed(1)}s`}
-                      </span>
-                      <button className="btn text-xs" onClick={() => nudgePicked(1)} title="Up a semitone">
-                        <ChevronUp size={14} /> semitone
-                      </button>
-                      <button className="btn text-xs" onClick={() => nudgePicked(-1)} title="Down a semitone">
-                        <ChevronDown size={14} /> semitone
-                      </button>
-                      <button className="btn text-xs" onClick={() => nudgePicked(12)}>+ octave</button>
-                      <button className="btn text-xs" onClick={() => nudgePicked(-12)}>− octave</button>
-                      <button className="btn text-xs text-red-200" onClick={deletePicked}>
-                        <Trash2 size={13} /> Remove
-                      </button>
-                    </>
-                  ) : (
-                    <span className="text-white/35">
-                      Click a note on the top staff to correct it — the model is a good first draft, not a transcriber.
-                    </span>
-                  )}
-                  <span className="flex items-center gap-1" role="group" aria-label="Select a beat without the mouse">
-                    <button className="btn py-0.5 text-xs" onClick={() => stepBeat(-1)} aria-label="Select the previous beat">‹ beat</button>
-                    <button className="btn py-0.5 text-xs" onClick={() => stepBeat(1)} aria-label="Select the next beat">beat ›</button>
-                  </span>
-                  {undoStack.length > 0 && (
-                    <button className="btn ml-auto text-xs" onClick={undoEdit}>
-                      <Undo2 size={13} /> Undo
-                    </button>
-                  )}
-                </div>
-              </>
-            ) : (
-              <p className="text-sm text-white/40">
-                Run the transcriber to see notation and tablature here. Transcribe as many parts as you
-                like — pick a stem, choose an instrument, and each one is added as another staff on the
-                same score. One instrument at a time is where this model is strongest, so split the stems
-                first rather than transcribing the full mix.
-              </p>
-            )}
-          </section>
+          <PartsPanel {...{
+            source, setSource, stems, stemMode, settings, patch, zoom, setZoom, writtenTonic, parts, soundingTonic,
+            runTranscribe, busy, exportMidi, sheet, exportMusicXml, tex, exportTex, playAlong, setPlayAlong,
+            setPartInstrument, arrangeForEnsemble, ensembleSize, removePart, setEnsembleSize, transport, timeline,
+            setPickedBeat, pickedBeat, pickedNotes, nudgePicked, deletePicked, stepBeat, undoStack, undoEdit,
+          }} />
 
           <SaveBar buildChart={buildChart} chartId={chartId} onChartId={linkChart} />
 
           {/* 5 — record */}
-          <section className="panel no-print mb-5 p-5">
-            <h2 className="mb-3 flex items-center gap-2 text-lg font-medium">
-              <span className="step-badge">5</span> Play or sing over it
-            </h2>
-            <div className="flex flex-wrap items-center gap-2">
-              {recording ? (
-                <button className="btn bg-red-500/20 text-red-200" onClick={stopRecording}>
-                  <Square size={15} /> Stop
-                </button>
-              ) : (
-                <button className="btn btn-primary" onClick={startRecording} disabled={!!busy}>
-                  <Mic size={15} /> Record from here
-                </button>
-              )}
-              {overdub && (
-                <button className="btn" onClick={() => setOverdub(null)}>Delete take</button>
-              )}
-              <label className="ml-2 text-xs text-white/55">
-                Nudge take {nudgeMs > 0 ? `+${nudgeMs}` : nudgeMs} ms
-                <input type="range" min={-300} max={300} step={5} value={nudgeMs}
-                  onChange={(e) => setNudgeMs(Number(e.target.value))} className="ml-2 align-middle" />
-              </label>
-            </div>
-            {overdub && parts.length > 0 && (
-              <div className="mt-4 rounded-md border border-white/10 bg-white/[0.02] p-4">
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <button className="btn btn-primary" onClick={checkTake} disabled={!!busy}>
-                    {busy?.label.startsWith("Listening to your take") ? <Loader2 className="animate-spin" size={15} /> : <Target size={15} />}
-                    How did I do?
-                  </button>
-                  {parts.length > 1 && (
-                    <select
-                      className="text-xs"
-                      value={checkPart ?? parts[0].id}
-                      onChange={(e) => setCheckPart(e.target.value)}
-                    >
-                      {parts.map((x) => (
-                        <option key={x.id} value={x.id}>
-                          against {INSTRUMENTS[x.instrument].label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {report && (
-                    <span className="text-sm">
-                      <b className={report.accuracy >= 0.9 ? "text-emerald-300" : report.accuracy >= 0.7 ? "text-[var(--color-accent)]" : "text-red-300"}>
-                        {Math.round(report.accuracy * 100)}%
-                      </b>
-                      <span className="text-white/45"> clean</span>
-                    </span>
-                  )}
-                </div>
-
-                {report && (
-                  <>
-                    <div className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-white/55">
-                      <span>{report.clean} right</span>
-                      {report.missed > 0 && <span>{report.missed} missed</span>}
-                      {report.outOfTune > 0 && <span>{report.outOfTune} out of tune</span>}
-                      {report.outOfTime > 0 && <span>{report.outOfTime} out of time</span>}
-                      {report.extra > 0 && <span>{report.extra} not in the part</span>}
-                      {Math.abs(report.meanMsOff) >= 25 && (
-                        <span className="text-[var(--color-accent)]">
-                          {report.meanMsOff > 0 ? "dragging" : "rushing"} ~{Math.abs(report.meanMsOff)} ms
-                        </span>
-                      )}
-                    </div>
-
-                    {/* A bar per column, so the shape of the problem is visible at a glance. */}
-                    <div className="mb-3 flex items-end gap-[3px]" style={{ height: 44 }}>
-                      {report.bars.map((b) => (
-                        <div
-                          key={b.bar}
-                          title={`Bar ${b.bar}: ${b.clean} of ${b.notes} clean`}
-                          className={`w-3 shrink-0 rounded-sm ${
-                            b.accuracy >= 0.9 ? "bg-emerald-400/70" : b.accuracy >= 0.6 ? "bg-[var(--color-accent)]/70" : "bg-red-400/70"
-                          }`}
-                          style={{ height: `${Math.max(8, b.accuracy * 44)}px` }}
-                        />
-                      ))}
-                    </div>
-
-                    {report.worstBars.length > 0 ? (
-                      <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <span className="text-white/55">
-                          Weakest {report.worstBars.length === 1 ? "bar" : "bars"}:{" "}
-                          {report.worstBars.map((b) => b.bar).join(", ")}
-                        </span>
-                        <button className="btn text-xs" onClick={loopWorstBars}>
-                          <Repeat size={13} /> Loop {barsLabel(barsToLoop(report.worstBars))} and go again
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-emerald-300/80">Nothing stands out as weak. Take the speed up.</p>
-                    )}
-
-                    <p className="mt-3 text-xs text-white/35">
-                      Marked by transcribing your take and lining it up with the written part, so it
-                      inherits the same blind spots as the transcription — treat a surprising result as
-                      a question rather than a verdict.
-                    </p>
-                  </>
-                )}
-              </div>
-            )}
-
-            <p className="mt-3 text-xs text-white/45">
-              Record at any speed — a take played at 60% is stretched back to full tempo without going
-              chipmunk. Use headphones so the backing track does not bleed into the mic.
-              {parts.length > 0 && " Mute your own part in the mixer first, so you are playing the line rather than doubling it."}
-            </p>
-          </section>
+          <RecordPanel {...{
+            recording, stopRecording, startRecording, busy, overdub, setOverdub, nudgeMs, setNudgeMs, parts,
+            checkTake, checkPart, setCheckPart, report, loopWorstBars,
+          }} />
         </>
       )}
 
@@ -2375,64 +1410,7 @@ export default function Studio() {
         cannot go hunting up the page for the play button, and the score is
         long — so it follows you down the page instead.
       */}
-      {audio && (
-        <div className="no-print fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0c0f14]/95 backdrop-blur">
-          <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-3 px-4 py-2.5">
-            <button
-              className="btn btn-primary"
-              onClick={() => void startPlaying()}
-              aria-label={counting ? "Cancel the count-in" : transport.playing ? "Pause" : "Play"}
-            >
-              {counting ? <Loader2 className="animate-spin" size={16} /> : transport.playing ? <Pause size={16} /> : <Play size={16} />}
-              {counting ? "Counting in… (stop)" : transport.playing ? "Pause" : "Play"}
-            </button>
-            <button
-              className="btn"
-              onClick={() => void engineRef.current?.seek(loop ? loop[0] : 0)}
-              title="Back to the start of the loop"
-            >
-              <RotateCcw size={15} />
-            </button>
-            <span className="font-mono text-sm tabular-nums text-white/70">
-              {fmtTime(transport.time)}
-              <span className="text-white/30"> / {fmtTime(transport.duration)}</span>
-            </span>
-
-            <span className="flex items-center gap-1">
-              {[0.5, 0.75, 1].map((s) => (
-                <button
-                  key={s}
-                  onClick={() => void engineRef.current?.setRate(s)}
-                  className={`rounded px-1.5 py-0.5 text-xs ${
-                    Math.abs(transport.rate - s) < 0.005
-                      ? "bg-[var(--color-accent)] text-black"
-                      : "bg-white/5 text-white/60 hover:bg-white/10"
-                  }`}
-                >
-                  {Math.round(s * 100)}%
-                </button>
-              ))}
-              {![0.5, 0.75, 1].some((s) => Math.abs(transport.rate - s) < 0.005) && (
-                <span className="rounded bg-[var(--color-accent)] px-1.5 py-0.5 text-xs text-black">
-                  {Math.round(transport.rate * 100)}%
-                </span>
-              )}
-            </span>
-
-            {loop && (
-              <button className="btn text-xs text-emerald-300" onClick={() => setLoop(null)} title="Clear the loop">
-                <Repeat size={14} /> {fmtTime(loop[0])}–{fmtTime(loop[1])} ✕
-              </button>
-            )}
-            {trainer && <span className="text-xs text-[var(--color-accent)]">trainer → {Math.round(trainer.target * 100)}%</span>}
-            {transport.rendering !== null && (
-              <span className="flex items-center gap-1.5 text-xs text-[var(--color-accent)]">
-                <Loader2 className="animate-spin" size={12} /> {Math.round(transport.rendering * 100)}%
-              </span>
-            )}
-          </div>
-        </div>
-      )}
+      {audio && <PlayerBar {...{ startPlaying, counting, transport, engineRef, loop, setLoop, trainer }} />}
       {audio && <div className="no-print h-16" aria-hidden />}
 
       <footer className="no-print pb-10 pt-4 text-center text-xs text-white/30">

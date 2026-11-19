@@ -9,7 +9,7 @@
 const mod = await import("../src/lib/audio/stems.ts").catch(() => null);
 if (!mod) {
   console.log("run with: node --experimental-strip-types scripts/verify-stems.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { separateResumable } = mod;
 

@@ -8,8 +8,9 @@ import SignIn from "./SignIn";
 import { Meter } from "./AccountMenu";
 import { signOut } from "@/lib/store/charts";
 import { BILLING_LIVE } from "@/lib/billingLive";
-import { deleteAccount, openBillingPortal, startCheckout, useAccount } from "@/lib/store/account";
+import { deleteAccount, openBillingPortal, startCheckout, useAccount, withdraw } from "@/lib/store/account";
 import { PLANS, planLabel } from "@/lib/plans";
+import { COMPANY } from "@/lib/company";
 
 export default function AccountPage() {
   const { user, account, ready, refresh } = useAccount();
@@ -17,6 +18,10 @@ export default function AccountPage() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
+  // 14-day withdrawal: a link, then an inline "type withdraw" step.
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [withdrawText, setWithdrawText] = useState("");
+  const [withdrawNote, setWithdrawNote] = useState<string | null>(null);
   // Just paid: the webhook may not have landed. Hide Upgrade and poll briefly.
   const [pending, setPending] = useState(false);
 
@@ -49,7 +54,31 @@ export default function AccountPage() {
     try { await fn(); } catch (e) { setError(e instanceof Error ? e.message : "that did not work"); setBusy(null); }
   }
 
-  if (!ready) return null;
+  async function doWithdraw() {
+    setBusy("withdraw");
+    setError(null);
+    try {
+      await withdraw();
+      setWithdrawOpen(false);
+      setWithdrawText("");
+      setNote("Withdrawn. Your payment is being refunded in full and Pro has ended.");
+    } catch (e) {
+      // 404: self-serve withdrawal is switched off on this deployment.
+      if ((e as { status?: number }).status === 404) setWithdrawNote(`Email us to withdraw: ${COMPANY.contactEmail}`);
+      else setError(e instanceof Error ? e.message : "that did not work");
+    }
+    setBusy(null);
+  }
+
+  if (!ready) {
+    return (
+      <div className="panel max-w-xl animate-pulse space-y-3 p-5" aria-busy="true" aria-label="Loading your account">
+        <div className="h-4 w-1/3 rounded bg-white/10" />
+        <div className="h-3 w-2/3 rounded bg-white/10" />
+        <div className="h-3 w-1/2 rounded bg-white/10" />
+      </div>
+    );
+  }
   if (!user) {
     return (
       <section className="panel max-w-xl p-5">
@@ -115,6 +144,43 @@ export default function AccountPage() {
           )}
           <Link className="btn" href="/pricing">Compare plans</Link>
         </div>
+        {account?.has_billing && !free && BILLING_LIVE && (
+          <div className="mt-3 text-xs text-white/45">
+            {!withdrawOpen ? (
+              <button className="underline underline-offset-2 hover:text-white/70" onClick={() => setWithdrawOpen(true)}>
+                Withdraw within 14 days
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <p>
+                  Within 14 days of subscribing you can withdraw: the payment is refunded in full and Pro ends now.
+                </p>
+                <label htmlFor="withdraw-confirm" className="block">Type &quot;withdraw&quot; to confirm</label>
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    id="withdraw-confirm"
+                    className="min-w-0 flex-1 text-sm"
+                    value={withdrawText}
+                    onChange={(e) => setWithdrawText(e.target.value)}
+                    autoComplete="off"
+                  />
+                  <button
+                    className="btn"
+                    disabled={withdrawText.trim().toLowerCase() !== "withdraw" || !!busy}
+                    onClick={() => void doWithdraw()}
+                  >
+                    {busy === "withdraw" && <Loader2 className="animate-spin" size={15} />}
+                    Withdraw and refund
+                  </button>
+                  <button className="btn" disabled={!!busy} onClick={() => { setWithdrawOpen(false); setWithdrawText(""); }}>
+                    Keep Pro
+                  </button>
+                </div>
+              </div>
+            )}
+            {withdrawNote && <p className="mt-2 text-white/70" role="status">{withdrawNote}</p>}
+          </div>
+        )}
       </section>
 
       <section className="panel border-red-500/25 p-5">
@@ -124,10 +190,12 @@ export default function AccountPage() {
           cancels a Pro subscription.
           Your sign-in is shared with other 6x7 apps, so it stays. This cannot be undone.
         </p>
+        <label htmlFor="delete-confirm" className="mb-2 block text-xs text-white/55">Type &quot;delete&quot; to confirm</label>
         <div className="flex flex-wrap gap-2">
           <input
+            id="delete-confirm"
             className="min-w-0 flex-1 text-sm"
-            placeholder='Type "delete" to confirm'
+            autoComplete="off"
             value={confirmText}
             onChange={(e) => setConfirmText(e.target.value)}
           />

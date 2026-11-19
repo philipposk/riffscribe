@@ -21,6 +21,13 @@ export const NOT_YOURS = "That song is not yours or has gone.";
 /** PostgREST / Postgres codes for "no such function" — a database without migrations/0003. */
 const NO_FUNCTION = new Set(["PGRST202", "42883"]);
 
+/**
+ * "Permission denied": migrations/0005 closes the charts table to the anon
+ * role, so a signed-out read is refused rather than empty. That is not an
+ * error for a shared link; the lookup function below still answers.
+ */
+const NO_TABLE_ACCESS = "42501";
+
 export async function listOwnCharts(s: ChartsDb, owner: string | null): Promise<ChartRow[]> {
   if (!owner) return [];
   const { data, error } = await s
@@ -35,8 +42,8 @@ export async function listOwnCharts(s: ChartsDb, owner: string | null): Promise<
 /** Your own chart, or anyone's chart they have shared. Null when neither. */
 export async function readChart(s: ChartsDb, id: string): Promise<Chart | null> {
   const { data, error } = await s.from("riffscribe_charts").select("data").eq("id", id).maybeSingle();
-  if (error) throw error;
-  const row = data as { data: Chart } | null;
+  if (error && error.code !== NO_TABLE_ACCESS) throw error;
+  const row = error ? null : (data as { data: Chart } | null);
   if (row) return row.data ?? null;
 
   const shared = await s.rpc("riffscribe_shared_chart", { chart_id: id });

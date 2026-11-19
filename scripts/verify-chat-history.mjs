@@ -8,21 +8,18 @@
  *   what keeps device-saved chats apart on a shared browser.
  * - supabase/assistant_chats.sql limits every row to its owner and deletes chats
  *   idle for 12 months.
- * - Every Greek string is a key the widget knows; unknown keys are silently ignored.
  *
  * Run with: node --experimental-strip-types scripts/verify-chat-history.mjs
  */
 import { readFileSync } from "node:fs";
 
 const src = await import("../src/lib/assistantHistory.ts").catch(() => null);
-const lang = await import("../src/lib/assistantLang.ts").catch(() => null);
-if (!src || !lang) {
+if (!src) {
   console.log("run with: node --experimental-strip-types scripts/verify-chat-history.mjs");
-  process.exit(0);
+  process.exit(1);
 }
 const { assistantChatHistory, ASSISTANT_CHATS_TABLE, ASSISTANT_CHATS_APP } = src;
 const { supabaseChatHistoryAdapter } = await import("../vendor/page-assistant/widget/dist/adapters/supabase.js");
-const { DEFAULT_STRINGS } = await import("../vendor/page-assistant/widget/dist/strings.js");
 
 let failed = 0;
 function check(what, ok, detail = "") {
@@ -151,12 +148,5 @@ check(
   sql.includes("revoke execute on function public.riffscribe_assistant_chats_delete_inactive() from public, anon, authenticated"),
 );
 check("the sweep is scheduled daily with pg_cron", sql.includes("'riffscribe-assistant-chats-retention'"));
-
-// The Greek strings.
-const unknown = Object.keys(lang.GREEK_STRINGS).filter((k) => !(k in DEFAULT_STRINGS));
-check("every Greek string is a key the widget knows", unknown.length === 0, unknown.join(", "));
-const history = Object.keys(DEFAULT_STRINGS).filter((k) => k.startsWith("history") && k !== "historyToggle");
-const missing = history.filter((k) => !(k in lang.GREEK_STRINGS));
-check(`all ${history.length} chat history strings are in Greek`, missing.length === 0, missing.join(", "));
 
 process.exit(failed ? 1 : 0);

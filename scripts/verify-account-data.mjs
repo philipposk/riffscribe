@@ -18,11 +18,11 @@ let access, deletion, billing;
 try {
   access = await import("../src/lib/store/chartAccess.ts");
   deletion = await import("../src/lib/billingFlow.ts");
-  billing = await import("../src/lib/billingFlow.ts");
+  billing = await import("../src/lib/billing/webhookLogic.ts");
 } catch (e) {
   if (e?.code === "ERR_UNKNOWN_FILE_EXTENSION") {
     console.log("run with: node --experimental-strip-types scripts/verify-account-data.mjs");
-    process.exit(0);
+    process.exit(1);
   }
   throw e;
 }
